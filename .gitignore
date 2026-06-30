@@ -64,3 +64,4 @@ skills/
 # Misc
 worklog.md
 *.pid
+backend/test_outputs/

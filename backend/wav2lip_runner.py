@@ -42,6 +42,14 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: lip_enhancer module not available ({e})")
     LIP_ENHANCE_AVAILABLE = False
 
+# Pro Lip Enhancer v2 - per-frame tracking + edge-aware sharpening + detail transfer
+try:
+    from pro_lip_enhancer import enhance_lips_pro
+    PRO_LIP_AVAILABLE = True
+except ImportError as e:
+    print(f"[Wav2Lip] WARNING: pro_lip_enhancer module not available ({e})")
+    PRO_LIP_AVAILABLE = False
+
 # Professional enhancer - Frequency Blending لإضافة ملمس الوجه من GFPGAN
 # يحل مشكلة النخمشة بكفاءة: GFPGAN مرة واحدة + معالجة سريعة لكل إطار
 try:
@@ -370,30 +378,55 @@ def run_lip_sync(
             progress_callback(80)
 
     # =====================================================================
-    # 9.4b. Lip Edge Sharpening (تشحذ خفيف على حواف الشفايف بس)
+    # 9.4b. Pro Lip Enhancement v2 (per-frame tracking + edge-aware sharpening)
+    # هذا هو التحسين الاحترافي الجديد:
+    #   - per-frame lip tracking (MediaPipe) → يشحذ الشفايف الفعلية مش bbox ثابت
+    #   - edge-aware sharpening (bilateral + CLAHE + unsharp على قناة L)
+    #   - detail transfer من مرجع GFPGAN إلى حواف الشفايف بس (يحافظ على الحركة)
+    # لو مش متاح، نرجع للـ lip_enhancer القديم كـ fallback
     # =====================================================================
-    if LIP_ENHANCE_AVAILABLE:
-        print("[Wav2Lip] Applying light lip edge sharpening...")
+    if PRO_LIP_AVAILABLE:
+        print("[Wav2Lip] Applying Pro Lip Enhancement v2 (per-frame, edge-aware)...")
         try:
-            # progress: 80-82% during lip sharpening (2% range)
+            # progress: 80-82% during lip enhancement (2% range)
+            def _pro_lip_cb(p):
+                if progress_callback:
+                    progress_callback(80 + int(p * 0.02))
+            generated_frames = enhance_lips_pro(
+                generated_frames,
+                gfpgan_reference=full_frames[0].copy(),
+                sharpen_amount=0.65,
+                detail_strength=0.45,
+                progress_callback=_pro_lip_cb,
+            )
+            print(f"[Wav2Lip] Pro lip enhancement done ({len(generated_frames)} frames)")
+        except Exception as e:
+            print(f"[Wav2Lip] WARNING: pro lip enhancement failed: {e}")
+            import traceback
+            traceback.print_exc()
+            if progress_callback:
+                progress_callback(82)
+    elif LIP_ENHANCE_AVAILABLE:
+        print("[Wav2Lip] Falling back to legacy lip enhancer...")
+        try:
             def _lip_cb(p):
                 if progress_callback:
                     progress_callback(80 + int(p * 0.02))
             generated_frames = enhance_lips_pipeline(
                 generated_frames,
                 static_image=full_frames[0].copy(),
-                temporal_alpha=1.0,    # 1.0 = no smoothing (نحافظ على الحركة)
-                sharpen_amount=0.3,    # تشحذ خفيف جداً على حواف الشفايف
+                temporal_alpha=1.0,
+                sharpen_amount=0.4,
                 color_boost=False,
                 progress_callback=_lip_cb,
             )
-            print(f"[Wav2Lip] Lip sharpening done ({len(generated_frames)} frames)")
+            print(f"[Wav2Lip] Legacy lip sharpening done ({len(generated_frames)} frames)")
         except Exception as e:
             print(f"[Wav2Lip] WARNING: lip sharpening failed: {e}")
             if progress_callback:
                 progress_callback(82)
     else:
-        print("[Wav2Lip] Skipping lip enhancement (module not available)")
+        print("[Wav2Lip] Skipping lip enhancement (no module available)")
         if progress_callback:
             progress_callback(82)
 
