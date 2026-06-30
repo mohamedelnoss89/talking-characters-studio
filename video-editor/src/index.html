@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>المحرر العربي للفيديو - Studio Pro</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- شريط العنوان المخصص -->
+  <div class="titlebar">
+    <div class="titlebar-title">
+      <span class="app-logo">🎬</span>
+      <span>المحرر العربي للفيديو</span>
+      <span class="project-name" id="projectName">مشروع جديد</span>
+    </div>
+    <div class="titlebar-controls">
+      <button class="tb-btn" id="btnMinimize" title="تصغير">─</button>
+      <button class="tb-btn" id="btnMaximize" title="تكبير">☐</button>
+      <button class="tb-btn close" id="btnClose" title="إغلاق">✕</button>
+    </div>
+  </div>
+
+  <!-- شريط القوائم -->
+  <div class="menubar">
+    <div class="menu-group">
+      <button class="menu-btn" id="btnNew" title="مشروع جديد">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+        <span>جديد</span>
+      </button>
+      <button class="menu-btn" id="btnOpen" title="فتح مشروع">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+        <span>فتح</span>
+      </button>
+      <button class="menu-btn" id="btnSave" title="حفظ المشروع">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>
+        <span>حفظ</span>
+      </button>
+      <button class="menu-btn primary" id="btnExport" title="تصدير الفيديو">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        <span>تصدير</span>
+      </button>
+    </div>
+
+    <div class="menu-divider"></div>
+
+    <div class="menu-group">
+      <button class="menu-btn" id="btnImport" title="استيراد وسائط">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+        <span>استيراد</span>
+      </button>
+    </div>
+
+    <div class="menu-divider"></div>
+
+    <!-- أدوات التحرير -->
+    <div class="menu-group tools">
+      <button class="tool-btn active" data-tool="select" title="أداة التحديد (V)">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M2 2l8 20 2-8 8-2z"/></svg>
+      </button>
+      <button class="tool-btn" data-tool="cut" title="أداة القص (C)">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3z"/></svg>
+      </button>
+      <button class="tool-btn" data-tool="text" title="إضافة نص (T)">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M5 4v3h5.5v12h3V7H19V4z"/></svg>
+      </button>
+      <button class="tool-btn" data-tool="hand" title="أداة اليد (H)">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10 2v6.5L6 6v3.5L10 13v9h4v-9l4-3.5V6l-4 2.5V2z"/></svg>
+      </button>
+    </div>
+
+    <div class="menu-divider"></div>
+
+    <div class="menu-group">
+      <button class="menu-btn" id="btnUndo" title="تراجع (Ctrl+Z)">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"/></svg>
+      </button>
+      <button class="menu-btn" id="btnRedo" title="إعادة (Ctrl+Y)">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z"/></svg>
+      </button>
+    </div>
+
+    <div class="menu-spacer"></div>
+
+    <div class="menu-group">
+      <span class="status-text" id="statusText">جاهز</span>
+    </div>
+  </div>
+
+  <!-- المنطقة الرئيسية -->
+  <div class="main-container">
+    <!-- لوحة اليسار: مكتبة الوسائط -->
+    <div class="panel panel-left">
+      <div class="panel-header">
+        <h3>📚 مكتبة الوسائط</h3>
+        <button class="icon-btn" id="btnImportMedia" title="إضافة وسائط">+</button>
+      </div>
+      <div class="panel-tabs">
+        <button class="tab-btn active" data-tab="media">الوسائط</button>
+        <button class="tab-btn" data-tab="effects">التأثيرات</button>
+        <button class="tab-btn" data-tab="transitions">الانتقالات</button>
+      </div>
+      <div class="panel-content">
+        <div class="tab-content active" id="tabMedia">
+          <div class="media-list" id="mediaList">
+            <div class="empty-state">
+              <div class="empty-icon">🎬</div>
+              <p>لا توجد وسائط</p>
+              <button class="btn-primary" id="btnEmptyImport">استيراد وسائط</button>
+            </div>
+          </div>
+        </div>
+        <div class="tab-content" id="tabEffects">
+          <div class="effects-list">
+            <div class="effect-item">
+              <span class="effect-icon">🎨</span>
+              <span>تدرج لوني</span>
+            </div>
+            <div class="effect-item">
+              <span class="effect-icon">✨</span>
+              <span>تأثير ضبابي</span>
+            </div>
+            <div class="effect-item">
+              <span class="effect-icon">🌈</span>
+              <span>ألوان دافئة</span>
+            </div>
+            <div class="effect-item">
+              <span class="effect-icon">🌙</span>
+              <span>ألوان باردة</span>
+            </div>
+            <div class="effect-item">
+              <span class="effect-icon">📺</span>
+              <span>تأثير قديم</span>
+            </div>
+            <div class="effect-item">
+              <span class="effect-icon">⚡</span>
+              <span>تباين عالي</span>
+            </div>
+          </div>
+        </div>
+        <div class="tab-content" id="tabTransitions">
+          <div class="transitions-list">
+            <div class="transition-item">تلاشي</div>
+            <div class="transition-item">انزلاق</div>
+            <div class="transition-item">دوران</div>
+            <div class="transition-item">تكبير</div>
+            <div class="transition-item">قطع سريع</div>
+            <div class="transition-item">موجة</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- المنطقة الوسطى: المعاينة -->
+    <div class="panel panel-center">
+      <div class="preview-header">
+        <div class="preview-tabs">
+          <button class="tab-btn active">المعاينة</button>
+        </div>
+        <div class="resolution-info">
+          <span id="resolutionLabel">1920 × 1080</span>
+          <span class="divider-v">|</span>
+          <span id="fpsLabel">30 FPS</span>
+        </div>
+      </div>
+      <div class="preview-container">
+        <div class="preview-screen" id="previewScreen">
+          <video id="previewVideo" class="preview-video" playsinline></video>
+          <canvas id="previewCanvas" class="preview-canvas"></canvas>
+          <div class="preview-placeholder" id="previewPlaceholder">
+            <div class="placeholder-icon">🎥</div>
+            <p>اسحب الوسائط هنا للبدء</p>
+            <p class="hint">أو اختر ملف من مكتبة الوسائط</p>
+          </div>
+        </div>
+      </div>
+      <div class="preview-controls">
+        <div class="time-display">
+          <span class="current-time" id="currentTime">00:00:00.00</span>
+          <span class="separator">/</span>
+          <span class="total-time" id="totalTime">00:00:00.00</span>
+        </div>
+        <div class="control-buttons">
+          <button class="control-btn" id="btnSkipStart" title="البداية">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button class="control-btn" id="btnPrevFrame" title="الإطار السابق">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>
+          </button>
+          <button class="control-btn play-btn" id="btnPlay" title="تشغيل">
+            <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+          </button>
+          <button class="control-btn" id="btnNextFrame" title="الإطار التالي">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+          <button class="control-btn" id="btnSkipEnd" title="النهاية">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+        <div class="volume-control">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+          <input type="range" id="volumeSlider" min="0" max="100" value="100" class="slider">
+        </div>
+      </div>
+    </div>
+
+    <!-- لوحة اليمين: الخصائص -->
+    <div class="panel panel-right">
+      <div class="panel-header">
+        <h3>⚙️ الخصائص</h3>
+      </div>
+      <div class="panel-content properties-panel" id="propertiesPanel">
+        <div class="property-empty">
+          <p>اختر عنصراً للتعديل</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- التايملاين -->
+  <div class="timeline-container">
+    <div class="timeline-header">
+      <div class="timeline-tools">
+        <button class="timeline-tool" id="btnSplit" title="تقسيم (S)">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M14 4l2.29 2.29-2.88 2.88 1.42 1.42 2.88-2.88L20 10V4zm-4 0H4v6l2.29-2.29 4.71 4.7V20h2v-8.41l-5.7-5.71z"/></svg>
+        </button>
+        <button class="timeline-tool" id="btnDelete" title="حذف (Del)">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </button>
+        <button class="timeline-tool" id="btnDuplicate" title="نسخ">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+        </button>
+        <div class="divider-v"></div>
+        <button class="timeline-tool" id="btnZoomIn" title="تكبير">+</button>
+        <button class="timeline-tool" id="btnZoomOut" title="تصغير">−</button>
+        <button class="timeline-tool" id="btnZoomFit" title="ملاءمة">Fit</button>
+      </div>
+      <div class="timeline-info">
+        <span id="timelineInfo">0 مقطع</span>
+      </div>
+    </div>
+    <div class="timeline-body">
+      <div class="timeline-ruler" id="timelineRuler">
+        <!-- يتم توليدها ديناميكياً -->
+      </div>
+      <div class="timeline-tracks" id="timelineTracks">
+        <!-- يتم توليدها ديناميكياً -->
+      </div>
+      <div class="timeline-playhead" id="timelinePlayhead"></div>
+    </div>
+  </div>
+
+  <!-- شريط الحالة -->
+  <div class="statusbar">
+    <div class="status-section">
+      <span id="statusMessage">جاهز للعمل</span>
+    </div>
+    <div class="status-section">
+      <span>المدة الإجمالية: <strong id="totalDuration">00:00:00</strong></span>
+    </div>
+    <div class="status-section">
+      <span>التقريب: <strong id="zoomLevel">100%</strong></span>
+    </div>
+  </div>
+
+  <!-- نافذة التصدير المنبثقة -->
+  <div class="modal" id="exportModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>تصدير الفيديو</h2>
+        <button class="close-btn" id="closeExportModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>صيغة التصدير</label>
+          <select id="exportFormat" class="form-control">
+            <option value="mp4">MP4 (موصى به)</option>
+            <option value="mov">MOV</option>
+            <option value="webm">WebM</option>
+            <option value="gif">GIF</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>الجودة</label>
+          <select id="exportQuality" class="form-control">
+            <option value="high">عالية (1080p)</option>
+            <option value="medium" selected>متوسطة (720p)</option>
+            <option value="low">منخفضة (480p)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>عدد الإطارات (FPS)</label>
+          <select id="exportFps" class="form-control">
+            <option value="24">24 FPS (سينمائي)</option>
+            <option value="30" selected>30 FPS (عادي)</option>
+            <option value="60">60 FPS (سلس)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>اسم الملف</label>
+          <input type="text" id="exportFileName" class="form-control" value="final_video" placeholder="اسم الملف">
+        </div>
+
+        <div class="export-progress" id="exportProgress" style="display: none;">
+          <div class="progress-info">
+            <span id="progressText">جاري التصدير...</span>
+            <span id="progressPercent">0%</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="cancelExport">إلغاء</button>
+        <button class="btn-primary" id="confirmExport">تصدير الآن</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- إشعارات -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

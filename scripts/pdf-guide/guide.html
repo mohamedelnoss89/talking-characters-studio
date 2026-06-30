@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>دليل تشغيل المحرر العربي للفيديو</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&family=Tajawal:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    @page {
+      size: 720px 1020px;
+      margin: 0;
+    }
+
+    :root {
+      --c-bg: #0a0b0f;
+      --c-surface: #14161d;
+      --c-surface-light: #1c1f29;
+      --c-surface-lighter: #252935;
+      --c-border: #2a2d3a;
+      --c-text: #e8e9ee;
+      --c-text-muted: #9ca3af;
+      --c-text-dim: #6b7280;
+      --c-accent: #6366f1;
+      --c-accent-light: #818cf8;
+      --c-accent-secondary: #ec4899;
+      --c-success: #10b981;
+      --c-warning: #f59e0b;
+      --c-danger: #ef4444;
+      --c-info: #3b82f6;
+      --font-arabic: 'Cairo', 'Tajawal', sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 720px;
+      background: var(--c-bg);
+      color: var(--c-text);
+      font-family: 'Cairo', 'Tajawal', sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+      direction: rtl;
+    }
+
+    @media screen {
+      html {
+        display: flex;
+        justify-content: center;
+        background: #222;
+        padding: 20px 0;
+      }
+      body {
+        box-shadow: 0 0 40px rgba(0,0,0,0.5);
+      }
+    }
+
+    /* ===========================
+       COVER PAGE
+       =========================== */
+    .cover {
+      width: 720px;
+      height: 1020px;
+      background: linear-gradient(135deg, #0d0e12 0%, #14161d 50%, #1c1f29 100%);
+      position: relative;
+      overflow: hidden;
+      break-after: page;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 60px;
+      box-sizing: border-box;
+    }
+
+    /* Decorative circles - constrained within bounds */
+    .cover::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle at top right, rgba(99,102,241,0.15) 0%, transparent 70%);
+      border-radius: 50%;
+      transform: translate(50%, -50%);
+    }
+    .cover::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle at bottom left, rgba(236,72,153,0.1) 0%, transparent 70%);
+      border-radius: 50%;
+      transform: translate(-30%, 30%);
+    }
+
+    .cover-badge {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 20px;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: 100px;
+      font-size: 12px;
+      color: var(--c-accent-light);
+      font-weight: 500;
+      margin-bottom: 40px;
+    }
+
+    .cover-icon {
+      position: relative;
+      z-index: 2;
+      font-size: 96px;
+      margin-bottom: 30px;
+      filter: drop-shadow(0 10px 30px rgba(99,102,241,0.4));
+    }
+
+    .cover-title {
+      position: relative;
+      z-index: 2;
+      font-size: 48px;
+      font-weight: 900;
+      color: var(--c-text);
+      text-align: center;
+      line-height: 1.2;
+      margin-bottom: 16px;
+    }
+
+    .cover-title .accent {
+      color: var(--c-accent-light);
+    }
+
+    .cover-subtitle {
+      position: relative;
+      z-index: 2;
+      font-size: 18px;
+      color: var(--c-text-muted);
+      text-align: center;
+      max-width: 480px;
+      line-height: 1.6;
+      margin-bottom: 50px;
+    }
+
+    .cover-features {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 60px;
+    }
+
+    .cover-feature {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 24px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--c-border);
+      border-radius: 8px;
+      font-size: 14px;
+      color: var(--c-text);
+    }
+
+    .cover-feature-icon {
+      font-size: 20px;
+    }
+
+    .cover-footer {
+      position: relative;
+      z-index: 2;
+      margin-top: auto;
+      padding-top: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .cover-version {
+      font-size: 11px;
+      color: var(--c-text-dim);
+      letter-spacing: 2px;
+      margin-bottom: 50px;
+    }
+
+    .cover-divider {
+      width: 60px;
+      height: 2px;
+      background: var(--c-accent);
+      border-radius: 2px;
+      margin-bottom: 50px;
+    }
+
+    .cover-author {
+      font-size: 12px;
+      color: var(--c-text-muted);
+    }
+
+    /* ===========================
+       MAIN CONTENT
+       =========================== */
+    .main-content {
+      padding: 60px 65px 40px 65px;
+      background: var(--c-bg);
+    }
+
+    /* Chapter header */
+    .chapter-header {
+      break-after: avoid;
+      break-inside: avoid;
+      margin-top: 28px;
+      margin-bottom: 20px;
+    }
+
+    .chapter-header:first-child {
+      margin-top: 0;
+    }
+
+    .section-tag {
+      display: inline-block;
+      padding: 4px 12px;
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--c-accent-light);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+
+    .section-title {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--c-text);
+      margin-bottom: 50px;
+      line-height: 1.3;
+    }
+
+    .section-title .emoji {
+      margin-left: 8px;
+    }
+
+    .divider {
+      width: 50px;
+      height: 3px;
+      background: linear-gradient(90deg, var(--c-accent), var(--c-accent-secondary));
+      border-radius: 3px;
+      margin-bottom: 30px;
+      margin-top: 30px;
+    }
+
+    .body-text {
+      font-size: 15px;
+      color: var(--c-text);
+      line-height: 1.8;
+      margin-bottom: 14px;
+    }
+
+    .body-text strong {
+      color: var(--c-accent-light);
+      font-weight: 700;
+    }
+
+    .body-text .emoji {
+      margin-left: 4px;
+    }
+
+    /* ===========================
+       STEP CARDS
+       =========================== */
+    .step-card {
+      break-inside: avoid;
+      margin-bottom: 16px;
+      padding: 20px;
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: 12px;
+      border-right: 4px solid var(--c-accent);
+      position: relative;
+    }
+
+    .step-card.warning {
+      border-right-color: var(--c-warning);
+    }
+
+    .step-card.success {
+      border-right-color: var(--c-success);
+    }
+
+    .step-card.danger {
+      border-right-color: var(--c-danger);
+    }
+
+    .step-card.info {
+      border-right-color: var(--c-info);
+    }
+
+    .step-number {
+      position: absolute;
+      top: 16px;
+      left: 20px;
+      width: 32px;
+      height: 32px;
+      background: var(--c-accent);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .step-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--c-text);
+      margin-bottom: 8px;
+      padding-left: 44px;
+    }
+
+    .step-body {
+      font-size: 14px;
+      color: var(--c-text-muted);
+      line-height: 1.7;
+    }
+
+    .step-body strong {
+      color: var(--c-text);
+    }
+
+    /* ===========================
+       CODE BLOCKS
+       =========================== */
+    .code-block {
+      break-inside: avoid;
+      margin: 12px 0;
+      padding: 14px 18px;
+      background: #0d0e12;
+      border: 1px solid var(--c-border);
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      color: var(--c-success);
+      direction: ltr;
+      text-align: left;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+
+    .code-comment {
+      color: var(--c-text-dim);
+    }
+
+    /* ===========================
+       METHOD COMPARISON
+       =========================== */
+    .comparison-grid {
+      break-inside: avoid;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin: 16px 0;
+    }
+
+    .comparison-card {
+      padding: 16px 12px;
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: 10px;
+      text-align: center;
+    }
+
+    .comparison-card.best {
+      border-color: var(--c-success);
+      background: rgba(16, 185, 129, 0.05);
+    }
+
+    .comparison-icon {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+
+    .comparison-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--c-text);
+      margin-bottom: 4px;
+    }
+
+    .comparison-desc {
+      font-size: 11px;
+      color: var(--c-text-muted);
+      line-height: 1.5;
+    }
+
+    /* ===========================
+       CALLOUTS
+       =========================== */
+    .callout {
+      break-inside: avoid;
+      margin: 14px 0;
+      padding: 14px 18px;
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      border-radius: 8px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .callout.warning {
+      background: rgba(245, 158, 11, 0.08);
+      border-color: rgba(245, 158, 11, 0.25);
+    }
+
+    .callout.success {
+      background: rgba(16, 185, 129, 0.08);
+      border-color: rgba(16, 185, 129, 0.25);
+    }
+
+    .callout.danger {
+      background: rgba(239, 68, 68, 0.08);
+      border-color: rgba(239, 68, 68, 0.25);
+    }
+
+    .callout-icon {
+      font-size: 20px;
+      flex-shrink: 0;
+    }
+
+    .callout-body {
+      font-size: 13px;
+      color: var(--c-text);
+      line-height: 1.6;
+    }
+
+    .callout-body strong {
+      color: var(--c-warning);
+    }
+
+    .callout.success .callout-body strong {
+      color: var(--c-success);
+    }
+
+    .callout.danger .callout-body strong {
+      color: var(--c-danger);
+    }
+
+    /* ===========================
+       TABLE
+       =========================== */
+    .table-wrapper {
+      break-inside: avoid;
+      margin: 14px 0;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--c-border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--c-surface);
+      font-size: 13px;
+    }
+
+    thead {
+      background: var(--c-surface-lighter);
+    }
+
+    th {
+      padding: 12px 14px;
+      text-align: right;
+      color: var(--c-accent-light);
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.5px;
+    }
+
+    td {
+      padding: 10px 14px;
+      border-top: 1px solid var(--c-border);
+      color: var(--c-text);
+      line-height: 1.5;
+    }
+
+    td:first-child {
+      color: var(--c-text-muted);
+      font-weight: 600;
+    }
+
+    /* ===========================
+       KEYBOARD SHORTCUTS
+       =========================== */
+    .shortcut-grid {
+      break-inside: avoid;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 14px 0;
+    }
+
+    .shortcut-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      background: var(--c-surface);
+      border: 1px solid var(--c-border);
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .shortcut-name {
+      color: var(--c-text-muted);
+    }
+
+    .shortcut-key {
+      display: inline-block;
+      padding: 2px 10px;
+      background: var(--c-surface-lighter);
+      color: var(--c-text);
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid var(--c-border);
+    }
+
+    /* ===========================
+       ENDING PAGE
+       =========================== */
+    .ending {
+      width: 720px;
+      height: 1020px;
+      background: linear-gradient(135deg, #0d0e12 0%, #1c1f29 100%);
+      position: relative;
+      overflow: hidden;
+      break-before: page;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 60px;
+      box-sizing: border-box;
+    }
+
+    .ending::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, rgba(99,102,241,0.12) 0%, transparent 70%);
+      border-radius: 50%;
+    }
+
+    .ending-icon {
+      position: relative;
+      z-index: 2;
+      font-size: 80px;
+      margin-bottom: 30px;
+    }
+
+    .ending-title {
+      position: relative;
+      z-index: 2;
+      font-size: 36px;
+      font-weight: 900;
+      color: var(--c-text);
+      text-align: center;
+      margin-bottom: 16px;
+    }
+
+    .ending-subtitle {
+      position: relative;
+      z-index: 2;
+      font-size: 16px;
+      color: var(--c-text-muted);
+      text-align: center;
+      max-width: 440px;
+      line-height: 1.7;
+      margin-bottom: 40px;
+    }
+
+    .ending-stats {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      gap: 30px;
+      margin-bottom: 50px;
+    }
+
+    .ending-stat {
+      text-align: center;
+    }
+
+    .ending-stat-num {
+      font-size: 32px;
+      font-weight: 900;
+      color: var(--c-accent-light);
+    }
+
+    .ending-stat-label {
+      font-size: 12px;
+      color: var(--c-text-muted);
+    }
+
+    .ending-footer {
+      position: relative;
+      z-index: 2;
+      margin-top: auto;
+      padding-top: 40px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    .ending-divider {
+      width: 60px;
+      height: 2px;
+      background: var(--c-accent);
+      margin: 0 auto 50px;
+      border-radius: 2px;
+    }
+
+    .ending-author {
+      font-size: 13px;
+      color: var(--c-text-muted);
+      margin-top: 0;
+      font-family: 'Cairo', 'Tajawal', sans-serif;
+    }
+
+    .ending-heart {
+      color: var(--c-accent-secondary);
+    }
+
+    /* ===========================
+       FILE PATH BOX
+       =========================== */
+    .path-box {
+      break-inside: avoid;
+      margin: 10px 0;
+      padding: 12px 16px;
+      background: var(--c-surface);
+      border: 1px dashed var(--c-accent);
+      border-radius: 8px;
+      direction: ltr;
+      text-align: left;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      color: var(--c-accent-light);
+    }
+
+    .path-label {
+      direction: rtl;
+      text-align: right;
+      font-family: 'Cairo', 'Tajawal', sans-serif;
+      font-size: 12px;
+      color: var(--c-text-muted);
+      margin-bottom: 4px;
+    }
+
+    /* ===========================
+       FILE TREE
+       =========================== */
+    .file-tree {
+      break-inside: avoid;
+      margin: 14px 0;
+      padding: 16px 20px;
+      background: #0d0e12;
+      border: 1px solid var(--c-border);
+      border-radius: 8px;
+      direction: ltr;
+      text-align: left;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      color: var(--c-text);
+      line-height: 1.7;
+      white-space: pre;
+    }
+
+    .tree-folder { color: var(--c-accent-light); font-weight: 700; }
+    .tree-file { color: var(--c-text); }
+    .tree-comment { color: var(--c-text-dim); }
+  </style>
+</head>
+<body>
+
+<!-- ====================== COVER ====================== -->
+<div class="cover">
+  <div class="cover-badge">
+    <span>📖</span>
+    <span>دليل شامل للمستخدم</span>
+  </div>
+
+  <div class="cover-icon">🎬</div>
+
+  <div class="cover-title">
+    دليل تشغيل<br>
+    <span class="accent">المحرر العربي للفيديو</span>
+  </div>
+
+  <div class="cover-subtitle">
+    كل اللي محتاجه عشان تشغل البرنامج وتعمل أول فيديو ليك — خطوة بخطوة بالصور والشرح
+  </div>
+
+  <div class="cover-features">
+    <div class="cover-feature">
+      <span class="cover-feature-icon">⚡</span>
+      <span>3 طرق مختلفة للتشغيل</span>
+    </div>
+    <div class="cover-feature">
+      <span class="cover-feature-icon">🎯</span>
+      <span>خطوات تفصيلية لكل طريقة</span>
+    </div>
+    <div class="cover-feature">
+      <span class="cover-feature-icon">⌨️</span>
+      <span>اختصارات لوحة المفاتيح</span>
+    </div>
+    <div class="cover-feature">
+      <span class="cover-feature-icon">🚀</span>
+      <span>أول مشروع تطبيقي</span>
+    </div>
+  </div>
+
+  <div class="cover-footer">
+    <div class="cover-version">VERSION 1.0</div>
+    <div class="cover-divider"></div>
+    <div class="cover-author">المحرر العربي للفيديو — Studio Pro</div>
+  </div>
+</div>
+
+<!-- ====================== MAIN CONTENT ====================== -->
+<div class="main-content">
+
+  <!-- ====== CHAPTER 1: مقدمة ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">مقدمة</div>
+    <div class="section-title"><span class="emoji">👋</span>أهلاً بك في الدليل</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    الدليل ده هيعلمك إزاي تشغل <strong>المحرر العربي للفيديو</strong> — برنامج مونتاج احترافي للديسكتوب بواجهة عربية كاملة. البرنامج بيجي بكل المميزات اللي محتاجها: خط زمني متعدد المسارات، استيراد فيديو وصور وصوت، تصدير بصيغ مختلفة، وتكامل كامل مع FFmpeg لمعالجة الفيديو الحقيقية.
+  </div>
+
+  <div class="body-text">
+    في الدليل ده هتلاقي <strong>3 طرق مختلفة</strong> لتشغيل البرنامج حسب احتياجك — من أبسط طريقة (نسخة Portable تشتغل على طول) لحد الطريقة الاحترافية (بناء ملف تثبيت Setup.exe على ويندوز). كمان هتلاقي دليل سريع لأول مشروع ليك وكل الاختصارات المهمة.
+  </div>
+
+  <div class="comparison-grid">
+    <div class="comparison-card best">
+      <div class="comparison-icon">⚡</div>
+      <div class="comparison-name">Portable</div>
+      <div class="comparison-desc">الأسهل والأسرع — شغّال على طول بدون تثبيت</div>
+    </div>
+    <div class="comparison-card">
+      <div class="comparison-icon">📦</div>
+      <div class="comparison-name">Setup.exe</div>
+      <div class="comparison-desc">تثبيت كامل باحترافية + اختصارات</div>
+    </div>
+    <div class="comparison-card">
+      <div class="comparison-icon">👨‍💻</div>
+      <div class="comparison-name">من الكود</div>
+      <div class="comparison-desc">للمطورين اللي عايزين يعدّلوا أو يتعلموا</div>
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 2: الطريقة الأولى ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">الطريقة الأولى</div>
+    <div class="section-title"><span class="emoji">⚡</span>النسخة المحمولة (Portable)</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    دي <strong>أبسط طريقة</strong> على الإطلاق — مفيش أي تثبيت، مفيش Node.js، مفيش حاجة. البرنامج جاهز للعمل على طول. مناسب جداً للمستخدم العادي اللي عايز يبدأ مونتاج فيديو من غير أي تعقيدات تقنية.
+  </div>
+
+  <div class="callout success">
+    <div class="callout-icon">✅</div>
+    <div class="callout-body">
+      <strong>النتيجة المتوقعة:</strong> البرنامج هيشتغل خلال 30 ثانية من لحظة التحميل، بدون أي خطوات تثبيت.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">1</div>
+    <div class="step-title">حمّل ملف البرنامج</div>
+    <div class="step-body">
+      نزّل ملف <strong>ArabicVideoEditor-Portable-1.0.0.exe</strong> — حجمه تقريباً <strong>105 ميجابايت</strong>. الملف ده بيحتوي على البرنامج كامل + كل الاعتماديات (Electron + FFmpeg + Chromium) جواه.
+    </div>
+    <div class="path-label">مسار الملف بعد التحميل:</div>
+    <div class="path-box">C:\Users\YourName\Downloads\ArabicVideoEditor-Portable-1.0.0.exe</div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">2</div>
+    <div class="step-title">انقل الملف لمجلد ثابت</div>
+    <div class="step-body">
+      سيب الملف في أي مكان ثابت على جهازك. نصيحة: اعمل مجلد اسمه <strong>"المحرر العربي"</strong> في أي مكان وحط الملف جواه. مثلاً:<br>
+      <span style="color: var(--c-accent-light);">C:\Program Files\ArabicVideoEditor\</span><br>
+      أو على الديسكتوب مباشرةً.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">3</div>
+    <div class="step-title">شغّل البرنامج</div>
+    <div class="step-body">
+      اعمل <strong>دبل كليك</strong> على الملف. أول مرة هيستنى ثواني وهو بيفتح (لأن ويندوز بيفحصه). بعدها هتظهر واجهة البرنامج بالعربي — جاهزة للشغل!
+    </div>
+  </div>
+
+  <div class="callout warning">
+    <div class="callout-icon">⚠️</div>
+    <div class="callout-body">
+      <strong>تنبيه ويندوز:</strong> ممكن ويندوز يطلع رسالة "Windows protected your PC" لأن الملف مش موقّع رقمياً. اضغط <strong>"More info"</strong> ثم <strong>"Run anyway"</strong> — ده آمن 100%.
+    </div>
+  </div>
+
+  <div class="step-card success">
+    <div class="step-number">4</div>
+    <div class="step-title">اعمل اختصار على الديسكتوب (اختياري)</div>
+    <div class="step-body">
+      عشان تفتح البرنامج بسرعة في كل مرة من غير ما تدور على الملف:<br>
+      1. اضغط <strong>كليك يمين</strong> على الملف<br>
+      2. اختر <strong>"Send to"</strong><br>
+      3. اختر <strong>"Desktop (create shortcut)"</strong><br>
+      هيظهر اختصار جديد على الديسكتوب بآيقونة البرنامج 🎬
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-icon">💡</div>
+    <div class="callout-body">
+      <strong>ميزة إضافية:</strong> النسخة Portable تقدر تنسخها على فلاشة USB وتشغّلها من أي جهاز ويندوز من غير ما تثبتها! مناسبة لو بتشتغل على أكثر من جهاز.
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 3: الطريقة الثانية ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">الطريقة الثانية</div>
+    <div class="section-title"><span class="emoji">📦</span>تثبيت كامل (Setup.exe)</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    الطريقة دي بتديك <strong>تثبيت احترافي</strong> زي أي برنامج كبير (زي Photoshop أو VLC). هتعملك معالج تثبيت بأيقونة البرنامج، اختصارات على الديسكتوب، في قائمة Start، وإمكانية الإزالة من Control Panel. مناسبة لو هتستخدم البرنامج بشكل يومي وثابت.
+  </div>
+
+  <div class="callout warning">
+    <div class="callout-icon">🔧</div>
+    <div class="callout-body">
+      <strong>ملاحظة مهمة:</strong> بناء ملف Setup.exe بيحتاج تشتغل على ويندوز (أو Wine على لينكس). اللي قدامك دلوقتي هو Portable فقط، عشان تبني Setup لازم تتبع الخطوات دي.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">1</div>
+    <div class="step-title">نزّل وثبّت Node.js</div>
+    <div class="step-body">
+      افتح موقع <strong>nodejs.org</strong> وحمّل نسخة <strong>LTS</strong> (الأكثر استقراراً). شغّل ملف التثبيت واتبع الخطوات الافتراضية. لما يخلص، افتح <strong>PowerShell</strong> واكتب:<br>
+      <span style="color: var(--c-accent-light);">node --version</span><br>
+      لو طلع رقم نسخة، يبقى Node.js اتثبت بنجاح.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">2</div>
+    <div class="step-title">نزّل الكود المصدري</div>
+    <div class="step-body">
+      نزّل ملف <strong>arabic-video-editor-source-v1.1.zip</strong> وفك الضغط في مجلد. مثلاً:<br>
+      <span style="color: var(--c-accent-light);">C:\video-editor\</span>
+    </div>
+    <div class="file-tree"><span class="tree-folder">video-editor/</span>
+├── main.js              <span class="tree-comment"># عملية Electron</span>
+├── preload.js           <span class="tree-comment"># الجسر الآمن</span>
+├── package.json         <span class="tree-comment"># الإعدادات</span>
+├── build/
+│   └── icon.ico         <span class="tree-comment"># أيقونة البرنامج</span>
+├── src/
+│   ├── index.html       <span class="tree-comment"># الواجهة</span>
+│   ├── styles.css       <span class="tree-comment"># التصميم</span>
+│   └── renderer.js      <span class="tree-comment"># منطق التطبيق</span>
+├── run.bat              <span class="tree-comment"># تشغيل سريع</span>
+└── build-installer.bat  <span class="tree-comment"># بناء التثبيت</span></div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">3</div>
+    <div class="step-title">افتح PowerShell في مجلد المشروع</div>
+    <div class="step-body">
+      في File Explorer، روح لمجلد المشروع. اضغط <strong>Shift + كليك يمين</strong> في مساحة فارغة، واختر <strong>"Open PowerShell window here"</strong> أو <strong>"Open in Terminal"</strong>.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">4</div>
+    <div class="step-title">تثبيت الحزم</div>
+    <div class="step-body">
+      في PowerShell اكتب الأمر ده واستنى لحد ما يخلص (مرة واحدة بس):<br>
+    </div>
+    <div class="code-block"><span class="code-comment"># تثبيت كل الحزم المطلوبة</span>
+npm install</div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">5</div>
+    <div class="step-title">بناء ملف التثبيت</div>
+    <div class="step-body">
+      بعد ما تثبت الحزم، اكتب الأمر ده عشان يبني ملف Setup.exe (هيستنى 5-10 دقايق):<br>
+    </div>
+    <div class="code-block"><span class="code-comment"># بناء ملف التثبيت Setup.exe</span>
+npm run build:nsis</div>
+  </div>
+
+  <div class="step-card success">
+    <div class="step-number">6</div>
+    <div class="step-title">شغّل ملف التثبيت</div>
+    <div class="step-body">
+      لما البناء يخلص، هتلاقي ملف التثبيت في:<br>
+      <span style="color: var(--c-accent-light);">C:\video-editor\dist\ArabicVideoEditor-Setup-1.0.0.exe</span><br><br>
+      دبل كليك على الملف → هيظهر معالج تثبيت عربي → اتبع الخطوات:<br>
+      • اختر اللغة (عربي/إنجليزي)<br>
+      • اقبل اتفاقية الاستخدام<br>
+      • اختر مكان التثبيت<br>
+      • اضغط "تثبيت" ثم "إنهاء"<br>
+      ✅ البرنامج هيتثبت ويشتغل تلقائياً!
+    </div>
+  </div>
+
+  <div class="callout success">
+    <div class="callout-icon">🎉</div>
+    <div class="callout-body">
+      <strong>بعد التثبيت:</strong> هتلاقي البرنامج في قائمة Start باسم "المحرر العربي للفيديو"، اختصار على الديسكتوب، وتقدر تشيله من Control Panel → Programs → Uninstall a program.
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 4: الطريقة الثالثة ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">الطريقة الثالثة</div>
+    <div class="section-title"><span class="emoji">👨‍💻</span>تشغيل من الكود المصدري</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    لو إنت مطور أو حابب تتعلم إزاي البرنامج شغال من جوه، الطريقة دي بتسمحلك تشغّل البرنامج في <strong>وضع التطوير</strong> وتعدّل الكود وتشوف التغييرات على طول. مناسبة للناس اللي ليها خبرة بـ JavaScript و Node.js.
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">1</div>
+    <div class="step-title">تثبيت المتطلبات</div>
+    <div class="step-body">
+      محتاج تثبت <strong>Node.js 16+</strong> من nodejs.org. للتأكد إنه مثبت:<br>
+    </div>
+    <div class="code-block">node --version    <span class="code-comment"># لازم يطلع رقم 16 أو أكبر</span>
+npm --version     <span class="code-comment"># للتأكد من npm</span></div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">2</div>
+    <div class="step-title">فك الكود وثبّت الحزم</div>
+    <div class="step-body">
+      فك ضغط <strong>arabic-video-editor-source-v1.1.zip</strong> في أي مجلد، افتح Terminal جواه، واكتب:
+    </div>
+    <div class="code-block"><span class="code-comment"># تنصيب كل الاعتماديات (Electron, FFmpeg, إلخ)</span>
+npm install</div>
+  </div>
+
+  <div class="step-card success">
+    <div class="step-number">3</div>
+    <div class="step-title">شغّل في وضع التطوير</div>
+    <div class="step-body">
+      الأمر ده هيفتح البرنامج في وضع التطوير:<br>
+    </div>
+    <div class="code-block"><span class="code-comment"># تشغيل البرنامج في وضع التطوير</span>
+npm start</div>
+    <div class="callout" style="margin-top: 12px;">
+      <div class="callout-icon">🔄</div>
+      <div class="callout-body">
+        كل ما تعدّل أي ملف في مجلد <strong>src/</strong>، تقدر تعمل <strong>Ctrl+R</strong> جوه البرنامج عشان تشوف التغييرات من غير ما تقفله.
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-icon">💡</div>
+    <div class="callout-body">
+      <strong>للمطورين:</strong> الكود متقسم 3 أجزاء رئيسية: <strong>main.js</strong> (عملية Electron الأساسية)، <strong>preload.js</strong> (جسر آمن)، <strong>src/renderer.js</strong> (منطق الواجهة). كل التعديلات على الواجهة في <strong>src/</strong>.
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 5: أول مشروع ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">دليل عملي</div>
+    <div class="section-title"><span class="emoji">🚀</span>أول مشروع ليك — خطوة بخطوة</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    خلّينا نعمل أول فيديو بسيط سوا عشان تتعود على الواجهة. هتستورد فيديو، تقطّعه، تضيف نص، وتصدر النتيجة. كل ده في 5 دقايق.
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">1</div>
+    <div class="step-title">افتح البرنامج</div>
+    <div class="step-body">
+      أول ما تفتحه هتلاقي الواجهة الرئيسية مقسومة 4 أجزاء: <strong>مكتبة الوسائط</strong> (يمين)، <strong>نافذة المعاينة</strong> (وسط)، <strong>لوحة الخصائص</strong> (يسار)، <strong>التايملاين</strong> (تحت).
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">2</div>
+    <div class="step-title">استورد فيديو</div>
+    <div class="step-body">
+      اضغط زر <strong>"استيراد"</strong> فوق على اليمين، أو زر <strong>"+"</strong> في مكتبة الوسائط. اختر أي فيديو من جهازك (MP4, MOV, AVI, إلخ). الفيديو هيظهر في المكتبة مع صورة مصغرة ومعلوماته.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">3</div>
+    <div class="step-title">اسحب للتايملاين</div>
+    <div class="step-body">
+      اسحب الفيديو من المكتبة وافلته على <strong>مسار الفيديو</strong> في التايملاين (المسار الأزرق). هتلاقيه ظهر كـ "clip" بمده كاملة. كمان تقدر تضغط عليه في المعاينة وتشغّله بـ <strong>Space</strong>.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">4</div>
+    <div class="step-title">قص الفيديو</div>
+    <div class="step-body">
+      حدد الـ clip اللي على التايملاين. حط مؤشر التشغيل (Playhead) في النص. اضغط <strong>S</strong> أو زر <strong>✂️ تقسيم</strong> فوق التايملاين. الفيديو هيتقسم نصين. تقدر تحذف الجزء اللي مش عايزه بـ <strong>Delete</strong>.
+    </div>
+  </div>
+
+  <div class="step-card">
+    <div class="step-number">5</div>
+    <div class="step-title">عدّل الخصائص</div>
+    <div class="step-body">
+      اضغط على أي clip في التايملاين → هتلاقي لوحة الخصائص (يسار) فتحت فيها معلومات المقطع. تقدر تغير الاسم، تضبط البداية والمدة بالأرقام بدقة، أو تشوف معلومات الفيديو (الدقة، FPS، إلخ).
+    </div>
+  </div>
+
+  <div class="step-card success">
+    <div class="step-number">6</div>
+    <div class="step-title">صدّر الفيديو 🎬</div>
+    <div class="step-body">
+      اضغط زر <strong>"تصدير"</strong> فوق على اليمين. هتفتح نافذة جديدة اختر فيها:<br>
+      • <strong>الصيغة:</strong> MP4 (موصى به)<br>
+      • <strong>الجودة:</strong> عالية (1080p) أو متوسطة (720p)<br>
+      • <strong>الإطارات:</strong> 30 FPS عادي<br>
+      • <strong>اسم الملف:</strong> أي اسم تريده<br>
+      اضغط <strong>"تصدير الآن"</strong> → اختار مكان الحفظ → استنى لحد ما يخلص!
+    </div>
+  </div>
+
+  <div class="callout success">
+    <div class="callout-icon">🎉</div>
+    <div class="callout-body">
+      <strong>مبروك!</strong> أول فيديو ليك جاهز. الفيديو النهائي هتلاقيه في المكان اللي اخترته، جاهز للمشاركة على يوتيوب أو السوشيال ميديا.
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 6: اختصارات لوحة المفاتيح ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">مرجع سريع</div>
+    <div class="section-title"><span class="emoji">⌨️</span>اختصارات لوحة المفاتيح</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    عشان تشتغل بسرعة من غير ما تستخدم الماوس كتير، البرنامج بيحفظ الاختصارات دي. احفظها وهي هتفرق معاك جداً في سرعة الشغل.
+  </div>
+
+  <div class="shortcut-grid">
+    <div class="shortcut-item">
+      <span class="shortcut-name">أداة التحديد</span>
+      <span class="shortcut-key">V</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">أداة القص</span>
+      <span class="shortcut-key">C</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">أداة النص</span>
+      <span class="shortcut-key">T</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">أداة اليد</span>
+      <span class="shortcut-key">H</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">تشغيل/إيقاف</span>
+      <span class="shortcut-key">Space</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">تقسيم المقطع</span>
+      <span class="shortcut-key">S</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">حذف المقطع</span>
+      <span class="shortcut-key">Del</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">تراجع</span>
+      <span class="shortcut-key">Ctrl+Z</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">إعادة</span>
+      <span class="shortcut-key">Ctrl+Y</span>
+    </div>
+    <div class="shortcut-item">
+      <span class="shortcut-name">حفظ المشروع</span>
+      <span class="shortcut-key">Ctrl+S</span>
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 7: مشاكل وحلول ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">استكشاف الأخطاء</div>
+    <div class="section-title"><span class="emoji">🔧</span>مشاكل شائعة وحلولها</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    لو واجهت أي مشكلة أثناء التشغيل، الحلول الغالبية هنا. لو مش لاقي الحل، تقدر تبلغنا عن المشكلة في صفحة المشروع.
+  </div>
+
+  <div class="step-card warning">
+    <div class="step-title">🔴 "Windows protected your PC"</div>
+    <div class="step-body">
+      ويندوز بيحذّرك لأن الملف مش موقّع رقمياً (ده طبيعي للمشاريع المفتوحة). اضغط <strong>"More info"</strong> → <strong>"Run anyway"</strong>. الملف آمن 100%.
+    </div>
+  </div>
+
+  <div class="step-card warning">
+    <div class="step-title">🔴 البرنامج لا يفتح</div>
+    <div class="step-body">
+      جرّب تشغّله كـ Administrator (كليك يمين → Run as administrator). لو لسه مش شغال، تأكد إن ويندوز بتاعك <strong>64-bit</strong> (البرنامج يدعم 64-bit فقط).
+    </div>
+  </div>
+
+  <div class="step-card warning">
+    <div class="step-title">🔴 لا يوجد صوت في المعاينة</div>
+    <div class="step-body">
+      اتأكد إن مستوى الصوت في البرنامج مش على صفر — شريط الصوت تحت في أزرار التحكم. جرّب كمان ترفع صوت الويندوز نفسه.
+    </div>
+  </div>
+
+  <div class="step-card warning">
+    <div class="step-title">🔴 FFmpeg لا يعمل</div>
+    <div class="step-body">
+      لو التصدير مش شغال، تأكد إن ملف <strong>ffmpeg.exe</strong> موجود في مجلد <strong>resources</strong> بجانب البرنامج. لو مش موجود، نزّل النسخة Portable من جديد.
+    </div>
+  </div>
+
+  <div class="step-card warning">
+    <div class="step-title">🔴 الخطوط العربية لا تظهر صح</div>
+    <div class="step-body">
+      لو النص العربي بيبان مقطّع أو معكوس، تأكد إن ويندوز بتاعك فيه خطوط Cairo أو Tahoma (افتراضياً موجودة في ويندوز 10/11).
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 8: متطلبات النظام ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">معلومات تقنية</div>
+    <div class="section-title"><span class="emoji">💻</span>متطلبات النظام</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    قبل ما تبدأ، اتأكد إن جهازك بيحقق المتطلبات دي عشان البرنامج يشتغل بسلاسة من غير أي مشاكل أداء.
+  </div>
+
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>العنصر</th>
+          <th>الحد الأدنى</th>
+          <th>الموصى به</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>نظام التشغيل</td>
+          <td>Windows 10 (64-bit)</td>
+          <td>Windows 11 (64-bit)</td>
+        </tr>
+        <tr>
+          <td>المعالج (CPU)</td>
+          <td>Intel i3 / AMD Ryzen 3</td>
+          <td>Intel i5 / AMD Ryzen 5+</td>
+        </tr>
+        <tr>
+          <td>الذاكرة (RAM)</td>
+          <td>4 GB</td>
+          <td>8 GB أو أكثر</td>
+        </tr>
+        <tr>
+          <td>المساحة الفارغة</td>
+          <td>500 MB للبرنامج</td>
+          <td>+5 GB للمشاريع</td>
+        </tr>
+        <tr>
+          <td>الشاشة</td>
+          <td>1366×768</td>
+          <td>1920×1080 (Full HD)</td>
+        </tr>
+        <tr>
+          <td>كرت الشاشة</td>
+          <td>أي كرت مدمج</td>
+          <td>GPU مخصص للتسريع</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <div class="callout-icon">📋</div>
+    <div class="callout-body">
+      <strong>للمطورين اللي هيستخدموا الطريقة الثانية أو الثالثة:</strong> محتاجين Node.js 16+ متثبت على الجهاز. تقدر تحمّله من nodejs.org (نسخة LTS).
+    </div>
+  </div>
+
+  <!-- ====== CHAPTER 9: الصيغ المدعومة ====== -->
+  <div class="chapter-header">
+    <div class="section-tag">معلومات تقنية</div>
+    <div class="section-title"><span class="emoji">📁</span>الصيغ المدعومة</div>
+    <div class="divider"></div>
+  </div>
+
+  <div class="body-text">
+    البرنامج بيدعم كل الصيغ الشائعة للوسائط، بفضل اعتماده على <strong>FFmpeg</strong> كمحرك معالجة. تقدر تستورد وتصدّر بأي صيغة من دول:
+  </div>
+
+  <div class="table-wrapper">
+    <table>
+      <thead>
+        <tr>
+          <th>النوع</th>
+          <th>الصيغ المدعومة</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>🎥 فيديو (استيراد)</td>
+          <td>MP4, AVI, MOV, MKV, WebM, FLV</td>
+        </tr>
+        <tr>
+          <td>🎵 صوت (استيراد)</td>
+          <td>MP3, WAV, AAC, FLAC, OGG</td>
+        </tr>
+        <tr>
+          <td>🖼️ صور (استيراد)</td>
+          <td>PNG, JPG, JPEG, BMP, WebP, GIF</td>
+        </tr>
+        <tr>
+          <td>🎬 تصدير فيديو</td>
+          <td>MP4, MOV, WebM, GIF</td>
+        </tr>
+        <tr>
+          <td>💾 حفظ المشروع</td>
+          <td>JSON (صيغة مشروع)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout success">
+    <div class="callout-icon">✨</div>
+    <div class="callout-body">
+      <strong>جودة التصدير:</strong> تقدر تختار بين 3 مستويات جودة — عالية (1080p مع CRF 18)، متوسطة (720p مع CRF 23)، منخفضة (480p مع CRF 28). كلما زادت الجودة، زاد حجم الملف ووقت التصدير.
+    </div>
+  </div>
+
+</div>
+
+<!-- ====================== ENDING ====================== -->
+<div class="ending">
+  <div class="ending-icon">🎬</div>
+
+  <div class="ending-title">يلا نبدأ الإبداع!</div>
+  <div class="ending-subtitle">
+    دلوقتي إنت عندك كل اللي محتاجه عشان تبدأ مونتاج فيديوهاتك الاحترافية. البرنامج مجاني بالكامل، ومفتوح المصدر — تقدر تستخدمه وتعدّل عليه براحتك.
+  </div>
+
+  <div class="ending-stats">
+    <div class="ending-stat">
+      <div class="ending-stat-num">3</div>
+      <div class="ending-stat-label">طرق تشغيل</div>
+    </div>
+    <div class="ending-stat">
+      <div class="ending-stat-num">10+</div>
+      <div class="ending-stat-label">اختصارات</div>
+    </div>
+    <div class="ending-stat">
+      <div class="ending-stat-num">100%</div>
+      <div class="ending-stat-label">مجاني</div>
+    </div>
+  </div>
+
+  <div class="ending-footer">
+    <div class="ending-divider"></div>
+    <div class="ending-author">
+      المحرر العربي للفيديو — Studio Pro<br>
+      <span style="font-size: 11px; color: var(--c-text-dim);">صنع بـ <span class="ending-heart">❤</span> للمجتمع العربي</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,88 @@
+{
+  "name": "arabic-video-editor",
+  "version": "1.0.0",
+  "description": "المحرر العربي للفيديو - برنامج مونتاج احترافي للديسكتوب",
+  "main": "main.js",
+  "author": {
+    "name": "Arabic Video Editor",
+    "email": "info@arabiceditor.com"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "build:win": "electron-builder --win",
+    "build:portable": "electron-builder --win portable",
+    "build:nsis": "electron-builder --win nsis",
+    "pack": "electron-builder --win --dir"
+  },
+  "build": {
+    "appId": "com.arabiceditor.studio",
+    "productName": "المحرر العربي للفيديو",
+    "copyright": "Copyright © 2026 Arabic Video Editor",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "!node_modules/**/{CHANGELOG.md,README.md,readme.markdown,*.d.ts,*.map,*.ts}",
+      "!node_modules/**/{test,tests,__tests__,docs,doc,examples,example}/**",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!**/.*"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg",
+        "to": "ffmpeg.exe"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "ArabicVideoEditor-Setup-${version}.${ext}",
+      "publisherName": "Arabic Video Editor",
+      "verifyUpdateCodeSignature": false,
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "menuCategory": "Arabic Video Editor",
+      "shortcutName": "المحرر العربي للفيديو",
+      "uninstallDisplayName": "المحرر العربي للفيديو",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "displayLanguageSelector": true,
+      "installerLanguages": ["ar-SA", "en-US"],
+      "language": "1025"
+    },
+    "portable": {
+      "artifactName": "ArabicVideoEditor-Portable-${version}.${ext}"
+    }
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.3"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  }
+}

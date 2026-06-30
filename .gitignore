@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js build output
+.next/
+out/
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+.pytest_cache/
+
+# Backend heavy / model files (download separately)
+backend/Wav2Lip/
+backend/gfpgan/
+backend/models/
+backend/outputs/
+backend/uploads/
+gfpgan/
+
+# Model weights
+*.pth
+*.ckpt
+*.pt
+*.onnx
+*.bin
+
+# Generated outputs (user data)
+download/
+upload/
+tool-results/
+
+# Logs
+*.log
+logs/
+dev.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Skills (internal)
+skills/
+
+# Misc
+worklog.md
+*.pid

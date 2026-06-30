@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "الصورة تحتوي على شخصية مرسومة (أنميشن) على canvas (أو منطقة عرض). فم الشخصية مفتوح (متحرك، تبدو في حالة التحدث). لا يوجد زرار إيقاف ظاهر في الصورة.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1782847809,
+  "id": "20260701033006629be633d34a4faf",
+  "model": "glm-4.6v",
+  "object": "chat.completion",
+  "request_id": "20260701033006629be633d34a4faf",
+  "usage": {
+    "completion_tokens": 64,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1020,
+    "prompt_tokens_details": {
+      "cached_tokens": 4
+    },
+    "total_tokens": 1084
+  }
+}

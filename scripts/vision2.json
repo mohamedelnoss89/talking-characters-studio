@@ -1,0 +1,28 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "نعم، في يسار الشاشة شخصية مرسومة (شخصية أنمي) في canvas. الزر بيقول \"إيقاف\" (في مربع أرجواني).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1782844680,
+  "id": "202607010237577d5d165537f54ef7",
+  "model": "glm-4.6v",
+  "object": "chat.completion",
+  "request_id": "202607010237577d5d165537f54ef7",
+  "usage": {
+    "completion_tokens": 47,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "prompt_tokens": 1009,
+    "prompt_tokens_details": {
+      "cached_tokens": 4
+    },
+    "total_tokens": 1056
+  }
+}
