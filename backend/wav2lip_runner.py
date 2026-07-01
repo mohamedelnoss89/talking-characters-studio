@@ -357,7 +357,7 @@ def run_lip_sync(
             # الصورة الأصلية المحسّنة بـ GFPGAN (المرجع للملمس)
             pro_enhancer = ProfessionalEnhancer(
                 enhanced_source=full_frames[0].copy(),
-                detail_strength=0.7,
+                detail_strength=0.35,
             )
             generated_frames = pro_enhancer.enhance_batch(
                 generated_frames,
@@ -396,7 +396,7 @@ def run_lip_sync(
                 generated_frames,
                 gfpgan_reference=full_frames[0].copy(),
                 sharpen_amount=0.65,
-                detail_strength=0.45,
+                detail_strength=0.30,
                 progress_callback=_pro_lip_cb,
             )
             print(f"[Wav2Lip] Pro lip enhancement done ({len(generated_frames)} frames)")

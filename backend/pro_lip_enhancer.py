@@ -44,14 +44,16 @@ class ProLipEnhancer:
     def __init__(self,
                  gfpgan_reference: Optional[np.ndarray] = None,
                  sharpen_amount: float = 0.65,
-                 detail_strength: float = 0.45,
+                 detail_strength: float = 0.0,
                  clahe_clip: float = 2.8,
                  edge_only: bool = True):
         """
         Args:
-            gfpgan_reference: الصورة الأصلية المحسّنة بـ GFPGAN (لنقل تفاصيل الحواف)
+            gfpgan_reference: الصورة الأصلية المحسّنة بـ GFPGAN (يُستخدم للحجم فقط)
             sharpen_amount: قوة التشحذ (0.5-0.8 موصى به)
             detail_strength: قوة نقل التفاصيل من المرجع (0.3-0.5)
+                            ⚠️ تم تعطيله افتراضياً (0.0) لأنه يسبب هالات بيضاء
+                            عند حدود الشفايف. التشحذ edge-aware يكفي.
             clahe_clip: حد الـ CLAHE للـ contrast المحلي
             edge_only: True = تشحذ على حواف الشفايف بس (احترافي)
                       False = تشحذ على كل منطقة الشفايف
@@ -78,12 +80,25 @@ class ProLipEnhancer:
             self._prepare_reference(gfpgan_reference)
 
     def _prepare_reference(self, ref_img: np.ndarray):
-        """يحضّر طبقة التفاصيل من مرجع GFPGAN."""
+        """يحضّر طبقة التفاصيل من مرجع GFPGAN.
+
+        مهم: نقوم بـ soft-compress للقيم المتطرفة لتجنب الهالات البيضاء
+        عند حدود الشفايف (حيث التباين عالي = تفاصيل كبيرة).
+        """
         # High-frequency = original - blurred
         blurred = cv2.GaussianBlur(ref_img.astype(np.float32), (0, 0), sigmaX=2.0)
-        self.ref_detail = ref_img.astype(np.float32) - blurred
+        detail = ref_img.astype(np.float32) - blurred
+
+        # ⚠️ soft-compress للقيم المتطرفة (tanh-like)
+        # عند حدود الشفايف (جلد فاتح vs شفايف داكنة) الـ detail بيكون كبير جداً
+        # (مثلاً ±80)، وإضافة ده بيعمل هالة بيضاء.
+        # الحل: نضغط القيم لـ حد أقصى ~15 per channel.
+        threshold = 15.0
+        detail = threshold * np.tanh(detail / threshold)
+
+        self.ref_detail = detail
         self.ref_shape = ref_img.shape[:2]
-        print(f"[ProLip] Reference detail layer prepared (shape={self.ref_shape})")
+        print(f"[ProLip] Reference detail layer prepared (shape={self.ref_shape}, compressed)")
 
     def _get_lip_mask(self, landmarks, img_h: int, img_w: int,
                       dilation: int = 2) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:

@@ -114,6 +114,11 @@ class ProfessionalEnhancer:
             # 4. استخراج طبقة التفاصيل من الصورة المحسّنة
             self.source_detail = self._extract_detail_layer(image)
 
+            # 5. ⚠️ صفّر التفاصيل بالقرب من الشفايف لتجنب الهالات البيضاء
+            # الـ detail عند حدود الشفايف بيكون كبير (تباين عالي)، وإضافته
+            # بيعمل هالة بيضاء. صفّره في منطقة أوسع حول الشفايف.
+            self._zero_detail_near_lips(landmarks, image.shape[:2])
+
         except Exception as e:
             print(f"[ProEnhancer] Reference preparation error: {e}")
             import traceback
@@ -164,10 +169,42 @@ class ProfessionalEnhancer:
 
         self.skin_mask = mask
 
+    def _zero_detail_near_lips(self, landmarks, img_shape):
+        """يصفّر طبقة التفاصيل في منطقة واسعة حول الشفايف.
+
+        هذا يمنع الهالات البيضاء عند حدود الشفايف، لأن الـ detail هناك
+        بيكون كبير جداً (تباين عالي بين الجلد الفاتح والشفايف الداكنة).
+        """
+        if self.source_detail is None:
+            return
+        h, w = img_shape
+        fx1, fy1, fx2, fy2 = self.face_bbox
+        fh, fw = fy2 - fy1, fx2 - fx1
+
+        # بناء mask للمنطقة حول الشفايف (أوسع من الشفايف نفسها)
+        lip_pts = np.array([(landmarks[i].x * w, landmarks[i].y * h) for i in ALL_LIPS])
+        lip_local = lip_pts.astype(np.int32) - np.array([fx1, fy1])
+
+        # mask محلية بـ نفس حجم الـ detail
+        zero_mask = np.zeros((fh, fw), dtype=np.float32)
+        cv2.fillConvexPoly(zero_mask, lip_local, 1.0)
+
+        # وسّع المنطقة بـ 25px عشان نلغي التفاصيل في الجلد المحيط بالشفايف
+        zero_mask = cv2.dilate(zero_mask, np.ones((25, 25), np.uint8), iterations=2)
+
+        # feather عشان الانتقال يكون ناعم
+        zero_mask = cv2.GaussianBlur(zero_mask, (31, 31), 0)
+
+        # اضرب التفاصيل في (1 - zero_mask) → يصفّرها حول الشفايف
+        self.source_detail = self.source_detail * (1.0 - zero_mask[:, :, np.newaxis])
+
     def _extract_detail_layer(self, image: np.ndarray) -> np.ndarray:
         """
         يستخرج طبقة التفاصيل (high-frequency) من الصورة.
         detail = original - blur(original)
+
+        مهم: نقوم بـ soft-compress للقيم المتطرفة لتجنب الهالات البيضاء
+        عند حدود الشفايف (حيث التباين عالي = تفاصيل كبيرة).
         """
         fx1, fy1, fx2, fy2 = self.face_bbox
         face_region = image[fy1:fy2, fx1:fx2].astype(np.float32)
@@ -177,6 +214,14 @@ class ProfessionalEnhancer:
 
         # التفاصيل = الأصلي - المبهر
         detail = face_region - blurred
+
+        # ⚠️ مهم: soft-compress للقيم المتطرفة
+        # عند حدود الشفايف (جلد فاتح vs شفايف داكنة) الـ detail بيكون كبير جداً
+        # (مثلاً ±80)، وإضافة ده بـ strength=0.7 بتعمل هالة بيضاء.
+        # الحل: نضغط القيم فوق threshold لـ حد أقصى.
+        # tanh-like compression: detail' = threshold * tanh(detail / threshold)
+        threshold = 18.0  # caps detail magnitude at ~18 per channel
+        detail = threshold * np.tanh(detail / threshold)
 
         return detail
 
