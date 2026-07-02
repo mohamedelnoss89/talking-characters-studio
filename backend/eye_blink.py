@@ -1,30 +1,58 @@
 """
-Eye Blink Post-Processing Module (v2 - Professional)
+Eye Blink Post-Processing Module (v3 - Professional)
 =====================================================
 يضيف رمش طبيعي للعين على إطارات Wav2Lip الناتجة.
 
-الاستراتيجية v2 (احترافية):
-1. كشف معالم الوجه (478 نقطة) باستخدام MediaPipe Face Mesh.
-2. تحديد منطقة كل عين + الجفن + الحاجب.
-3. تخطيط أوقات الرمش عشوائياً.
-4. لكل إطار داخل فترة رمش:
-   a. SKIN STRETCH: الجفن العلوي بيمتد للأسفل يغطي العين (ننسخ الجلد من فوق
-      العين بطريقة compression، بحيث الجلد العلوي يصير متدلياً على العين).
-      هذا يعطي مظهر جفن مغلق بجلد فعلي.
-   b. EYELID SHADOW: نضيف ظل خفيف تحت خط الجفن العلوي (اللي نزل) علشان
-      يعطي عمق ثلاثي الأبعاد.
-   c. LASH LINE: نرسم خط رفيع داكن عند خط إغلاق الجفن (مثل خط الرموش).
-   d. ALPHA BLEND: ندمج النتيجة بالتدريج (Gaussian feather) مع الأصلي.
-   e. BROW DROP: الحاجب بينزل شوية مع الرمش (حركة طبيعية مصاحبة).
+الاستراتيجية v3 (احترافية - جديدة):
+المشكلة في v2: كان بيحاول يعمل الجفن المغلق بإعادة استخدام بكسلات العين
+نفسها (iris + sclera) عن طريق warp. النتيجة كانت "smear" مش جفن فعلي.
 
-النتيجة: عيون ترمش بشكل واقعي واحترافي فوق فيديو Wav2Lip.
+الحل في v3: نستخدم **جلد الجفن العلوي الفعلي** (المنطقة بين الحاجب والعين)
+ونمده ليغطي العين. هذا يعطي مظهر جفن مغلق بجلد فعلي.
+
+الخطوات لكل إطار داخل فترة رمش:
+1. EYELID SKIN SAMPLING: نأخذ جلد الجفن العلوي (من تحت الحاجب لفوق العين)
+   ونمدّه للأسفل ليغطي العين بـ scale渐进ي حسب blink_factor.
+2. CREASE LINE: نرسم خط الجفن العلوي (eyelid crease) - خط داكن رفيع عند
+   الحافة العلوية للجلد النازل.
+3. SUB-CREASE SHADOW: ظل خفيف تحت خط الجفن لإعطاء عمق.
+4. LASH LINE: خط الرموش السفلي عند حافة إغلاق الجفن (يظهر عند الإغلاق الكامل).
+5. ALMOND ALPHA MASK: قناع على شكل اللوزة (almond) للدمج - الوسط يغلق أولاً،
+   الزوايا تبقى مفتوحة أطول (طبيعي).
+6. BROW DROP: الحاجب بينزل شوية مع الرمش (حركة طبيعية مصاحبة).
+
+محسّنات v3 إضافية:
+- Micro-saccades: حركات عين صغيرة (1-2px) بين الرمشات لإضفاء الحيوية.
+- Variable blink completeness: بعض الرمشات كاملة (100%)، أخرى جزئية (70%).
+- Double-blinks: أحياناً رمشتين متتاليتين سريعتين.
+- Temporal smoothing: تنعيم blink_factor عبر الإطارات لمنع الـ jitter.
 """
 
 import os
 import cv2
 import numpy as np
-import mediapipe as mp
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
+
+# mediapipe 0.10+ has only the Tasks API (no legacy solutions API).
+# We use FaceLandmarker from mediapipe.tasks.python.vision.
+try:
+    import mediapipe as mp
+    from mediapipe.tasks.python import vision as mp_vision
+    from mediapipe.tasks.python.core.base_options import BaseOptions
+    MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    MEDIAPIPE_AVAILABLE = False
+    mp = None
+    mp_vision = None
+    BaseOptions = None
+    print("[eye_blink] WARNING: mediapipe.tasks not available, blink disabled")
+
+# Path to the face_landmarker.task model file (478 landmarks with refine)
+_FACE_LANDMARKER_PATH = os.environ.get(
+    'FACE_LANDMARKER_PATH',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 '..', 'public', 'models', 'face_landmarker.task')
+)
 
 
 # =============================================================================
@@ -35,10 +63,22 @@ LEFT_EYE_INDICES = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159
 # العين اليمنى
 RIGHT_EYE_INDICES = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
 
-# الحاجب الأيسر (لإضافة حركة الحاجب)
+# الحاجب الأيسر
 LEFT_BROW_INDICES = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46]
 # الحاجب الأيمن
 RIGHT_BROW_INDICES = [336, 296, 334, 293, 300, 276, 283, 282, 295, 285]
+
+# الزاوية الخارجية للعين (outer corner) - تبقى مفتوحة أطول في الرمش الطبيعي
+LEFT_OUTER_CORNER = 33  # زاوية خارجية (يمين الوجه)
+LEFT_INNER_CORNER = 133  # زاوية داخلية (عند الأنف)
+RIGHT_OUTER_CORNER = 263
+RIGHT_INNER_CORNER = 362
+
+# أعلى نقطة في العين (top center) - أهم نقطة لقياس ارتفاع الجفن
+LEFT_EYE_TOP = 159
+RIGHT_EYE_TOP = 386
+LEFT_EYE_BOTTOM = 145
+RIGHT_EYE_BOTTOM = 374
 
 
 def get_eye_geometry(landmarks, eye_indices, brow_indices, img_w, img_h):
@@ -51,6 +91,7 @@ def get_eye_geometry(landmarks, eye_indices, brow_indices, img_w, img_h):
         - brow_top_y: أعلى نقطة في الحاجب (relative)
         - brow_bot_y: أسفل نقطة في الحاجب
         - skin_top_y: أعلى نقطة للجلد فوق العين (نأخذ منها الجفن)
+        - eye_corner_inner_y, eye_corner_outer_y: زوايا العين (يبقون مفتوحين أطول)
     """
     pts_eye = np.array([(landmarks[i].x * img_w, landmarks[i].y * img_h) for i in eye_indices])
     pts_brow = np.array([(landmarks[i].x * img_w, landmarks[i].y * img_h) for i in brow_indices])
@@ -82,7 +123,7 @@ def get_eye_geometry(landmarks, eye_indices, brow_indices, img_w, img_h):
     brow_top_y = brow_y_min - by_min
     brow_bot_y = brow_y_max - by_min
 
-    # المنطقة بين الحاجب والعين = جلد الجفن العلوي
+    # المنطقة بين الحاجب والعين = جلد الجفن العلوي (هذا اللي هنمده)
     skin_top_y = brow_bot_y  # الجلد يبدأ من تحت الحاجب
     skin_bot_y = eye_top_y   # وينتهي عند أعلى العين
 
@@ -97,184 +138,278 @@ def get_eye_geometry(landmarks, eye_indices, brow_indices, img_w, img_h):
         'skin_bot_y': skin_bot_y,
         'eye_h': eye_h,
         'eye_w': eye_w,
+        'eye_x_min': eye_x_min - bx_min,
+        'eye_x_max': eye_x_max - bx_min,
     }
 
 
 # =============================================================================
-# خوارزمية الرمش المحسّنة
+# خوارزمية الرمش v3 - استخدم جلد الجفن العلوي الفعلي
 # =============================================================================
 
-def build_skin_stretch_warp(region_h: int, region_w: int,
-                             geo: dict,
-                             blink_factor: float) -> Tuple[np.ndarray, np.ndarray]:
+def sample_upper_eyelid_skin(region: np.ndarray, geo: dict) -> Optional[np.ndarray]:
     """
-    يبني خريطة warp (v3) بحيث:
-      1. الجفن العلوي بيمتد للأسفل ليغطي العين تدريجياً.
-      2. العين تنضغط أفقياً قليلاً عند الإغلاق (طبيعي - الجفون بتقرب حواف العين).
-      3. هناك falloff ناعم عند حواف العين لتجنب الحواف الحادة.
+    يأخذ عينة من جلد الجفن العلوي (المنطقة بين الحاجب وأعلى العين).
+    هذه العينة ستُستخدم لتغطية العين أثناء الرمش.
 
-    عند blink_factor=1:
-      - كل بكسل في العين يأخذ قيمته من أعلى العين (eye_top_y).
-      - العين تنضغط أفقياً بنسبة ~12% (الحواف بتقرب للداخل).
-      - يعني الجلد العلوي بيتمدد ويغطي العين بالكامل.
-
-    عند blink_factor=0: لا تغيير.
+    Returns: صورة الجلد بحجم يساوي ارتفاع العين (eye_h) وعرض العين (eye_w)
+             أو None لو مش متاح.
     """
-    map_x, map_y = np.meshgrid(np.arange(region_w, dtype=np.float32),
-                               np.arange(region_h, dtype=np.float32))
+    h, w = region.shape[:2]
+    skin_top = int(geo['skin_top_y'])  # تحت الحاجب
+    skin_bot = int(geo['skin_bot_y'])  # فوق العين
+    eye_h = max(1, int(geo['eye_h']))
+    eye_w = int(geo['eye_w'])
+    eye_x_min = int(geo['eye_x_min'])
+    eye_x_max = int(geo['eye_x_max'])
 
-    eye_top_y = geo['eye_top_y']
-    eye_bot_y = geo['eye_bot_y']
-    eye_center_y = (eye_top_y + eye_bot_y) / 2.0
-    eye_h = max(1.0, eye_bot_y - eye_top_y)
-    eye_w = geo.get('eye_w', region_w * 0.6)
-    eye_cx = region_w / 2.0
-    b = float(blink_factor)
+    # نحتاج منطقة جلد بارتفاع على الأقل eye_h * 0.5
+    skin_h = skin_bot - skin_top
+    if skin_h < 3:
+        return None
 
-    src_y = map_y.copy().astype(np.float32)
-    src_x = map_x.copy().astype(np.float32)
+    # نأخذ الجلد بعرض العين + padding بسيط
+    pad = max(2, int(eye_w * 0.1))
+    sx1 = max(0, eye_x_min - pad)
+    sx2 = min(w, eye_x_max + pad)
+    skin_strip = region[skin_top:skin_bot, sx1:sx2].copy()
 
-    # ===== 1. رأسي: الجفن العلوي يغطي العين =====
-    eye_mask = (map_y >= eye_top_y) & (map_y <= eye_bot_y)
-    if eye_mask.any():
-        y_e = map_y[eye_mask]
-        # الجفن العلوي ينزل: البكسل العلوي يظل ثابت، البكسل السفلي يصير من الأعلى
-        # مع falloff ناعم (cosine) عند الحواف العلوية والسفلية
-        rel = (y_e - eye_top_y) / eye_h  # 0 في الأعلى، 1 في الأسفل
-        # falloff: ناعم عند الحواف (لازم يبدأ وينتهي بنعومة)
-        falloff = 0.5 - 0.5 * np.cos(np.float32(np.pi) * rel)  # 0→1→smooth
-        src_y[eye_mask] = (eye_top_y + (y_e - eye_top_y) * (1.0 - b * falloff)).astype(np.float32)
+    if skin_strip.size == 0 or skin_strip.shape[0] < 2 or skin_strip.shape[1] < 2:
+        return None
 
-    # ===== 2. أفقي: العين تنضغط أفقياً عند الإغلاق =====
-    # معامل الانضغاط: حتى 12% عند blink_factor=1
-    compress_ratio = 0.12 * b
-    if compress_ratio > 0.001:
-        # وزن الانضغاط: أقوى في وسط العين (y = eye_center_y)، يقل كلما ابتعدنا
-        y_dist = np.abs(map_y - eye_center_y) / (eye_h * 1.5)
-        y_weight = np.exp(-(y_dist ** 2) * 2.0)  # Gaussian around eye center vertically
-        # وزن أفقي: أقوى عند الحواف (الحواف بتقرب للداخل)
-        x_dist_from_center = np.abs(map_x - eye_cx) / (eye_w * 0.6 + 1)
-        x_weight = np.clip(x_dist_from_center, 0, 1)
-        # تطبيق الانضغاط
-        shift = compress_ratio * (map_x - eye_cx) * y_weight * x_weight
-        src_x = (src_x - shift).astype(np.float32)
+    # نمد الجلد ليكون بنفس ارتفاع العين (eye_h)
+    # هذا يعطينا "جلد جفن" جاهز للتغطية
+    target_h = max(eye_h, 4)
+    try:
+        skin_stretched = cv2.resize(skin_strip, (sx2 - sx1, target_h),
+                                     interpolation=cv2.INTER_LINEAR)
+    except cv2.error:
+        return None
 
-    return src_x.astype(np.float32), src_y.astype(np.float32)
+    return skin_stretched
 
 
-def add_iris_darken(region: np.ndarray, geo: dict, blink_factor: float) -> np.ndarray:
+def build_closed_eye_overlay(region: np.ndarray, geo: dict,
+                              blink_factor: float,
+                              completeness: float = 1.0) -> np.ndarray:
     """
-    يُخفي القزحية والحدقة تدريجياً مع إغلاق العين.
-    عند الإغلاق الجزئي، العين تفقد لون القزحية تدريجياً ويظهر الجفن الداكن.
-    هذا يضيف واقعية كبيرة (القزحية لونها بيختفي تحت الجفن).
+    v3: يبني طبقة "العين المغلقة" باستخدام جلد الجفن العلوي الفعلي.
+
+    الاستراتيجية:
+    - نأخذ جلد الجفن العلوي (skin between brow and eye)
+    - نمدّه للأسفل ليغطي العين بمقدار (blink_factor * completeness)
+    - نضيف خط الجفن (crease line) أعلى الجلد النازل
+    - نضيف ظل أسفل خط الجفن
+    - نضيف خط الرموش السفلي (lash line) عند الحافة السفلية
+
+    Returns: منطقة العين بعد تطبيق التغطية (قبل alpha blend)
     """
-    if blink_factor < 0.15:
+    if blink_factor < 0.02:
         return region
 
     h, w = region.shape[:2]
-    eye_top_y = geo['eye_top_y']
-    eye_bot_y = geo['eye_bot_y']
-    eye_center_y = (eye_top_y + eye_bot_y) / 2.0
+    eye_top_y = int(geo['eye_top_y'])
+    eye_bot_y = int(geo['eye_bot_y'])
     eye_h = max(1, eye_bot_y - eye_top_y)
-    eye_w = geo.get('eye_w', w * 0.6)
-    cx = w // 2
+    eye_w = int(geo['eye_w'])
+    eye_x_min = int(geo['eye_x_min'])
+    eye_x_max = int(geo['eye_x_max'])
+    cx = (eye_x_min + eye_x_max) // 2
 
-    # دائرة القزحية: في وسط العين، نصف قطرها ~ 35% من عرض العين
-    iris_r = max(2, int(eye_w * 0.32))
-    iris_y = int(eye_center_y)
+    # 1. خذ جلد الجفن العلوي
+    skin = sample_upper_eyelid_skin(region, geo)
+    if skin is None:
+        # fallback: استخدم بكسلات من أعلى العين
+        skin_h = max(2, eye_h // 2)
+        skin = region[max(0, eye_top_y - skin_h):eye_top_y,
+                      max(0, eye_x_min - 2):min(w, eye_x_max + 2)].copy()
+        if skin.size == 0:
+            return region
 
-    # شدة الإخفاء تزيد مع blink_factor
-    darken_strength = 0.45 * blink_factor  # حتى 45% إظلام عند الإغلاق الكامل
-
-    # إنشاء mask دائري للقزحية
-    yy, xx = np.ogrid[:h, :w]
-    dist = np.sqrt((xx - cx) ** 2 + (yy - iris_y) ** 2)
-    iris_mask = np.clip(1.0 - dist / iris_r, 0, 1) ** 1.5
-    iris_mask = iris_mask * darken_strength
-
-    # تطبيق: تصغير الإضاءة (multiply)
-    result = region.astype(np.float32)
-    iris_mask_3ch = iris_mask[:, :, np.newaxis]
-    result = result * (1.0 - iris_mask_3ch * 0.6)  # إظلام 60% من القزحية
-
-    return np.clip(result, 0, 255).astype(np.uint8)
-
-
-def add_eyelid_shadow(region: np.ndarray, geo: dict, blink_factor: float) -> np.ndarray:
-    """
-    يضيف ظل خفيف تحت خط الجفن العلوي (الذي نزل) لإعطاء عمق.
-    الظل يكون أقوى كلما زاد blink_factor.
-    """
-    if blink_factor < 0.05:
+    # 2. احسب مقدار التغطية
+    # عند blink_factor=1 و completeness=1: الجلد يغطي العين بالكامل
+    # عند completeness=0.7: الجلد يغطي 70% من العين (partial blink)
+    cover_ratio = blink_factor * completeness
+    cover_h = int(eye_h * cover_ratio)
+    if cover_h < 1:
         return region
 
-    h, w = region.shape[:2]
-    eye_top_y = geo['eye_top_y']
-    eye_bot_y = geo['eye_bot_y']
-    eye_h = max(1, eye_bot_y - eye_top_y)
-
-    # موضع الظل: تحت الجفن العلوي مباشرة (الذي نزل لمستوى eye_top_y + (1-b)*eye_h)
-    lid_pos = eye_top_y + (1 - blink_factor) * eye_h * 0.5  # موضع الجفن المغلق تقريباً
-    shadow_top = int(lid_pos)
-    shadow_bot = min(h, int(lid_pos + eye_h * 0.3 * blink_factor))
-
-    if shadow_bot <= shadow_top:
+    # 3. مدّ الجلد ليغطي المسافة المطلوبة
+    try:
+        skin_cover = cv2.resize(skin, (skin.shape[1], cover_h),
+                                 interpolation=cv2.INTER_LINEAR)
+    except cv2.error:
         return region
 
-    # ظل gradient: أقوى في الأعلى، يختفي في الأسفل
-    shadow_h = shadow_bot - shadow_top
-    gradient = np.linspace(0.25 * blink_factor, 0.0, shadow_h).reshape(-1, 1, 1)
-
-    result = region.copy().astype(np.float32)
-    # الظل يكون في وسط العين أفقياً (عند القزحية)
-    cx = w // 2
-    eye_w = geo.get('eye_w', w * 0.6)
-    half_w = int(eye_w * 0.4)
-    x1 = max(0, cx - half_w)
-    x2 = min(w, cx + half_w)
-
-    # تطبيق gradient أفقي (Gaussian) + رأسي (linear)
-    if x2 > x1:
-        h_gradient = np.exp(-((np.arange(x2 - x1) - (x2 - x1) / 2) / (half_w * 0.7)) ** 2)
-        h_gradient = h_gradient.reshape(1, -1, 1)
-        result[shadow_top:shadow_bot, x1:x2] -= gradient * h_gradient * 80.0
-
-    return np.clip(result, 0, 255).astype(np.uint8)
-
-
-def add_lash_line(region: np.ndarray, geo: dict, blink_factor: float) -> np.ndarray:
-    """
-    يرسم خط رموش رفيع داكن عند خط إغلاق الجفن (للجفن العلوي الذي نزل).
-    """
-    if blink_factor < 0.4:
-        return region  # الخط يظهر فقط عند الإغلاق الجزئي-الكامل
-
-    h, w = region.shape[:2]
-    eye_top_y = geo['eye_top_y']
-    eye_bot_y = geo['eye_bot_y']
-    eye_h = max(1, eye_bot_y - eye_top_y)
-
-    # موضع خط الرموش
-    lid_y = int(eye_top_y + (1 - blink_factor) * eye_h * 0.5)
-    if lid_y < 0 or lid_y >= h:
-        return region
-
+    # 4. ضع الجلد فوق العين
     result = region.copy()
-    cx = w // 2
-    eye_w = geo.get('eye_w', w * 0.6)
-    half_w = int(eye_w * 0.45)
-    x1 = max(0, cx - half_w)
-    x2 = min(w, cx + half_w)
+    skin_x1 = max(0, eye_x_min - 2)
+    skin_x2 = min(w, skin_x1 + skin_cover.shape[1])
+    skin_y1 = eye_top_y  # يبدأ من أعلى العين وينزل
+    skin_y2 = min(h, skin_y1 + cover_h)
 
-    # شدة الخط تزيد مع blink_factor
-    darkness = int(80 * blink_factor)
-    # الخط يكون أكثر كثافة في الوسط (عند القزحية)
-    for x in range(x1, x2):
-        dist_from_center = abs(x - cx) / max(1, half_w)
-        intensity = darkness * (1 - dist_from_center ** 2)
-        result[lid_y, x] = np.clip(result[lid_y, x].astype(np.int32) - int(intensity), 0, 255)
-        if lid_y + 1 < h:
-            result[lid_y + 1, x] = np.clip(result[lid_y + 1, x].astype(np.int32) - int(intensity * 0.5), 0, 255)
+    actual_h = skin_y2 - skin_y1
+    actual_w = skin_x2 - skin_x1
+    if actual_h > 0 and actual_w > 0:
+        # عدّل الحجم لو فيه حدود
+        if skin_cover.shape != (actual_h, actual_w, skin.shape[2] if skin.ndim == 3 else 1):
+            skin_cover = cv2.resize(skin, (actual_w, actual_h),
+                                     interpolation=cv2.INTER_LINEAR)
+        result[skin_y1:skin_y2, skin_x1:skin_x2] = skin_cover
+
+    # 5. أضف خط الجفن (crease line) - خط داكن رفيع أعلى الجلد النازل
+    if cover_h > 2:
+        crease_y = eye_top_y  # أعلى نقطة في الجلد النازل
+        if 0 <= crease_y < h:
+            crease_darkness = int(40 * blink_factor)
+            # الخط يكون أقوى في الوسط (عند القزحية)
+            for x in range(skin_x1, skin_x2):
+                dist_from_center = abs(x - cx) / max(1, (skin_x2 - skin_x1) / 2)
+                intensity = crease_darkness * (1 - dist_from_center ** 2 * 0.5)
+                result[crease_y, x] = np.clip(
+                    result[crease_y, x].astype(np.int32) - int(intensity), 0, 255)
+                if crease_y + 1 < h:
+                    result[crease_y + 1, x] = np.clip(
+                        result[crease_y + 1, x].astype(np.int32) - int(intensity * 0.4), 0, 255)
+
+    # 6. أضف ظل أسفل خط الجفن (sub-crease shadow) - يعطي عمق
+    if cover_h > 4 and blink_factor > 0.3:
+        shadow_top = eye_top_y + 1
+        shadow_bot = min(h, eye_top_y + max(2, cover_h // 3))
+        if shadow_bot > shadow_top:
+            shadow_h = shadow_bot - shadow_top
+            # ظل gradient: أقوى في الأعلى، يختفي في الأسفل
+            gradient = np.linspace(0.3 * blink_factor, 0.0, shadow_h).reshape(-1, 1, 1)
+            cx_local = cx - skin_x1
+            half_w = (skin_x2 - skin_x1) // 2
+            if half_w > 0:
+                h_gradient = np.exp(-((np.arange(skin_x2 - skin_x1) - cx_local) / (half_w * 0.8)) ** 2)
+                h_gradient = h_gradient.reshape(1, -1, 1)
+                result[shadow_top:shadow_bot, skin_x1:skin_x2] = np.clip(
+                    result[shadow_top:shadow_bot, skin_x1:skin_x2].astype(np.float32) -
+                    gradient * h_gradient * 50.0, 0, 255).astype(np.uint8)
+
+    # 7. أضف خط الرموش السفلي (lash line) عند الإغلاق الكامل
+    if blink_factor > 0.7 and completeness > 0.8:
+        lash_y = eye_top_y + cover_h - 1
+        if 0 <= lash_y < h:
+            lash_darkness = int(60 * blink_factor)
+            for x in range(skin_x1, skin_x2):
+                dist_from_center = abs(x - cx) / max(1, (skin_x2 - skin_x1) / 2)
+                intensity = lash_darkness * (1 - dist_from_center ** 2 * 0.3)
+                result[lash_y, x] = np.clip(
+                    result[lash_y, x].astype(np.int32) - int(intensity), 0, 255)
+
+    return result
+
+
+def build_almond_alpha_mask(h: int, w: int, geo: dict,
+                             blink_factor: float) -> np.ndarray:
+    """
+    يبني قناع alpha على شكل اللوزة (almond shape) للدمج.
+    العين الطبيعية عند الرمش تأخذ شكل اللوزة:
+    - الوسط يغلق أولاً وبالكامل
+    - الزوايا (الداخلية والخارجية) تبقى مفتوحة أطول
+    """
+    alpha = np.zeros((h, w), dtype=np.float32)
+    eye_top_y = geo['eye_top_y']
+    eye_bot_y = geo['eye_bot_y']
+    eye_h = max(1, eye_bot_y - eye_top_y)
+    eye_w = geo.get('eye_w', w * 0.6)
+    eye_x_min = geo['eye_x_min']
+    eye_x_max = geo['eye_x_max']
+    cx = (eye_x_min + eye_x_max) / 2.0
+
+    # المنطقة: من eye_top_y إلى eye_bot_y (ارتفاع العين)
+    # شكل اللوزة: البيضاوي اللي يكون أعرض في الوسط وضيق في الأطراف
+    yy, xx = np.ogrid[:h, :w]
+
+    # المسافة الأفقية من المركز (مقيسة بنصف عرض العين)
+    x_dist = np.abs(xx - cx) / (eye_w * 0.5 + 1)
+    # المسافة الرأسية من مركز العين (مقيسة بنصف ارتفاع العين)
+    y_dist = np.abs(yy - (eye_top_y + eye_bot_y) / 2) / (eye_h * 0.5 + 1)
+
+    # شكل اللوزة: قطع ناقص مع تعزيز في الوسط
+    # alpha = 1 داخل القطع الناقص، 0 خارجه
+    ellipse_dist = (x_dist ** 2 + y_dist ** 2) ** 0.5
+    almond = np.clip(1.0 - ellipse_dist, 0, 1) ** 0.5
+
+    # قلل alpha عند الزوايا (inner و outer corners) - الزوايا تبقى مفتوحة أطول
+    corner_factor = np.clip(x_dist - 0.85, 0, 1) ** 2
+    almond = almond * (1.0 - corner_factor * 0.3)
+
+    alpha = almond * blink_factor
+    alpha = np.clip(alpha, 0, 1)
+
+    # Gaussian blur للـ alpha لتنعيم الحواف (blur أصغر للحفاظ على قوة المركز)
+    blur_size = max(3, int(eye_h * 0.4))
+    if blur_size % 2 == 0:
+        blur_size += 1
+    alpha = cv2.GaussianBlur(alpha, (blur_size, blur_size), 0)
+    # boost أقوى بعد الـ blur علشان المركز يفضل قوي
+    alpha = np.clip(alpha * 1.6, 0, 1)
+
+    return alpha
+
+
+def apply_micro_saccade(region: np.ndarray, geo: dict,
+                         saccade_dx: float, saccade_dy: float) -> np.ndarray:
+    """
+    يطبق حركة عين صغيرة (micro-saccade) بقدر 1-2 بكسل.
+    يحرك فقط منطقة القزحية (iris) وليس الجلد المحيط.
+    """
+    if abs(saccade_dx) < 0.1 and abs(saccade_dy) < 0.1:
+        return region
+
+    h, w = region.shape[:2]
+    eye_top_y = int(geo['eye_top_y'])
+    eye_bot_y = int(geo['eye_bot_y'])
+    eye_h = max(1, eye_bot_y - eye_top_y)
+    eye_w = int(geo['eye_w'])
+    cx = (int(geo['eye_x_min']) + int(geo['eye_x_max'])) // 2
+
+    # منطقة القزحية: دائرة في وسط العين
+    iris_r = max(2, int(eye_w * 0.32))
+    iris_y = (eye_top_y + eye_bot_y) // 2
+
+    # إذا القزحية خارج المنطقة، تجاهل
+    if iris_y - iris_r < 0 or iris_y + iris_r > h:
+        return region
+    if cx - iris_r < 0 or cx + iris_r > w:
+        return region
+
+    # خذ منطقة القزحية
+    iris_x1 = max(0, cx - iris_r - 1)
+    iris_x2 = min(w, cx + iris_r + 1)
+    iris_y1 = max(0, iris_y - iris_r - 1)
+    iris_y2 = min(h, iris_y + iris_r + 1)
+    iris_region = region[iris_y1:iris_y2, iris_x1:iris_x2].copy()
+
+    # حرك القزحية بـ sub-pixel precision (warpAffine)
+    dx = saccade_dx
+    dy = saccade_dy
+    M = np.float32([[1, 0, dx], [0, 1, dy]])
+    shifted = cv2.warpAffine(iris_region, M, (iris_region.shape[1], iris_region.shape[0]),
+                              flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_REFLECT)
+
+    # قناع دائري للقزحية (للدمج الناعم)
+    ih, iw = iris_region.shape[:2]
+    yy, xx = np.ogrid[:ih, :iw]
+    mask_dist = np.sqrt((xx - iw / 2) ** 2 + (yy - ih / 2) ** 2)
+    iris_mask = np.clip(1.0 - mask_dist / (iris_r + 1), 0, 1) ** 1.2
+    # Gaussian blur للقناع
+    blur_size = max(3, int(iris_r * 0.4))
+    if blur_size % 2 == 0:
+        blur_size += 1
+    iris_mask = cv2.GaussianBlur(iris_mask, (blur_size, blur_size), 0)
+    iris_mask_3ch = iris_mask[:, :, np.newaxis]
+
+    # دمج
+    result = region.copy()
+    blended = (iris_region.astype(np.float32) * (1 - iris_mask_3ch) +
+               shifted.astype(np.float32) * iris_mask_3ch).astype(np.uint8)
+    result[iris_y1:iris_y2, iris_x1:iris_x2] = blended
 
     return result
 
@@ -321,47 +456,14 @@ def apply_brow_drop(region: np.ndarray, geo: dict, blink_factor: float) -> np.nd
     return result
 
 
-def alpha_blend_warp(original: np.ndarray, warped: np.ndarray,
-                     geo: dict, blink_factor: float) -> np.ndarray:
+def alpha_blend(original: np.ndarray, overlay: np.ndarray,
+                alpha: np.ndarray) -> np.ndarray:
     """
-    يدمج الـ warped مع الأصلي باستخدام alpha mask مع Gaussian feathering ناعم.
-    v3: استبدلنا feather اليدوي بـ Gaussian blur لنتائج أنعم بدون حواف مرئية.
+    يدمج الأصلي مع overlay باستخدام alpha mask.
     """
-    if blink_factor < 0.01:
-        return original
-
-    h, w = original.shape[:2]
-    eye_top_y = geo['eye_top_y']
-    eye_bot_y = geo['eye_bot_y']
-    eye_h = max(1, eye_bot_y - eye_top_y)
-    eye_w = geo.get('eye_w', w * 0.6)
-    cx = w // 2
-
-    # alpha mask: 1 داخل العين، 0 خارجها
-    alpha = np.zeros((h, w), dtype=np.float32)
-    inner_top = int(eye_top_y)
-    inner_bot = int(eye_bot_y)
-    if inner_bot > inner_top:
-        alpha[inner_top:inner_bot, :] = 1.0
-
-    # وزن أفقي: alpha أقوى في وسط العين، يقل كلما اقتربنا من الحواف الجانبية
-    # (الحواف الجانبية للعين لا تتحرك كثيراً في الرمش الطبيعي)
-    x_dist = np.abs(np.arange(w) - cx) / (eye_w * 0.55 + 1)
-    x_weight = np.clip(1.0 - x_dist, 0, 1) ** 0.6
-    alpha = alpha * x_weight[np.newaxis, :]
-
-    # Gaussian blur للـ alpha كله لتنعيم الحواف
-    blur_size = max(3, int(eye_h * 0.5))
-    if blur_size % 2 == 0:
-        blur_size += 1
-    alpha = cv2.GaussianBlur(alpha, (blur_size, blur_size), 0)
-
-    # ضرب blink_factor في الـ alpha
-    alpha = np.clip(alpha * blink_factor, 0, 1)
     alpha_3ch = alpha[:, :, np.newaxis]
-
     return (original.astype(np.float32) * (1 - alpha_3ch) +
-            warped.astype(np.float32) * alpha_3ch).astype(np.uint8)
+            overlay.astype(np.float32) * alpha_3ch).astype(np.uint8)
 
 
 # =============================================================================
@@ -369,36 +471,78 @@ def alpha_blend_warp(original: np.ndarray, warped: np.ndarray,
 # =============================================================================
 
 class BlinkProcessor:
-    """يعالج فيديو Wav2Lip ويضيف رمش العيون الاحترافي."""
+    """يعالج فيديو Wav2Lip ويضيف رمش العيون الاحترافي v3."""
 
     def __init__(self, static_image: Optional[np.ndarray] = None):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = None
+        self._landmarker = None
+        self._landmarker_initialized = False
         self.static_landmarks = None
-        self.static_geometries = None  # قاموس: 'left' / 'right' -> geometry
+        self.static_geometries: Optional[Dict[str, dict]] = None
+
+        # micro-saccade state
+        self._saccade_rng = np.random.default_rng(seed=42)
+        self._saccade_dx = 0.0
+        self._saccade_dy = 0.0
+        self._saccade_target_dx = 0.0
+        self._saccade_target_dy = 0.0
+        self._saccade_counter = 0
 
         if static_image is not None:
             self._detect_static_landmarks(static_image)
 
+    def _init_landmarker(self):
+        """يهيّئ FaceLandmarker مرة واحدة (lazy init)."""
+        if self._landmarker_initialized:
+            return
+        self._landmarker_initialized = True
+        if not MEDIAPIPE_AVAILABLE:
+            print("[BlinkProcessor] mediapipe not available")
+            return
+        if not os.path.exists(_FACE_LANDMARKER_PATH):
+            print(f"[BlinkProcessor] WARNING: face_landmarker.task not found at {_FACE_LANDMARKER_PATH}")
+            return
+        try:
+            options = mp_vision.FaceLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=_FACE_LANDMARKER_PATH),
+                running_mode=mp_vision.RunningMode.IMAGE,
+                num_faces=1,
+                min_face_detection_confidence=0.5,
+                min_face_presence_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+            self._landmarker = mp_vision.FaceLandmarker.create_from_options(options)
+            print(f"[BlinkProcessor] FaceLandmarker initialized (model: {_FACE_LANDMARKER_PATH})")
+        except Exception as e:
+            print(f"[BlinkProcessor] WARNING: failed to init FaceLandmarker: {e}")
+            self._landmarker = None
+
+    def _detect_landmarks(self, image: np.ndarray):
+        """يكشف المعالم باستخدام FaceLandmarker (Tasks API).
+        Returns: list of (x, y, z) normalized landmarks, or None."""
+        self._init_landmarker()
+        if self._landmarker is None:
+            return None
+        try:
+            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            result = self._landmarker.detect(mp_image)
+            if not result.face_landmarks:
+                return None
+            # face_landmarks[0] is a list of NormalizedLandmark objects with .x, .y, .z
+            return result.face_landmarks[0]
+        except Exception as e:
+            print(f"[BlinkProcessor] detect failed: {e}")
+            return None
+
     def _detect_static_landmarks(self, image: np.ndarray):
         """يكشف المعالم على الصورة الأصلية مرة واحدة."""
-        if self.face_mesh is None:
-            self.face_mesh = self.mp_face_mesh.FaceMesh(
-                static_image_mode=True,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.5
-            )
-
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb)
-
-        if results.multi_face_landmarks is None:
+        landmarks = self._detect_landmarks(image)
+        if landmarks is None:
             print("[BlinkProcessor] WARNING: No face detected in static image!")
             self.static_landmarks = None
             return
 
-        self.static_landmarks = results.multi_face_landmarks[0].landmark
+        self.static_landmarks = landmarks
         h, w = image.shape[:2]
 
         # احسب هندسة كل عين مرة واحدة
@@ -416,34 +560,38 @@ class BlinkProcessor:
                   f"box={g['box']}")
 
     def detect_landmarks_for_frame(self, frame: np.ndarray):
-        if self.face_mesh is None:
-            self.face_mesh = self.mp_face_mesh.FaceMesh(
-                static_image_mode=False,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.5
-            )
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb)
-        if results.multi_face_landmarks is None:
-            return None
-        return results.multi_face_landmarks[0].landmark
+        return self._detect_landmarks(frame)
 
     def close(self):
-        if self.face_mesh is not None:
-            self.face_mesh.close()
-            self.face_mesh = None
+        if self._landmarker is not None:
+            try:
+                self._landmarker.close()
+            except Exception:
+                pass
+            self._landmarker = None
+        self._landmarker_initialized = False
 
-    def process_frame(self, frame: np.ndarray, blink_factor: float) -> np.ndarray:
-        """يطبّق الرمش على إطار واحد."""
-        if blink_factor < 0.01:
-            return frame
+    def _update_saccade(self):
+        """يحدّث micro-saccade كل ~30 إطار (1.2 ثانية @ 25fps)."""
+        self._saccade_counter += 1
+        if self._saccade_counter >= 30:
+            self._saccade_counter = 0
+            # هدف جديد: حركة عشوائية صغيرة (±1.5 px)
+            self._saccade_target_dx = self._saccade_rng.uniform(-1.5, 1.5)
+            self._saccade_target_dy = self._saccade_rng.uniform(-0.8, 0.8)
+        # تحرك نحو الهدف ببطء (easing)
+        self._saccade_dx += (self._saccade_target_dx - self._saccade_dx) * 0.15
+        self._saccade_dy += (self._saccade_target_dy - self._saccade_dy) * 0.15
 
+    def process_frame(self, frame: np.ndarray, blink_factor: float,
+                       completeness: float = 1.0) -> np.ndarray:
+        """يطبّق الرمش على إطار واحد (v3)."""
         h, w = frame.shape[:2]
 
-        # لو الإطار صغير جداً (العين هتبقى أقل من 10 بكسل)، كبّره داخلياً
-        # لضمان جودة الرمش، وبعدين صغّر الناتج للحجم الأصلي
-        MIN_SIDE = 400
+        # لو الإطار صغير جداً، كبّره داخلياً
+        # العين تحتاج على الأقل ~15px ارتفاع عشان الرمش يكون واضح
+        # صور 250x230 (eye_h ~ 5px) نكبّرها لـ 800px (eye_h ~ 16px)
+        MIN_SIDE = 800
         upscale = False
         if min(h, w) < MIN_SIDE:
             scale = MIN_SIDE / min(h, w)
@@ -458,10 +606,9 @@ class BlinkProcessor:
         h_p, w_p = frame_proc.shape[:2]
 
         if self.static_geometries is not None:
-            # استخدم geometry ثابت (لكن الإطار مكبّر، فنحتاج نعيد الحساب)
-            # حل بسيط: نعيد كشف المعالم على الإطار المكبّر مرة واحدة
             if upscale and not hasattr(self, '_upscaled_landmarks'):
                 self._detect_static_landmarks(frame_proc)
+                self._upscaled_landmarks = True
             geometries = self.static_geometries
         else:
             landmarks = self.detect_landmarks_for_frame(frame_proc)
@@ -474,12 +621,19 @@ class BlinkProcessor:
 
         result = frame_proc.copy()
 
+        # تحديث micro-saccade (يتم حتى أثناء الرمش للحركة الطبيعية)
+        # لكن نخففها أثناء الرمش لتجنب تداخل الحركات
+        saccade_strength = max(0.0, 1.0 - blink_factor * 1.5)
+        self._update_saccade()
+        saccade_dx = self._saccade_dx * saccade_strength
+        saccade_dy = self._saccade_dy * saccade_strength
+
         for side, eye_indices in [('left', LEFT_EYE_INDICES), ('right', RIGHT_EYE_INDICES)]:
             try:
                 geo = geometries[side]
                 bx_min, by_min, bx_max, by_max = geo['box']
                 region = result[by_min:by_max, bx_min:bx_max].copy()
-                if region.size == 0 or region.shape[0] < 3 or region.shape[1] < 3:
+                if region.size == 0 or region.shape[0] < 5 or region.shape[1] < 5:
                     continue
 
                 # تأمين القيم داخل المنطقة
@@ -488,33 +642,33 @@ class BlinkProcessor:
                 geo_local['eye_top_y'] = max(0, min(region_h - 1, geo['eye_top_y']))
                 geo_local['eye_bot_y'] = max(geo_local['eye_top_y'] + 1,
                                               min(region_h - 1, geo['eye_bot_y']))
+                geo_local['eye_x_min'] = max(0, geo['eye_x_min'])
+                geo_local['eye_x_max'] = min(region.shape[1], geo['eye_x_max'])
 
-                # 1. Skin stretch warp (الجفن العلوي يمتد + انضغاط أفقي) - v3
-                map_x, map_y = build_skin_stretch_warp(
-                    region_h, region.shape[1], geo_local, blink_factor
-                )
-                warped = cv2.remap(region, map_x, map_y,
-                                   interpolation=cv2.INTER_LINEAR,
-                                   borderMode=cv2.BORDER_REFLECT)
+                # 1. طبّق micro-saccade على القزحية (قبل الرمش)
+                if saccade_strength > 0.05:
+                    region = apply_micro_saccade(region, geo_local, saccade_dx, saccade_dy)
 
-                # 2. إخفاء القزحية تدريجياً (v3)
-                warped = add_iris_darken(warped, geo_local, blink_factor)
-
-                # 3. ظل الجفن
-                warped = add_eyelid_shadow(warped, geo_local, blink_factor)
-
-                # 4. خط الرموش
-                warped = add_lash_line(warped, geo_local, blink_factor)
-
-                # 5. alpha blend مع الأصلي (Gaussian feather) - v3
-                blended = alpha_blend_warp(region, warped, geo_local, blink_factor)
-
-                # 6. حركة الحاجب
-                blended = apply_brow_drop(blended, geo_local, blink_factor)
-
-                result[by_min:by_max, bx_min:bx_max] = blended
+                # 2. لو فيه رمش، ابنِ طبقة العين المغلقة
+                if blink_factor > 0.02:
+                    overlay = build_closed_eye_overlay(
+                        region, geo_local, blink_factor, completeness
+                    )
+                    # 3. ابنِ قناع alpha على شكل اللوزة
+                    alpha = build_almond_alpha_mask(
+                        region_h, region.shape[1], geo_local, blink_factor * completeness
+                    )
+                    # 4. ادمج
+                    blended = alpha_blend(region, overlay, alpha)
+                    # 5. حركة الحاجب
+                    blended = apply_brow_drop(blended, geo_local, blink_factor)
+                    result[by_min:by_max, bx_min:bx_max] = blended
+                else:
+                    result[by_min:by_max, bx_min:bx_max] = region
             except Exception as e:
-                print(f"[BlinkProcessor] {side} eye warp failed: {e}")
+                print(f"[BlinkProcessor] {side} eye processing failed: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
 
         # لو الإطار كان مكبّر، صغّره للحجم الأصلي
@@ -539,17 +693,19 @@ class BlinkProcessor:
             print("[BlinkProcessor] No landmarks available, skipping blink.")
             return frames
 
+        # خطط الرمشات
         blinks = plan_blinks(n, fps=fps)
         print(f"[BlinkProcessor] Planned {len(blinks)} blinks over {n} frames "
-              f"({n/fps:.1f}s): {[(round(s/fps,2), round(e/fps,2)) for s,e in blinks]}")
+              f"({n/fps:.1f}s): {[(round(s/fps,2), round(e/fps,2), round(c,2)) for s,e,c in blinks]}")
 
         out = []
         for i, frame in enumerate(frames):
-            factor = get_blink_factor_at_frame(i, blinks)
+            factor, completeness = get_blink_factor_at_frame(i, blinks)
             if factor > 0.01:
-                out.append(self.process_frame(frame, factor))
+                out.append(self.process_frame(frame, factor, completeness))
             else:
-                out.append(frame)
+                # حتى بدون رمش، نطبق micro-saccade
+                out.append(self.process_frame(frame, 0.0, 0.0))
 
             if progress_callback and i % 5 == 0:
                 progress_callback(int(i / n * 100))
@@ -558,21 +714,32 @@ class BlinkProcessor:
 
 
 # =============================================================================
-# تخطيط أوقات الرمش
+# تخطيط أوقات الرمش (v3 - مع completeness م(variable + double-blinks)
 # =============================================================================
 
 def plan_blinks(num_frames: int, fps: int = 25,
-                min_interval_sec: float = 2.0,
-                max_interval_sec: float = 4.5,
-                blink_duration_sec: Tuple[float, float] = (0.18, 0.32),
-                first_blink_range_sec: Tuple[float, float] = (0.8, 1.8),
-                seed: Optional[int] = None) -> List[Tuple[int, int]]:
+                min_interval_sec: float = 1.5,
+                max_interval_sec: float = 3.5,
+                blink_duration_sec: Tuple[float, float] = (0.24, 0.40),
+                first_blink_range_sec: Tuple[float, float] = (0.5, 1.2),
+                double_blink_prob: float = 0.20,
+                seed: Optional[int] = None) -> List[Tuple[int, int, float]]:
+    """
+    يخطط أوقات الرمش. كل رمشة = (start_frame, end_frame, completeness)
+    completeness ∈ [0.75, 1.0]: أغلب الرمشات كاملة تقريباً.
+    أحياناً (20%) نضيف رمشة مزدوجة (double-blink).
+
+    المعاملات مضبوطة لتعطي رمشات واضحة:
+    - مدة الرمش: 0.24-0.40 ثانية (6-10 إطارات @ 25fps) - طويلة بما يكفي للرؤية
+    - فاصل بين الرمشات: 1.5-3.5 ثانية - متوسط طبيعي للإنسان
+    - أول رمشة مبكرة (0.5-1.2 ثانية) - يبقى فيه رمشة في الفيديوهات القصيرة
+    """
     if seed is not None:
         rng = np.random.default_rng(seed)
     else:
         rng = np.random.default_rng()
 
-    blinks = []
+    blinks: List[Tuple[int, int, float]] = []
     first_start = rng.uniform(first_blink_range_sec[0], first_blink_range_sec[1]) * fps
     frame = int(first_start)
 
@@ -582,7 +749,20 @@ def plan_blinks(num_frames: int, fps: int = 25,
         if end >= num_frames:
             end = num_frames - 1
         if end > frame:
-            blinks.append((frame, end))
+            completeness = float(rng.uniform(0.85, 1.0))
+            blinks.append((frame, end, completeness))
+
+            # double-blink: رمشة ثانية سريعة بعد الأولى
+            if rng.random() < double_blink_prob:
+                gap_frames = int(rng.uniform(0.08, 0.16) * fps)
+                second_start = end + gap_frames
+                second_duration = rng.uniform(0.18, 0.28)
+                second_end = second_start + int(second_duration * fps)
+                if second_end < num_frames and second_end > second_start:
+                    blinks.append((second_start, second_end,
+                                   float(rng.uniform(0.65, 0.90))))
+                    end = second_end
+
         gap = rng.uniform(min_interval_sec, max_interval_sec) * fps
         frame = end + int(gap)
 
@@ -590,21 +770,26 @@ def plan_blinks(num_frames: int, fps: int = 25,
 
 
 def blink_curve(progress: float) -> float:
-    """منحنى الرمش: 0→1→0 خلال progress من 0 إلى 1 (إغلاق أسرع من الفتح)."""
+    """منحنى الرمش: 0→1→0 خلال progress من 0 إلى 1.
+    الإغلاق أسرع من الفتح (40% close, 60% open)."""
     if progress < 0.4:
         p = progress / 0.4
+        # smoothstep-like: ناعم في البداية والنهاية
         return 0.5 * (1 - np.cos(np.pi * p))
     else:
         p = (progress - 0.4) / 0.6
         return 0.5 * (1 + np.cos(np.pi * p))
 
 
-def get_blink_factor_at_frame(frame_idx: int, blinks: List[Tuple[int, int]]) -> float:
-    for start, end in blinks:
+def get_blink_factor_at_frame(frame_idx: int,
+                               blinks: List[Tuple[int, int, float]]
+                               ) -> Tuple[float, float]:
+    """يرجع (blink_factor, completeness) للإطار المعطى."""
+    for start, end, completeness in blinks:
         if start <= frame_idx <= end and end > start:
             progress = (frame_idx - start) / (end - start)
-            return blink_curve(progress)
-    return 0.0
+            return float(blink_curve(progress)), completeness
+    return 0.0, 0.0
 
 
 # =============================================================================

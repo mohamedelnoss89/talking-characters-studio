@@ -65,3 +65,6 @@ skills/
 worklog.md
 *.pid
 backend/test_outputs/
+
+# Local shared libraries (libGLESv2.so.2 symlinks for mediapipe)
+.libs/

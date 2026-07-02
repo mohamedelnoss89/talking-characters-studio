@@ -661,7 +661,7 @@ export default function Home() {
                       {t.tabPreview}
                     </h3>
                     {isGenerating && (
-                      <Badge key="gen-badge" className="bg-purple-500/20 text-purple-200">
+                      <Badge className="bg-purple-500/20 text-purple-200">
                         <span className="inline-flex items-center">
                           <Loader2 className="w-3 h-3 mr-1 animate-spin" />
                           <span>{generateProgress}%</span>
@@ -678,17 +678,14 @@ export default function Home() {
                       className="w-full bg-gradient-to-r from-yellow-500 via-purple-500 to-pink-500 hover:from-yellow-600 hover:via-purple-600 hover:to-pink-600 disabled:opacity-50 disabled:cursor-not-allowed"
                       size="lg"
                     >
-                      {isGenerating ? (
-                        <span key="generating" className="inline-flex items-center justify-center">
+                      <span className="inline-flex items-center justify-center">
+                        {isGenerating ? (
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          <span>{t.generating} {generateProgress}%</span>
-                        </span>
-                      ) : (
-                        <span key="idle" className="inline-flex items-center justify-center">
+                        ) : (
                           <Sparkles className="w-4 h-4 mr-2" />
-                          <span>{t.generateVideo}</span>
-                        </span>
-                      )}
+                        )}
+                        <span>{isGenerating ? `${t.generating} ${generateProgress}%` : t.generateVideo}</span>
+                      </span>
                     </Button>
 
                     {isGenerating && (
