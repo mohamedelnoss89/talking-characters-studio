@@ -38,9 +38,9 @@ gfpgan/
 *.bin
 
 # Generated outputs (user data)
-download/
-upload/
-tool-results/
+/download/
+/upload/
+/tool-results/
 
 # Logs
 *.log
