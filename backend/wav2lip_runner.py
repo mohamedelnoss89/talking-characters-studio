@@ -449,7 +449,7 @@ def run_lip_sync(
     # 9.5. Eye Blink Post-Processing (v3)
     # =====================================================================
     if BLINK_AVAILABLE:
-        print("[Wav2Lip] Applying eye blink post-processing (v3)...")
+        print("[Wav2Lip] Applying eye blink post-processing (v4 professional)...")
         try:
             # progress: 82-90% during blink (8% range)
             def _blink_cb(p):
@@ -459,6 +459,7 @@ def run_lip_sync(
             generated_frames = blink_proc.process_video_frames(
                 generated_frames,
                 fps=FPS,
+                audio_path=audio_path,
                 progress_callback=_blink_cb
             )
             blink_proc.close()

@@ -12,12 +12,20 @@ export async function register() {
       
       const serverPath = path.join(process.cwd(), 'backend', 'server.py');
       const pythonPath = '/home/z/.venv/bin/python';
+      const libsPath = path.join(process.cwd(), '.libs');
+      
+      // Build environment with LD_LIBRARY_PATH for mediapipe (libGLESv2.so.2)
+      const env = { ...process.env, PYTHONUNBUFFERED: '1' };
+      const existingLd = (env.LD_LIBRARY_PATH || '').trim();
+      env.LD_LIBRARY_PATH = existingLd
+        ? `${libsPath}:${existingLd}`
+        : libsPath;
       
       const proc = spawn(pythonPath, ['-u', serverPath], {
         cwd: path.join(process.cwd(), 'backend'),
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env,
       });
       
       proc.stdout?.on('data', (data) => {
@@ -33,7 +41,7 @@ export async function register() {
       // Don't wait for it - let it run in background
       proc.unref();
       
-      console.log(`[Instrumentation] Backend started with PID ${proc.pid}`);
+      console.log(`[Instrumentation] Backend started with PID ${proc.pid} (LD_LIBRARY_PATH=${env.LD_LIBRARY_PATH})`);
     } catch (err) {
       console.error('[Instrumentation] Failed to start backend:', err);
     }
