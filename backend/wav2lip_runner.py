@@ -26,14 +26,6 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: eye_blink module not available ({e})")
     BLINK_AVAILABLE = False
 
-# Hand gesture post-processing (audio-driven expressive arm movements)
-try:
-    from hand_gesture import GestureProcessor
-    GESTURE_AVAILABLE = True
-except ImportError as e:
-    print(f"[Wav2Lip] WARNING: hand_gesture module not available ({e})")
-    GESTURE_AVAILABLE = False
-
 # Face enhancement (GFPGAN) - restores lip/face detail lost by Wav2Lip 96x96 upscale
 try:
     from face_enhancer import enhance_frames, FACE_ENHANCE_AVAILABLE
@@ -465,40 +457,8 @@ def run_lip_sync(
         if progress_callback:
             progress_callback(90)
 
-    # =====================================================================
-    # 9.5b. Hand Gesture Post-Processing (audio-driven expressive arm movement)
-    # يحلل الصوت ويولّد حركة تعبيرية للذراع متزامنة مع الكلام.
-    # لو مفيش ذراع واضح في الصورة، بيتخطى بصمت.
-    # =====================================================================
-    if GESTURE_AVAILABLE:
-        print("[Wav2Lip] Applying hand gesture post-processing...")
-        try:
-            gesture_proc = GestureProcessor(static_image=full_frames[0].copy())
-            if gesture_proc.gesture_arm is not None:
-                # progress: 90-95% during gesture (5% range)
-                def _gesture_cb(p):
-                    if progress_callback:
-                        progress_callback(90 + int(p * 0.05))
-                generated_frames = gesture_proc.process_video_frames(
-                    generated_frames,
-                    fps=FPS,
-                    audio_path=audio_path,
-                    progress_callback=_gesture_cb
-                )
-                print(f"[Wav2Lip] Hand gesture applied successfully ({len(generated_frames)} frames)")
-            else:
-                print("[Wav2Lip] No suitable arm detected in image, skipping gesture")
-            gesture_proc.close()
-        except Exception as e:
-            print(f"[Wav2Lip] WARNING: hand gesture post-processing failed: {e}")
-            import traceback
-            traceback.print_exc()
-        if progress_callback:
-            progress_callback(95)
-    else:
-        print("[Wav2Lip] Skipping hand gesture (module not available)")
-        if progress_callback:
-            progress_callback(95)
+    if progress_callback:
+        progress_callback(95)
 
     # =====================================================================
     # 9.6. Write frames to AVI
