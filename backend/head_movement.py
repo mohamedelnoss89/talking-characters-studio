@@ -307,6 +307,9 @@ class HeadMover:
         self._landmarker_initialized = False
         self.static_face_bounds: Optional[Tuple[int, int, int, int]] = None
         self.face_mask: Optional[np.ndarray] = None
+        # clean_plate: الصورة الأصلية بعد مسح الوجه (للخلفية النظيفة)
+        # ضروري لتجنّب الـ ghosting/double head عند تحريك الوجه
+        self.clean_plate: Optional[np.ndarray] = None
         self.intensity = intensity
         self._plan: Optional[MovementPlan] = None
 
@@ -383,6 +386,13 @@ class HeadMover:
         else:
             print("[HeadMover] WARNING: face region too small, disabling head movement")
             self.static_face_bounds = None
+            return
+
+        # ============= CRITICAL: ابنِ clean background plate =============
+        # نستخدم cv2.inpaint لمسح الوجه من الصورة الأصلية، فتبقى الخلفية
+        # نظيفة بدون وجه. لما نحرّك الوجه ونركّبه فوقها، مش هيظهر وجه
+        # قديم تحت الوجه المتحرك (ده اللي بيسبب الـ ghosting/double head).
+        self._build_clean_plate(image)
 
     def close(self):
         if self._landmarker is not None:
@@ -393,34 +403,86 @@ class HeadMover:
             self._landmarker = None
         self._landmarker_initialized = False
 
+    def _build_clean_plate(self, image: np.ndarray):
+        """
+        يبني 'clean background plate' بمسح الوجه من الصورة الأصلية باستخدام
+        cv2.inpaint. النتيجة: نفس الصورة بس بدون وجه (الخلفية فقط).
+
+        لما نركّب الوجه المتحرك فوق هذه الخلفية النظيفة، مش هيظهر وجه
+        قديم تحته - ده اللي بيلغي مشكلة الـ ghosting/double head.
+        """
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = self.static_face_bounds
+
+        # ابنِ mask تغطّي منطقة الوجه (مع shrink بسيط عشان نخلي حواف ناعمة)
+        inpaint_mask = np.zeros((h, w), dtype=np.uint8)
+        # Shrink الـ bounds بشوية عشان inpaint ياخد context كافي من حوله
+        shrink = max(2, int(min(x2 - x1, y2 - y1) * 0.05))
+        ix1, iy1 = x1 + shrink, y1 + shrink
+        ix2, iy2 = x2 - shrink, y2 - shrink
+        if ix2 <= ix1 or iy2 <= iy1:
+            ix1, iy1, ix2, iy2 = x1, y1, x2, y2
+        inpaint_mask[iy1:iy2, ix1:ix2] = 255
+
+        # Dilate الـ mask بشوية عشان نضمّ حواف الوجه (شعر، حواجب)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        inpaint_mask = cv2.dilate(inpaint_mask, kernel, iterations=1)
+
+        try:
+            # TELEA: أسرع ونتيجته كويسة للمناطق الصغيرة. NS: أكتر دقة بس أبطأ.
+            # استخدمنا TELEA عشان السرعة (الفيديو فيه إطارات كتير).
+            inpaint_radius = 5
+            self.clean_plate = cv2.inpaint(
+                image, inpaint_mask, inpaint_radius, cv2.INPAINT_TELEA
+            )
+            print(f"[HeadMover] Clean plate built ({w}x{h}), face area inpainted")
+        except Exception as e:
+            print(f"[HeadMover] WARNING: inpaint failed: {e}, using original as clean plate")
+            self.clean_plate = image.copy()
+
     def apply_to_frame(self, frame: np.ndarray, dx: float, dy: float,
                        angle_deg: float) -> np.ndarray:
-        """يطبّق حركة الرأس على إطار واحد."""
+        """
+        يطبّق حركة الرأس على إطار واحد.
+
+        الاستراتيجية الجديدة (بدون ghosting):
+        1. نأخذ منطقة موسّعة من الإطار (face + margin)
+        2. نأخذ نفس المنطقة من clean_plate (الخلفية بدون وجه)
+        3. نعمل warp لمنطقة الإطار (الوجه + الخلفية) بالـ M matrix
+        4. نركّب الوجه المتحرك فوق الخلفية النظيفة باستخدام mask
+           تغطّي موقع الوجه الجديد (بعد الحركة)
+        5. النتيجة: الخلفية النظيفة + الوجه في موضعه الجديد - بدون double head
+        """
         # لو الحركة ضئيلة جداً، نرجع الإطار كما هو
         if abs(dx) < 0.3 and abs(dy) < 0.3 and abs(angle_deg) < 0.2:
             return frame
 
         if self.static_face_bounds is None or self.face_mask is None:
             return frame
+        if self.clean_plate is None:
+            return frame
 
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = self.static_face_bounds
 
-        # وسّع المنطقة عشان نضمّ مساحة للحركة
-        # (لو الوجه هيتحرك ±5px، لازم نأخذ منطقة أوسع بـ 10px على الأقل)
-        margin = max(8, int(max(abs(dx), abs(dy)) * 2) + 4)
-        # قلل من margin لو هيقرب من حدود الصورة
+        # وسّع المنطقة عشان نضمّ مساحة للحركة + مساحة للـ feathering
+        # (لو الوجه هيتحرك ±5px، لازم نأخذ منطقة أوسع بـ 12-15px على الأقل)
+        max_shift = max(abs(dx), abs(dy))
+        margin = max(12, int(max_shift * 2.5) + 6)
         ex1 = max(0, x1 - margin)
         ey1 = max(0, y1 - margin)
         ex2 = min(w, x2 + margin)
         ey2 = min(h, y2 + margin)
 
-        # خذ منطقة الوجه الموسّعة
-        face_region = frame[ey1:ey2, ex1:ex2].copy()
-        if face_region.size == 0 or face_region.shape[0] < 5 or face_region.shape[1] < 5:
+        # خذ المنطقة الموسّعة من الإطار (الوجه + الخلفية حوله) - source
+        region_src = frame[ey1:ey2, ex1:ex2].copy()
+        if region_src.size == 0 or region_src.shape[0] < 5 or region_src.shape[1] < 5:
             return frame
 
-        fr_h, fr_w = face_region.shape[:2]
+        # خذ نفس المنطقة من clean_plate (الخلفية النظيفة بدون وجه) - destination
+        region_clean = self.clean_plate[ey1:ey2, ex1:ex2].copy()
+
+        fr_h, fr_w = region_src.shape[:2]
 
         # ابنِ مصفوفة التحويل: rotation حول مركز الوجه + translation
         cx_local = (x1 - ex1) + (x2 - x1) / 2  # مركز الوجه بالنسبة للمنطقة الموسّعة
@@ -431,68 +493,75 @@ class HeadMover:
         sin_a = math.sin(angle_rad)
 
         # rotation matrix around (cx_local, cy_local) + translation
-        # M = R * T (rotate first, then translate)
         M = np.float32([
             [cos_a, -sin_a, dx + cx_local * (1 - cos_a) + cy_local * sin_a],
             [sin_a,  cos_a, dy - cx_local * sin_a + cy_local * (1 - cos_a)],
         ])
 
-        # طبّق warp
+        # طبّق warp على منطقة الإطار (الوجه + الخلفية حوله)
+        # BORDER_REFLECT_101 (وليس REFLECT) - أقل تطرف في الانعكاس
         warped = cv2.warpAffine(
-            face_region, M, (fr_w, fr_h),
+            region_src, M, (fr_w, fr_h),
             flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REFLECT
+            borderMode=cv2.BORDER_REFLECT_101
         )
 
-        # خذ قناع الوجه الأصلي وكبّره للمنطقة الموسّعة
-        # أولاً، خذ الـ mask الأصلية (لمنطقة الوجه الأصلي)
-        face_h_orig = y2 - y1
-        face_w_orig = x2 - x1
-        if self.face_mask.shape != (face_h_orig, face_w_orig):
-            # لو الـ mask اتبنت مرة واحدة على الـ static bounds
-            pass
-
-        # ابنِ mask للمنطقة الموسّعة
-        full_mask = np.zeros((fr_h, fr_w), dtype=np.float32)
-        # مكان الوجه الأصلي بالنسبة للمنطقة الموسّعة
+        # ============= ابنِ mask لموقع الوجه الجديد (بعد الحركة) =============
+        # mask الأصلية تغطّي موقع الوجه القديم - نعمل warp ليها بنفس M
+        # فتبقى تغطّي موقع الوجه الجديد. كده نركّب الوجه المتحرك في موضعه
+        # الجديد فوق الخلفية النظيفة، بدون ما الوجه القديم يظهر تحته.
         ox1 = x1 - ex1
         oy1 = y1 - ey1
         ox2 = x2 - ex1
         oy2 = y2 - ey1
 
-        # لو الـ mask المحفوظة بنفس مقاس الوجه الأصلي
+        face_h_orig = y2 - y1
+        face_w_orig = x2 - x1
+
+        # mask ثنائية (1 = وجه, 0 = خلفية) على المنطقة الموسّعة
+        face_mask_bin = np.zeros((fr_h, fr_w), dtype=np.float32)
         if self.face_mask.shape == (face_h_orig, face_w_orig):
             try:
-                full_mask[oy1:oy2, ox1:ox2] = self.face_mask
+                face_mask_bin[oy1:oy2, ox1:ox2] = self.face_mask
             except ValueError:
-                # لو فيه mismatch بسبب clipping
                 mh, mw = self.face_mask.shape
-                full_mask[oy1:oy1 + mh, ox1:ox1 + mw] = self.face_mask[:min(mh, fr_h - oy1), :min(mw, fr_w - ox1)]
+                face_mask_bin[oy1:oy1 + mh, ox1:ox1 + mw] = \
+                    self.face_mask[:min(mh, fr_h - oy1), :min(mw, fr_w - ox1)]
         else:
-            # fallback: مباشرة ابنِ mask على المنطقة الموسّعة
-            full_mask = build_feathered_mask(fr_h, fr_w, feather_ratio=0.25)
+            face_mask_bin = build_feathered_mask(fr_h, fr_w, feather_ratio=0.25)
 
-        # Smooth الـ mask كمان
-        blur = max(5, min(fr_h, fr_w) // 6)
-        if blur % 2 == 0:
-            blur += 1
-        full_mask = cv2.GaussianBlur(full_mask, (blur, blur), 0)
+        # Smooth الـ mask قبل الـ warp (عشان الحواف تتفيّم بشكل طبيعي)
+        pre_blur = max(5, min(fr_h, fr_w) // 10)
+        if pre_blur % 2 == 0:
+            pre_blur += 1
+        face_mask_bin = cv2.GaussianBlur(face_mask_bin, (pre_blur, pre_blur), 0)
 
-        # إضافة vignette إضافي عند حواف المنطقة الموسّعة (عشان الـ border_reflect
-        # ما يبقاش واضح)
-        edge_fade = max(4, margin // 2)
-        for i in range(edge_fade):
-            alpha = i / edge_fade
-            full_mask[i, :] = np.minimum(full_mask[i, :], alpha)
-            full_mask[fr_h - 1 - i, :] = np.minimum(full_mask[fr_h - 1 - i, :], alpha)
-            full_mask[:, i] = np.minimum(full_mask[:, i], alpha)
-            full_mask[:, fr_w - 1 - i] = np.minimum(full_mask[:, fr_w - 1 - i], alpha)
+        # اعمل warp للـ mask بنفس الـ M (عشان تغطّي موقع الوجه الجديد)
+        # BORDER_CONSTANT + borderValue=0: برّ الـ warped face يكون شفاف
+        warped_mask = cv2.warpAffine(
+            face_mask_bin, M, (fr_w, fr_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
 
-        # ادمج
-        mask_3ch = full_mask[:, :, np.newaxis]
-        result = frame.copy()
-        blended = (face_region.astype(np.float32) * (1 - mask_3ch) +
+        # Smooth الـ warped_mask كمان مرة (عشان الحواف النهائية تفضل ناعمة)
+        post_blur = max(7, min(fr_h, fr_w) // 8)
+        if post_blur % 2 == 0:
+            post_blur += 1
+        warped_mask = cv2.GaussianBlur(warped_mask, (post_blur, post_blur), 0)
+        warped_mask = np.clip(warped_mask, 0, 1)
+
+        # ============= ادمج =============
+        # region_clean (الخلفية النظيفة) * (1 - mask) +
+        # warped (الوجه المتحرك) * mask
+        # =
+        # الخلفية النظيفة تظهر برّ الوجه، والوجه المتحرك يظهر في موضعه الجديد
+        mask_3ch = warped_mask[:, :, np.newaxis]
+        blended = (region_clean.astype(np.float32) * (1 - mask_3ch) +
                    warped.astype(np.float32) * mask_3ch).astype(np.uint8)
+
+        result = frame.copy()
         result[ey1:ey2, ex1:ex2] = blended
 
         return result
