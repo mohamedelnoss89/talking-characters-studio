@@ -140,15 +140,85 @@ def build_feathered_mask(h: int, w: int, feather_ratio: float = 0.25) -> np.ndar
 
 
 # =============================================================================
+# تحليل الصوت - حساب الـ envelope (RMS energy لكل إطار)
+# =============================================================================
+
+def compute_audio_envelope(audio_path: str, num_frames: int, fps: int = 25) -> np.ndarray:
+    """
+    يحسب audio envelope: RMS energy لكل إطار فيديو.
+
+    الـ envelope ده نستخدمه لتضخيم حركة الرأس لما الصوت يكون عالي
+    (الكلام نشط)، وتهدئتها لما الصوت يكون هادي (سكتة).
+
+    Args:
+        audio_path: مسار ملف الصوت
+        num_frames: عدد إطارات الفيديو
+        fps: معدل الإطارات
+    Returns:
+        ndarray shape (num_frames,) - قيم بين 0 (ساكت) و 1 (أعلى طاقة)
+    """
+    try:
+        import librosa
+    except ImportError:
+        raise RuntimeError("librosa not available for audio envelope")
+
+    # اقرأ الصوت (librosa بيرجّع mono تلقائياً)
+    y, sr = librosa.load(audio_path, sr=16000, mono=True)
+
+    if len(y) == 0:
+        return np.full(num_frames, 0.3, dtype=np.float32)
+
+    # احسب RMS energy بإطار صغير (hop_length = 256 عينة ≈ 16ms عند 16kHz)
+    hop = 256
+    frame_length = 512
+    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop)[0]
+
+    # أزمنة الـ RMS frames
+    rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
+
+    # أزمنة إطارات الفيديو
+    video_times = np.arange(num_frames) / fps
+
+    # interp الـ RMS لإطارات الفيديو
+    envelope = np.interp(video_times, rms_times, rms).astype(np.float32)
+
+    # normalize: استخدم percentile 90 كـ "أعلى صوت عادي" (تجنب الـ peaks)
+    p90 = float(np.percentile(envelope, 90)) if len(envelope) > 0 else 1.0
+    if p90 > 1e-6:
+        envelope = envelope / p90
+    envelope = np.clip(envelope, 0.0, 1.0)
+
+    # smooth بسيط عشان نتجنّب الـ jitter السريع
+    smooth_win = max(3, int(0.15 * fps))  # 150ms
+    if smooth_win > 1 and len(envelope) > smooth_win:
+        kernel = np.ones(smooth_win, dtype=np.float32) / smooth_win
+        pad = smooth_win // 2
+        padded = np.pad(envelope, (pad, pad), mode='edge')
+        envelope = np.convolve(padded, kernel, mode='valid')[:len(envelope)]
+        envelope = np.clip(envelope, 0.0, 1.0)
+
+    return envelope
+
+
+# =============================================================================
 # خطة الحركة - توليد قيم الحركة لكل إطار
 # =============================================================================
 
 class MovementPlan:
-    """خطة حركة الرأس للفيديو كله."""
+    """خطة حركة الرأس للفيديو كله - طبيعية ومتصلة بالكلام.
+
+    فلسفة الحركة الطبيعية:
+    - معظم الوقت الوجه شبه ثابت (micro-movements ±0.3px فقط)
+    - حركة حقيقية بتحصل في لحظات معينة (بداية جمل، accents، pauses)
+    - الصوت العالي = حركة أكبر (audio-driven envelope)
+    - فترات راحة (rest periods) الوجه فيها ثابت تماماً
+    - مفيش sway مستمر ولا tilt مستمر - دول اللي بيخلو الراس "بترقص"
+    """
 
     def __init__(self, num_frames: int, fps: int = 25,
                  audio_pauses: Optional[List[int]] = None,
                  intensity: float = 1.0,
+                 audio_envelope: Optional[np.ndarray] = None,
                  seed: Optional[int] = None):
         """
         Args:
@@ -156,6 +226,7 @@ class MovementPlan:
             fps: معدل الإطارات
             audio_pauses: قائمة بـ frame indices للفترات الصامتة
             intensity: شدة الحركة (0.5 = خفيفة، 1.0 = عادية، 1.5 = قوية)
+            audio_envelope: قيمة RMS energy لكل إطار (0-1) - لتضخيم الحركة مع الكلام
             seed: عشوائي seed
         """
         self.num_frames = num_frames
@@ -166,119 +237,262 @@ class MovementPlan:
         # لو فيه audio_pauses، نستخدمها للـ nods
         self.audio_pauses = sorted(audio_pauses or [])
 
+        # audio envelope (RMS energy per frame, normalized 0-1)
+        # لو مش متاح، نستخدم envelope ثابت = 0.5
+        if audio_envelope is not None and len(audio_envelope) == num_frames:
+            self.audio_env = np.asarray(audio_envelope, dtype=np.float32)
+        else:
+            self.audio_env = np.full(num_frames, 0.5, dtype=np.float32)
+
         # ابدأ الـ plan
         self.translations: List[Tuple[float, float]] = []  # (dx, dy) لكل إطار
         self.rotations: List[float] = []                    # angle (degrees) لكل إطار
         self._build_plan()
 
     def _build_plan(self):
-        """يبني خطة الحركة الكاملة."""
+        """يبني خطة حركة طبيعية - الحركة أغلبيتها في لحظات معينة، مش مستمرة."""
         n = self.num_frames
         I = self.intensity
 
-        # --- 1. Sway الأساسي (حركة أفقية بطيئة دورية) ---
-        # Frequency: 0.15-0.35 Hz (فترة 3-6 ثواني ذهاب وإياب)
-        sway_freq = self.rng.uniform(0.15, 0.30)
-        sway_phase = self.rng.uniform(0, 2 * math.pi)
-        # Amplitude: ±3-6px (scaled by intensity)
-        sway_amp_x = self.rng.uniform(3.0, 6.0) * I
-        sway_amp_y = self.rng.uniform(0.5, 1.5) * I  # أقل في الـ y
+        # =========================================================
+        # 1. Base layer: micro-movements فقط (±0.3px) - للحيوية
+        # =========================================================
+        # تردد عالي بس amplitude صغيرة جداً - يحاكي الاهتزاز الطبيعي
+        # للراس البشرية الثابتة (مش حركة واضحة، بس يمنع "الجامد الميت")
+        base_freq_x = self.rng.uniform(1.5, 2.5)
+        base_freq_y = self.rng.uniform(1.2, 2.0)
+        base_phase_x = self.rng.uniform(0, 2 * math.pi)
+        base_phase_y = self.rng.uniform(0, 2 * math.pi)
+        base_amp = 0.3 * I  # ±0.3px فقط - بالكاد ملحوظ
 
-        # --- 2. Micro-movements (اهتزاز صغير مستمر) ---
-        # 1-2px على مدى إطارات قصيرة (1-2 ثانية)
-        micro_freq_x = self.rng.uniform(0.8, 1.5)
-        micro_freq_y = self.rng.uniform(0.6, 1.2)
-        micro_phase_x = self.rng.uniform(0, 2 * math.pi)
-        micro_phase_y = self.rng.uniform(0, 2 * math.pi)
-        micro_amp = self.rng.uniform(0.8, 1.5) * I
-
-        # --- 3. Drift (انجراف بطيء جداً للـ baseline) ---
-        # يحاكي الحركة التلقائية للجسم
-        drift_freq = self.rng.uniform(0.05, 0.10)
+        # =========================================================
+        # 2. Slow drift (واحد بس طوال الفيديو، بطيء جداً)
+        # =========================================================
+        # فترة 20-40 ثانية (0.025-0.05 Hz) - انجراف بطيء جداً للـ baseline
+        # ده يحاكي إن الشخص بيغيّر وضعية جسمه ببطء
+        drift_freq = self.rng.uniform(0.025, 0.05)
         drift_phase = self.rng.uniform(0, 2 * math.pi)
-        drift_amp = self.rng.uniform(1.0, 2.0) * I
+        drift_amp_x = self.rng.uniform(1.0, 2.0) * I
+        drift_amp_y = self.rng.uniform(0.3, 0.8) * I
 
-        # --- 4. Nods (تنقيق عند pauses) ---
-        # في كل pause، نعمل nod صغير (dy للأعلى ثم للأسفل)
-        nods = self._plan_nods()
+        # =========================================================
+        # 3. Occasional slow sway (حركة بطيئة كل فترة طويلة)
+        # =========================================================
+        # فترة 8-15 ثانية (0.07-0.12 Hz) - أبطأ بكثير من القديم
+        # amplitude صغيرة ±1.5-2.5px فقط
+        sway_freq = self.rng.uniform(0.07, 0.12)
+        sway_phase = self.rng.uniform(0, 2 * math.pi)
+        sway_amp_x = self.rng.uniform(1.5, 2.5) * I
+        sway_amp_y = self.rng.uniform(0.2, 0.5) * I
 
-        # --- 5. Tilt (إمالة دورية) ---
-        # زاوية دوران بسيطة ±1-2°
-        tilt_freq = self.rng.uniform(0.10, 0.20)
-        tilt_phase = self.rng.uniform(0, 2 * math.pi)
-        tilt_amp = self.rng.uniform(0.8, 1.5) * I  # degrees
+        # =========================================================
+        # 4. Nods + head turns + tilts عند audio pauses (الحركة الحقيقية)
+        # =========================================================
+        # عند كل pause (بداية جملة): 45% nod، 25% turn، 15% tilt، 15% لا حركة
+        motion_events = self._plan_motion_events()
 
-        # --- ادمج كل الحركات ---
+        # =========================================================
+        # 5. Rest periods (الوجه ثابت تماماً)
+        # =========================================================
+        # 25-35% من الفيديو، الوجه ثابت. كل rest period 1-3 ثواني.
+        rest_mask = self._plan_rest_periods(coverage=0.30)
+
+        # =========================================================
+        # ادمج كل الطبقات
+        # =========================================================
         t = np.arange(n) / self.fps
 
+        # Audio envelope (smoothed) - نستخدمها لتضخيم الحركة لما الصوت عالي
+        # لكن مش بنضربها في الـ base (عشان لو ساكت، الوجه يفضل ثابت تقريباً)
+        audio_smooth = self._smooth_envelope(self.audio_env, window=int(0.3 * self.fps))
+
         for i, ti in enumerate(t):
-            # Sway (sinusoidal)
+            # Base micro-movement (دائم بس صغير)
+            dx_base = base_amp * math.sin(2 * math.pi * base_freq_x * ti + base_phase_x)
+            dy_base = base_amp * math.sin(2 * math.pi * base_freq_y * ti + base_phase_y)
+
+            # Drift (بطيء جداً)
+            dx_drift = drift_amp_x * math.sin(2 * math.pi * drift_freq * ti + drift_phase)
+            dy_drift = drift_amp_y * math.cos(2 * math.pi * drift_freq * ti + drift_phase)
+
+            # Sway (بطيء)
             dx_sway = sway_amp_x * math.sin(2 * math.pi * sway_freq * ti + sway_phase)
             dy_sway = sway_amp_y * math.sin(2 * math.pi * sway_freq * ti + sway_phase + 0.3)
 
-            # Micro-movements
-            dx_micro = micro_amp * math.sin(2 * math.pi * micro_freq_x * ti + micro_phase_x)
-            dy_micro = micro_amp * math.sin(2 * math.pi * micro_freq_y * ti + micro_phase_y)
+            # Motion events (nods + turns + tilts) - الحركة الواضحة
+            dx_event, dy_event, angle_event = motion_events.get(i, (0.0, 0.0, 0.0))
 
-            # Drift
-            dx_drift = drift_amp * math.sin(2 * math.pi * drift_freq * ti + drift_phase)
-            dy_drift = drift_amp * 0.5 * math.cos(2 * math.pi * drift_freq * ti + drift_phase)
+            # Audio envelope: ضخّم الحركة لما الصوت يكون عالي
+            # بس ما تضربش في الـ base (عشان لو ساكت، يفضل فيه micro-movement)
+            audio_boost = 0.4 + 0.6 * audio_smooth[i]  # 0.4-1.0
+            # نطبّق الـ boost على الجزء اللي فوق الـ base فقط
+            dx_above_base = dx_drift + dx_sway + dx_event
+            dy_above_base = dy_drift + dy_sway + dy_event
+            dx = dx_base + dx_above_base * audio_boost
+            dy = dy_base + dy_above_base * audio_boost
+            angle = angle_event + 0.3 * math.sin(2 * math.pi * sway_freq * ti + sway_phase)
+            angle = angle * audio_boost
 
-            # Nod contribution
-            dx_nod, dy_nod = nods.get(i, (0.0, 0.0))
-
-            # Total
-            dx = dx_sway + dx_micro + dx_drift + dx_nod
-            dy = dy_sway + dy_micro + dy_drift + dy_nod
-
-            # Rotation (tilt)
-            angle = tilt_amp * math.sin(2 * math.pi * tilt_freq * ti + tilt_phase)
-            # إضافة tilt صغير يرتبط بـ sway (لما الرأس يميل يمين، يدور شوية برضو)
-            angle += sway_amp_x * 0.15 * math.sin(2 * math.pi * sway_freq * ti + sway_phase)
+            # Rest period: خفّف الحركة جداً (بس ابقى الـ base micro)
+            if rest_mask[i]:
+                dx = dx_base * 0.5  # فقط نصف الـ micro
+                dy = dy_base * 0.5
+                angle = 0.0
 
             self.translations.append((dx, dy))
             self.rotations.append(angle)
 
-    def _plan_nods(self) -> Dict[int, Tuple[float, float]]:
-        """يولّد nods عند فترات الصمت (audio pauses)."""
-        nods = {}
+    def _plan_motion_events(self) -> Dict[int, Tuple[float, float, float]]:
+        """
+        يولّد أحداث الحركة الحقيقية (nods + turns + tilts) عند audio pauses.
+        دي الحركة الواضحة اللي بتحسس إن الراس بتتحرك طبيعي مع الكلام.
+        """
+        events: Dict[int, Tuple[float, float, float]] = {}
         if not self.audio_pauses:
-            # لو مفيش pauses، ضع nods عشوائية قليلة (15% احتمال كل 2-4 ثواني)
+            # لو مفيش pauses، ضع أحداث نادرة (كل 4-8 ثواني)
             t = 0
             while t < self.num_frames:
-                gap = int(self.rng.uniform(2.0, 4.0) * self.fps)
+                gap = int(self.rng.uniform(4.0, 8.0) * self.fps)
                 t += gap
                 if t >= self.num_frames:
                     break
-                if self.rng.random() < 0.30:
-                    nods.update(self._make_nod(t, intensity=0.7 * self.intensity))
-            return nods
+                # 40% احتمال حدث
+                if self.rng.random() < 0.40:
+                    self._add_event_at(events, t)
+            return events
 
-        # 50% من pauses نعمل nod
+        # عند كل pause: نختار نوع الحركة
         for pause_frame in self.audio_pauses:
-            if self.rng.random() < 0.50:
-                nods.update(self._make_nod(pause_frame, intensity=0.8 * self.intensity))
-        return nods
+            r = self.rng.random()
+            if r < 0.45:
+                # Nod (تنقيق) - الحركة الأكثر شيوعاً
+                self._add_nod(events, pause_frame)
+            elif r < 0.70:
+                # Head turn (يلتف يمين أو يسار شوية)
+                self._add_turn(events, pause_frame)
+            elif r < 0.85:
+                # Tilt (إمالة جانبية)
+                self._add_tilt(events, pause_frame)
+            # 15% لا حركة (السكتة الطبيعية بدون رد فعل)
 
-    def _make_nod(self, center_frame: int, duration_sec: float = 0.5,
-                  intensity: float = 1.0) -> Dict[int, Tuple[float, float]]:
-        """يولّد nod واحد (حركة رأسية صغيرة)."""
-        duration_frames = max(5, int(duration_sec * self.fps))
-        half = duration_frames // 2
-        nods = {}
-        amp = self.rng.uniform(2.0, 4.0) * intensity
+        return events
+
+    def _add_nod(self, events: dict, center: int, duration_sec: float = 0.6):
+        """يضيف nod (حركة رأسية) عند بداية جملة."""
+        dur = max(8, int(duration_sec * self.fps))
+        half = dur // 2
+        amp_y = self.rng.uniform(2.5, 4.5) * self.intensity
+        amp_x = self.rng.uniform(0.5, 1.0) * self.intensity  # slight forward
 
         for i in range(-half, half + 1):
-            f = center_frame + i
+            f = center + i
             if 0 <= f < self.num_frames:
-                # شكل جرس (Gaussian-like) - dy يمشي للأسفل ثم للأعلى
                 t = i / max(1, half)  # -1 to 1
-                # nod down then up: -cos(πt) → -1 عند t=0, 0 عند t=±1
-                dy = -amp * math.cos(math.pi * t * 0.5)
-                # slight forward movement (small dx)
-                dx = amp * 0.2 * (1 - t * t)
-                nods[f] = (dx, dy)
-        return nods
+                # Smooth bell: -cos(πt/2) → 0 at edges, -1 at center
+                dy = -amp_y * math.cos(math.pi * t * 0.5)
+                dx = amp_x * (1 - t * t)
+                # blend with existing event (لو فيه)
+                ex, ey, ea = events.get(f, (0.0, 0.0, 0.0))
+                events[f] = (ex + dx, ey + dy, ea)
+
+    def _add_turn(self, events: dict, center: int, duration_sec: float = 0.8):
+        """يضيف head turn (التفاف يمين/يسار) عند بداية جملة."""
+        dur = max(10, int(duration_sec * self.fps))
+        half = dur // 2
+        # direction عشوائي
+        direction = 1 if self.rng.random() < 0.5 else -1
+        amp_x = direction * self.rng.uniform(3.0, 5.0) * self.intensity
+        # slight angle مع الـ turn
+        angle_amp = direction * self.rng.uniform(0.5, 1.0) * self.intensity
+
+        for i in range(-half, half + 1):
+            f = center + i
+            if 0 <= f < self.num_frames:
+                t = i / max(1, half)  # -1 to 1
+                # Smoothstep: 3t² - 2t³ → 0 at edges, 1 at center
+                # Use -cos for asymmetric turn (faster out, slower back)
+                envelope = math.cos(math.pi * t * 0.5)  # 0 at edges, 1 at center
+                dx = amp_x * envelope
+                angle = angle_amp * envelope
+                ex, ey, ea = events.get(f, (0.0, 0.0, 0.0))
+                events[f] = (ex + dx, ey, ea + angle)
+
+    def _add_tilt(self, events: dict, center: int, duration_sec: float = 0.7):
+        """يضيف tilt (إمالة جانبية بسيطة) - الزاوية فقط."""
+        dur = max(8, int(duration_sec * self.fps))
+        half = dur // 2
+        direction = 1 if self.rng.random() < 0.5 else -1
+        angle_amp = direction * self.rng.uniform(1.5, 2.5) * self.intensity
+
+        for i in range(-half, half + 1):
+            f = center + i
+            if 0 <= f < self.num_frames:
+                t = i / max(1, half)
+                envelope = math.cos(math.pi * t * 0.5)
+                angle = angle_amp * envelope
+                ex, ey, ea = events.get(f, (0.0, 0.0, 0.0))
+                events[f] = (ex, ey, ea + angle)
+
+    def _add_event_at(self, events: dict, center: int):
+        """يضيف حدث عشوائي نادر (لو مفيش audio pauses)."""
+        r = self.rng.random()
+        if r < 0.5:
+            self._add_nod(events, center)
+        elif r < 0.8:
+            self._add_turn(events, center)
+        else:
+            self._add_tilt(events, center)
+
+    def _plan_rest_periods(self, coverage: float = 0.30) -> np.ndarray:
+        """
+        يولّد rest periods (الوجه ثابت تماماً).
+
+        Args:
+            coverage: نسبة الإطارات اللي تكون rest (0.30 = 30%)
+        Returns:
+            boolean array, True = rest frame
+        """
+        rest = np.zeros(self.num_frames, dtype=bool)
+        target_rest_frames = int(self.num_frames * coverage)
+        placed = 0
+        attempts = 0
+
+        while placed < target_rest_frames and attempts < 100:
+            attempts += 1
+            # ضع rest period بمدة 1-3 ثانية
+            dur = int(self.rng.uniform(1.0, 3.0) * self.fps)
+            start = int(self.rng.integers(0, max(1, self.num_frames - dur)))
+            # متضعش rest لو في motion event قريب (نحتفظ بالـ pauses للحركة)
+            # بنفحص لو فيه audio pause في النطاق ده
+            has_pause_near = any(
+                abs(start + dur // 2 - p) < int(1.5 * self.fps)
+                for p in self.audio_pauses
+            )
+            if has_pause_near:
+                continue
+            # امسح أي rest موجود قبل كده في النطاق (تجنب التداخل)
+            if not rest[start:start + dur].any():
+                rest[start:start + dur] = True
+                placed += dur
+
+        return rest
+
+    def _smooth_envelope(self, env: np.ndarray, window: int = 8) -> np.ndarray:
+        """يعمل smoothing للـ envelope (moving average)."""
+        if window < 2:
+            return env
+        # استخدام cumulative sum لحساب moving average بسرعة
+        kernel = np.ones(window, dtype=np.float32) / window
+        # same padding
+        pad = window // 2
+        padded = np.pad(env, (pad, pad), mode='edge')
+        smoothed = np.convolve(padded, kernel, mode='valid')
+        # ضبط الطول
+        if len(smoothed) > len(env):
+            smoothed = smoothed[:len(env)]
+        elif len(smoothed) < len(env):
+            smoothed = np.pad(smoothed, (0, len(env) - len(smoothed)), mode='edge')
+        return smoothed
 
     def get_at(self, frame_idx: int) -> Tuple[float, float, float]:
         """يرجع (dx, dy, angle) للإطار."""
@@ -287,6 +501,23 @@ class MovementPlan:
             angle = self.rotations[frame_idx]
             return dx, dy, angle
         return 0.0, 0.0, 0.0
+
+    def stats(self) -> dict:
+        """يرجع إحصائيات الحركة (للdebug/التحقق)."""
+        if not self.translations:
+            return {}
+        dx_arr = np.array([t[0] for t in self.translations])
+        dy_arr = np.array([t[1] for t in self.translations])
+        ang_arr = np.array(self.rotations)
+        # نسبة الإطارات شبه الثابتة (|dx| < 0.5)
+        rest_ratio = float(np.mean(np.abs(dx_arr) < 0.5))
+        return {
+            'dx_min': float(dx_arr.min()), 'dx_max': float(dx_arr.max()),
+            'dy_min': float(dy_arr.min()), 'dy_max': float(dy_arr.max()),
+            'angle_min': float(ang_arr.min()), 'angle_max': float(ang_arr.max()),
+            'rest_ratio': rest_ratio,
+            'mean_motion': float(np.mean(np.sqrt(dx_arr**2 + dy_arr**2))),
+        }
 
 
 # =============================================================================
@@ -570,7 +801,7 @@ class HeadMover:
                              fps: int = 25,
                              audio_path: Optional[str] = None,
                              progress_callback=None) -> List[np.ndarray]:
-        """يطبّق حركة الرأس على كل الإطارات."""
+        """يطبّق حركة الرأس على كل الإطارات - حركة طبيعية متصلة بالكلام."""
         n = len(frames)
         if n == 0:
             return frames
@@ -583,30 +814,44 @@ class HeadMover:
             print("[HeadMover] No face available, skipping head movement.")
             return frames
 
-        # اكتشف pauses (لو فيه صوت)
+        # اكتشف pauses + audio envelope (لو فيه صوت)
         audio_pauses = []
+        audio_envelope = None
         if audio_path:
             try:
                 from eye_blink import find_audio_pauses
                 audio_pauses = find_audio_pauses(audio_path, fps=fps)
-                print(f"[HeadMover] Using {len(audio_pauses)} audio pauses for nod sync")
+                print(f"[HeadMover] Using {len(audio_pauses)} audio pauses for event sync")
             except ImportError:
-                print("[HeadMover] eye_blink.find_audio_pauses not available, skipping nod sync")
+                print("[HeadMover] eye_blink.find_audio_pauses not available, skipping event sync")
 
-        # ابنِ خطة الحركة
+            # احسب audio envelope (RMS energy per frame)
+            try:
+                audio_envelope = compute_audio_envelope(audio_path, num_frames=n, fps=fps)
+                print(f"[HeadMover] Audio envelope computed: "
+                      f"min={audio_envelope.min():.2f}, max={audio_envelope.max():.2f}, "
+                      f"mean={audio_envelope.mean():.2f}")
+            except Exception as e:
+                print(f"[HeadMover] WARNING: audio envelope failed: {e}")
+                audio_envelope = None
+
+        # ابنِ خطة الحركة (مع audio envelope)
         self._plan = MovementPlan(
             num_frames=n,
             fps=fps,
             audio_pauses=audio_pauses,
             intensity=self.intensity,
+            audio_envelope=audio_envelope,
         )
 
-        print(f"[HeadMover] Head movement plan: {n} frames, "
-              f"intensity={self.intensity}, "
-              f"sway range=[{min(t[0] for t in self._plan.translations):.1f},"
-              f"{max(t[0] for t in self._plan.translations):.1f}]px, "
-              f"tilt range=[{min(self._plan.rotations):.2f},"
-              f"{max(self._plan.rotations):.2f}]°")
+        # اطبع إحصائيات الحركة (للتحقق إنها طبيعية)
+        s = self._plan.stats()
+        print(f"[HeadMover] Movement plan: {n} frames, intensity={self.intensity}")
+        print(f"  dx range:  [{s['dx_min']:.2f}, {s['dx_max']:.2f}]px")
+        print(f"  dy range:  [{s['dy_min']:.2f}, {s['dy_max']:.2f}]px")
+        print(f"  angle:     [{s['angle_min']:.2f}, {s['angle_max']:.2f}]°")
+        print(f"  rest ratio: {s['rest_ratio']*100:.0f}% of frames near-static")
+        print(f"  mean motion: {s['mean_motion']:.2f}px/frame")
 
         out = []
         for i, frame in enumerate(frames):
