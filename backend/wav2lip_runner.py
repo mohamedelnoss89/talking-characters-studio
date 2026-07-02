@@ -225,8 +225,23 @@ def run_lip_sync(
     # 2. Convert audio to wav if needed
     if not audio_path.endswith('.wav'):
         temp_wav = os.path.join(TEMP_DIR, f"input_{os.getpid()}.wav")
-        command = f'ffmpeg -y -i "{audio_path}" -strict -2 "{temp_wav}"'
-        subprocess.call(command, shell=True)
+        command = [
+            'ffmpeg', '-y',
+            '-i', audio_path,
+            '-ac', '1',           # mono
+            '-ar', '16000',       # 16 kHz (Wav2Lip requirement)
+            '-acodec', 'pcm_s16le',
+            temp_wav
+        ]
+        try:
+            r = subprocess.run(command, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0 or not os.path.isfile(temp_wav):
+                raise RuntimeError(
+                    f"FFmpeg audio conversion failed (code {r.returncode}):\n"
+                    f"stderr: {r.stderr[-1500:]}"
+                )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("FFmpeg timed out converting audio (60s)")
         audio_path = temp_wav
 
     # 3. Load audio and compute mel spectrogram
@@ -477,11 +492,29 @@ def run_lip_sync(
     # Get original audio path (might be temp wav)
     final_audio = audio_path if audio_path.endswith('.wav') else audio_path
     # جودة عالية: CRF 18 (visually lossless) + H.264 + AAC audio + faststart
-    command = (f'ffmpeg -y -i "{temp_avi}" -i "{final_audio}" '
-               f'-c:v libx264 -crf 18 -preset fast -pix_fmt yuv420p '
-               f'-c:a aac -b:a 128k -movflags +faststart '
-               f'-shortest "{output_path}"')
-    result = subprocess.call(command, shell=platform.system() != 'Windows')
+    merge_cmd = [
+        'ffmpeg', '-y',
+        '-i', temp_avi,
+        '-i', final_audio,
+        '-c:v', 'libx264',
+        '-crf', '18',
+        '-preset', 'fast',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        '-shortest',
+        output_path
+    ]
+    try:
+        r = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0 or not os.path.isfile(output_path):
+            raise RuntimeError(
+                f"FFmpeg merge failed (code {r.returncode}):\n"
+                f"stderr: {r.stderr[-1500:]}"
+            )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("FFmpeg timed out merging audio+video (120s)")
     print(f"[Wav2Lip] Final video: {output_path}")
 
     # Cleanup temp avi
