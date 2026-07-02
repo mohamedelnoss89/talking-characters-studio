@@ -374,7 +374,9 @@ export default function Home() {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoUrl(null);
 
-    setActiveTab("preview");
+    // ⚠️ defer tab switch to next tick to avoid React insertBefore race
+    // (Next.js 16 + Turbopack + concurrent rendering)
+    requestAnimationFrame(() => setActiveTab("preview"));
 
     try {
       // 1. ابدأ الـ job
@@ -548,7 +550,7 @@ export default function Home() {
         <div className="grid lg:grid-cols-3 gap-6">
           {/* Left: Controls */}
           <div className="lg:col-span-2 space-y-6 order-2 lg:order-1">
-            <Tabs value={activeTab} onValueChange={setActiveTab} defaultValue="character" className="w-full">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid grid-cols-3 mb-6 bg-black/30 border border-purple-500/20">
                 <TabsTrigger value="character" className="data-[state=active]:bg-purple-500/30">
                   <Users className="w-4 h-4 mr-2" />
@@ -659,9 +661,11 @@ export default function Home() {
                       {t.tabPreview}
                     </h3>
                     {isGenerating && (
-                      <Badge className="bg-purple-500/20 text-purple-200">
-                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                        {generateProgress}%
+                      <Badge key="gen-badge" className="bg-purple-500/20 text-purple-200">
+                        <span className="inline-flex items-center">
+                          <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                          <span>{generateProgress}%</span>
+                        </span>
                       </Badge>
                     )}
                   </div>
@@ -675,15 +679,15 @@ export default function Home() {
                       size="lg"
                     >
                       {isGenerating ? (
-                        <>
+                        <span key="generating" className="inline-flex items-center justify-center">
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          {t.generating} {generateProgress}%
-                        </>
+                          <span>{t.generating} {generateProgress}%</span>
+                        </span>
                       ) : (
-                        <>
+                        <span key="idle" className="inline-flex items-center justify-center">
                           <Sparkles className="w-4 h-4 mr-2" />
-                          {t.generateVideo}
-                        </>
+                          <span>{t.generateVideo}</span>
+                        </span>
                       )}
                     </Button>
 
