@@ -89,7 +89,6 @@ export async function startLipSync(
     audioName?: string;
     pads?: string;
     resizeFactor?: number;
-    headMovement?: number;  // 0 = off, 0.5 = subtle, 1.0 = normal, 1.5 = strong
   }
 ): Promise<{ job_id: string }> {
   const {
@@ -101,7 +100,6 @@ export async function startLipSync(
     audioName = "audio.wav",
     pads = "0,10,0,0",
     resizeFactor = 1,
-    headMovement = 1.0,
   } = options;
 
   if (!audioFile && !scriptText?.trim()) {
@@ -120,7 +118,6 @@ export async function startLipSync(
   formData.append("rate", rate);
   formData.append("pads", pads);
   formData.append("resize_factor", String(resizeFactor));
-  formData.append("head_movement", String(headMovement));
 
   const res = await fetch(`/api/lip-sync`, {
     method: "POST",

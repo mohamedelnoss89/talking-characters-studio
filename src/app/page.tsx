@@ -46,101 +46,6 @@ import {
   type TtsVoice,
 } from "@/lib/wav2lip-client";
 
-// Convert AudioBuffer to WAV Blob (للمعاينة الصوتية)
-function audioBufferToWav(buffer: AudioBuffer): Blob {
-  const numChannels = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
-  const format = 1;
-  const bitDepth = 16;
-
-  let result: Float32Array;
-  if (numChannels === 2) {
-    result = interleave(buffer.getChannelData(0), buffer.getChannelData(1));
-  } else {
-    result = buffer.getChannelData(0);
-  }
-
-  const dataLength = result.length * (bitDepth / 8);
-  const ab = new ArrayBuffer(44 + dataLength);
-  const view = new DataView(ab);
-
-  writeString(view, 0, "RIFF");
-  view.setUint32(4, 36 + dataLength, true);
-  writeString(view, 8, "WAVE");
-  writeString(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, format, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true);
-  view.setUint16(32, numChannels * (bitDepth / 8), true);
-  view.setUint16(34, bitDepth, true);
-  writeString(view, 36, "data");
-  view.setUint32(40, dataLength, true);
-
-  const offset = 44;
-  for (let i = 0; i < result.length; i++) {
-    const s = Math.max(-1, Math.min(1, result[i]));
-    view.setInt16(offset + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-
-  return new Blob([ab], { type: "audio/wav" });
-}
-
-function interleave(left: Float32Array, right: Float32Array): Float32Array {
-  const length = left.length + right.length;
-  const result = new Float32Array(length);
-  let index = 0;
-  let inputIndex = 0;
-  while (index < length) {
-    result[index++] = left[inputIndex];
-    result[index++] = right[inputIndex];
-    inputIndex++;
-  }
-  return result;
-}
-
-function writeString(view: DataView, offset: number, str: string) {
-  for (let i = 0; i < str.length; i++) {
-    view.setUint8(offset + i, str.charCodeAt(i));
-  }
-}
-
-// Component to preview audio buffer
-function AudioPreview({
-  audioBuffer,
-  fileName,
-  duration,
-}: {
-  audioBuffer: AudioBuffer;
-  fileName: string;
-  duration: number;
-}) {
-  const [url, setUrl] = useState<string>("");
-
-  useEffect(() => {
-    const wavBlob = audioBufferToWav(audioBuffer);
-    const u = URL.createObjectURL(wavBlob);
-    setUrl(u);
-    return () => URL.revokeObjectURL(u);
-  }, [audioBuffer]);
-
-  return (
-    <div className="mt-4 p-4 rounded-lg bg-purple-500/10 border border-purple-500/20">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Music className="w-4 h-4 text-purple-300" />
-          <span className="text-sm text-purple-100 truncate max-w-[200px]">{fileName}</span>
-        </div>
-        <Badge variant="secondary" className="bg-purple-500/20 text-purple-200">
-          {duration.toFixed(1)}s
-        </Badge>
-      </div>
-      {url && <audio controls className="w-full h-8" src={url} />}
-    </div>
-  );
-}
-
 export default function Home() {
   const [lang, setLang] = useState<Language>("ar");
   const t = translations[lang];
@@ -153,10 +58,10 @@ export default function Home() {
   // Audio/script state
   const [audioMode, setAudioMode] = useState<"script" | "audio">("script");
   const [scriptText, setScriptText] = useState<string>("");
-  const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioFileName, setAudioFileName] = useState<string>("");
   const [audioDuration, setAudioDuration] = useState<number>(0);
+  const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
 
   // Voices state
   const [voices, setVoices] = useState<TtsVoice[]>([]);
@@ -164,9 +69,6 @@ export default function Home() {
   const [speechRate, setSpeechRate] = useState<string>("+0%");
   const [previewingTts, setPreviewingTts] = useState(false);
   const [ttsPreviewUrl, setTtsPreviewUrl] = useState<string | null>(null);
-
-  // Head movement intensity (0 = off, 0.5 = low, 1.0 = normal, 1.5 = high)
-  const [headMovement, setHeadMovement] = useState<number>(1.0);
 
   // Generation state
   const [isGenerating, setIsGenerating] = useState(false);
@@ -296,7 +198,7 @@ export default function Home() {
     }
   };
 
-  // رفع ملف صوتي
+  // رفع ملف صوتي - مباشرة بدون AudioContext (أسرع وما بيقعش مع الصيغ المختلفة)
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -304,25 +206,31 @@ export default function Home() {
     setAudioFileName(file.name);
     setAudioFile(file);
     setDebugInfo("");
+
+    // امسح أي URL قديم
+    if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl);
+    // اعمل URL محلي للمعاينة (بدون decode - أسرع وما بيوقعش)
+    const url = URL.createObjectURL(file);
+    setAudioPreviewUrl(url);
+
+    // احسب المدة باستخدام HTML5 audio (آمن ومش بيوقع)
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const audioCtx = new AudioContext();
-      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
-      audioCtx.close();
-      setAudioBuffer(buffer);
-      setAudioDuration(buffer.duration);
-      toast({
-        title: lang === "ar" ? "تم رفع الصوت" : "Audio Uploaded",
-        description: `${file.name} (${buffer.duration.toFixed(1)}s)`,
+      const audio = document.createElement("audio");
+      audio.preload = "metadata";
+      audio.src = url;
+      await new Promise<void>((resolve) => {
+        audio.onloadedmetadata = () => resolve();
+        audio.onerror = () => resolve();  // حتى لو فيه error، كمّل (الملف لسه موجود)
       });
-    } catch (e: any) {
-      setDebugInfo(e?.message || "Failed to load audio");
-      toast({
-        variant: "destructive",
-        title: lang === "ar" ? "خطأ" : "Error",
-        description: lang === "ar" ? "فشل تحميل الصوت" : "Failed to load audio",
-      });
+      setAudioDuration(audio.duration && isFinite(audio.duration) ? audio.duration : 0);
+    } catch {
+      setAudioDuration(0);
     }
+
+    toast({
+      title: lang === "ar" ? "تم رفع الصوت" : "Audio Uploaded",
+      description: `${file.name} (${(file.size / 1024).toFixed(1)} KB)`,
+    });
   };
 
   // معاينة TTS
@@ -432,7 +340,6 @@ export default function Home() {
         audioName: audioFile?.name || "audio.wav",
         pads: "0,10,0,0",
         resizeFactor: 1,
-        headMovement,
       });
       jobIdRef.current = job_id;
       console.log("Job started:", job_id);
@@ -504,6 +411,7 @@ export default function Home() {
     return () => {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (ttsPreviewUrl) URL.revokeObjectURL(ttsPreviewUrl);
+      if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl);
       if (jobIdRef.current) cleanupJob(jobIdRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -828,8 +736,21 @@ export default function Home() {
                         </div>
                       </label>
 
-                      {audioBuffer && (
-                        <AudioPreview audioBuffer={audioBuffer} fileName={audioFileName} duration={audioDuration} />
+                      {audioPreviewUrl && (
+                        <div className="mt-4 p-4 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <Music className="w-4 h-4 text-purple-300" />
+                              <span className="text-sm text-purple-100 truncate max-w-[200px]">{audioFileName}</span>
+                            </div>
+                            {audioDuration > 0 && (
+                              <Badge variant="secondary" className="bg-purple-500/20 text-purple-200">
+                                {audioDuration.toFixed(1)}s
+                              </Badge>
+                            )}
+                          </div>
+                          <audio controls src={audioPreviewUrl} className="w-full h-8" />
+                        </div>
                       )}
                     </>
                   )}
@@ -855,36 +776,6 @@ export default function Home() {
                   </div>
 
                   <div className="space-y-4">
-                    {/* Head movement intensity control */}
-                    <div className="p-4 rounded-lg bg-purple-500/5 border border-purple-500/20">
-                      <Label className="text-sm text-purple-200 mb-2 block flex items-center gap-2">
-                        <Sparkles className="w-4 h-4 text-yellow-400" />
-                        {t.motionIntensity}
-                      </Label>
-                      <p className="text-xs text-gray-400 mb-3">{t.motionIntensityHint}</p>
-                      <div className="grid grid-cols-4 gap-2">
-                        {[
-                          { value: 0, label: t.motionIntensityOff },
-                          { value: 0.5, label: t.motionIntensityLow },
-                          { value: 1.0, label: t.motionIntensityMedium },
-                          { value: 1.5, label: t.motionIntensityHigh },
-                        ].map((opt) => (
-                          <button
-                            key={opt.value}
-                            type="button"
-                            onClick={() => setHeadMovement(opt.value)}
-                            className={`px-3 py-2 rounded-md text-sm transition-all ${
-                              headMovement === opt.value
-                                ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
-                                : "bg-black/30 text-gray-400 border border-transparent hover:border-purple-500/30"
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
                     <Button
                       onClick={handleGenerateAI}
                       disabled={isGenerating || !hasInput || backendStatus !== "ok"}
