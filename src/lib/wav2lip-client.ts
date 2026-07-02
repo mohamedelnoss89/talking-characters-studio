@@ -16,21 +16,106 @@ export interface LipSyncJobStatus {
   has_video: boolean;
 }
 
+export interface TtsVoice {
+  id: string;
+  name: string;
+  gender: "Male" | "Female";
+  lang: string;
+  label_ar: string;
+  label_en: string;
+}
+
+export interface VoicesResponse {
+  voices: TtsVoice[];
+  default: string;
+  error?: string;
+}
+
+/**
+ * يجيب قائمة الأصوات من الـ backend
+ */
+export async function listVoices(): Promise<VoicesResponse> {
+  try {
+    const res = await fetch(`/api/voices`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Voices fetch failed: ${res.status}`);
+    return res.json();
+  } catch (e: any) {
+    return {
+      voices: [],
+      default: "ar-EG-SalmaNeural",
+      error: e?.message || "Voices unavailable",
+    };
+  }
+}
+
+/**
+ * يولّد معاينة صوتية من نص (MP3 blob)
+ */
+export async function previewTts(
+  text: string,
+  voice: string,
+  rate = "+0%"
+): Promise<Blob> {
+  const formData = new FormData();
+  formData.append("text", text);
+  formData.append("voice", voice);
+  formData.append("rate", rate);
+
+  const res = await fetch(`/api/tts`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`TTS failed: ${res.status} ${errText}`);
+  }
+  return res.blob();
+}
+
 /**
  * يبدأ عملية الـ lip sync
- * Returns: job_id
+ * - لو script موجود، الباك هاند هيولّد الصوت بـ TTS
+ * - لو audioFile موجود، الباك هاند هيستخدمه مباشرة
+ * لازم واحد منهم على الأقل
  */
 export async function startLipSync(
   imageBlob: Blob,
-  audioBlob: Blob,
-  imageName = "character.png",
-  audioName = "audio.wav",
-  pads = "0,10,0,0",
-  resizeFactor = 1
+  options: {
+    audioFile?: Blob | File | null;
+    scriptText?: string;
+    voice?: string;
+    rate?: string;
+    imageName?: string;
+    audioName?: string;
+    pads?: string;
+    resizeFactor?: number;
+  }
 ): Promise<{ job_id: string }> {
+  const {
+    audioFile,
+    scriptText,
+    voice = "ar-EG-SalmaNeural",
+    rate = "+0%",
+    imageName = "character.png",
+    audioName = "audio.wav",
+    pads = "0,10,0,0",
+    resizeFactor = 1,
+  } = options;
+
+  if (!audioFile && !scriptText?.trim()) {
+    throw new Error("لازم ترفع صوت أو تكتب سكربت");
+  }
+
   const formData = new FormData();
   formData.append("file", imageBlob, imageName);
-  formData.append("audio", audioBlob, audioName);
+  if (audioFile) {
+    formData.append("audio", audioFile, audioName);
+  }
+  if (scriptText) {
+    formData.append("text", scriptText);
+  }
+  formData.append("voice", voice);
+  formData.append("rate", rate);
   formData.append("pads", pads);
   formData.append("resize_factor", String(resizeFactor));
 

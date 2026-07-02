@@ -4,12 +4,10 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -18,12 +16,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Users,
   Upload,
   Music,
-  Settings as SettingsIcon,
   Play,
-  Square,
   Download,
   Sparkles,
   Eye,
@@ -34,6 +29,9 @@ import {
   Cpu,
   Zap,
   AlertCircle,
+  Type,
+  Volume2,
+  User,
 } from "lucide-react";
 import { translations, type Language } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/toaster";
@@ -42,14 +40,11 @@ import {
   pollJobUntilDone,
   downloadVideo,
   cleanupJob,
-  checkBackendHealth,
+  listVoices,
+  previewTts,
   type LipSyncJobStatus,
+  type TtsVoice,
 } from "@/lib/wav2lip-client";
-
-const CHARACTER_FILES = Array.from({ length: 18 }, (_, i) => {
-  const num = String(i + 1).padStart(2, "0");
-  return `/characters/char_${num}.png`;
-});
 
 // Convert AudioBuffer to WAV Blob (للمعاينة الصوتية)
 function audioBufferToWav(buffer: AudioBuffer): Blob {
@@ -150,13 +145,27 @@ export default function Home() {
   const [lang, setLang] = useState<Language>("ar");
   const t = translations[lang];
 
-  const [selectedCharacter, setSelectedCharacter] = useState<number | null>(null);
+  // Image state
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const [imageFile, setImageFile] = useState<File | null>(null); // ملف الصورة الأصلي
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageReady, setImageReady] = useState(false);
+
+  // Audio/script state
+  const [audioMode, setAudioMode] = useState<"script" | "audio">("script");
+  const [scriptText, setScriptText] = useState<string>("");
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
-  const [audioFile, setAudioFile] = useState<File | null>(null); // ملف الصوت الأصلي
+  const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioFileName, setAudioFileName] = useState<string>("");
   const [audioDuration, setAudioDuration] = useState<number>(0);
+
+  // Voices state
+  const [voices, setVoices] = useState<TtsVoice[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState<string>("ar-EG-SalmaNeural");
+  const [speechRate, setSpeechRate] = useState<string>("+0%");
+  const [previewingTts, setPreviewingTts] = useState(false);
+  const [ttsPreviewUrl, setTtsPreviewUrl] = useState<string | null>(null);
+
+  // Generation state
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateProgress, setGenerateProgress] = useState(0);
   const [generateMessage, setGenerateMessage] = useState<string>("");
@@ -164,7 +173,6 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("character");
   const [debugInfo, setDebugInfo] = useState<string>("");
-  const [imageReady, setImageReady] = useState(false);
   const [backendStatus, setBackendStatus] = useState<"checking" | "ok" | "down" | "starting">("checking");
   const [backendInfo, setBackendInfo] = useState<{ device: string; model_loaded: boolean } | null>(null);
 
@@ -187,7 +195,6 @@ export default function Home() {
           setBackendInfo({ device: health.device, model_loaded: health.model_loaded });
         } else if (health.status === "starting") {
           setBackendStatus("starting");
-          // Retry sooner if starting
           retryCount++;
           if (retryCount < 10) {
             setTimeout(check, 3000);
@@ -207,7 +214,19 @@ export default function Home() {
     };
   }, []);
 
-  const loadCharacterImage = useCallback((src: string): Promise<HTMLImageElement> => {
+  // === تحميل قائمة الأصوات ===
+  useEffect(() => {
+    listVoices().then((resp) => {
+      if (resp.voices && resp.voices.length > 0) {
+        setVoices(resp.voices);
+        if (resp.default) setSelectedVoice(resp.default);
+      }
+    }).catch((e) => {
+      console.warn("Failed to load voices:", e);
+    });
+  }, []);
+
+  const loadImage = useCallback((src: string): Promise<HTMLImageElement> => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -241,40 +260,11 @@ export default function Home() {
     ctx.fillText("Wav2Lip", canvas.width - 73, 28);
   }, []);
 
-  // رسم المعاينة لما الصورة تتغير
   useEffect(() => {
     if (imageReady && !videoUrl) {
       drawPreview();
     }
   }, [imageReady, videoUrl, drawPreview]);
-
-  // اختيار شخصية جاهزة - وتحميل الـ File object
-  const handleSelectCharacter = async (index: number) => {
-    setDebugInfo("");
-    setSelectedCharacter(index);
-    setUploadedImage(null);
-    setVideoBlob(null);
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoUrl(null);
-    try {
-      const img = await loadCharacterImage(CHARACTER_FILES[index]);
-      imageRef.current = img;
-      setImageReady(true);
-
-      // حمّل الـ File object من الـ URL
-      const resp = await fetch(CHARACTER_FILES[index]);
-      const blob = await resp.blob();
-      const file = new File([blob], `char_${String(index + 1).padStart(2, "0")}.png`, { type: "image/png" });
-      setImageFile(file);
-
-      toast({
-        title: lang === "ar" ? "تم اختيار الشخصية" : "Character Selected",
-        description: `#${index + 1} ${t.characters[index]}`,
-      });
-    } catch (e) {
-      setDebugInfo(lang === "ar" ? "فشل تحميل الصورة" : "Failed to load image");
-    }
-  };
 
   // رفع صورة من الجهاز
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -283,15 +273,15 @@ export default function Home() {
 
     const url = URL.createObjectURL(file);
     setUploadedImage(url);
-    setSelectedCharacter(null);
     setImageReady(false);
     setImageFile(file);
     setVideoBlob(null);
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoUrl(null);
+    setDebugInfo("");
 
     try {
-      const img = await loadCharacterImage(url);
+      const img = await loadImage(url);
       imageRef.current = img;
       setImageReady(true);
       toast({
@@ -332,21 +322,68 @@ export default function Home() {
     }
   };
 
-  // === توليد الفيديو باستخدام Wav2Lip AI ===
+  // معاينة TTS
+  const handlePreviewTts = async () => {
+    if (!scriptText.trim()) {
+      toast({
+        variant: "destructive",
+        title: lang === "ar" ? "نص فاضي" : "Empty script",
+        description: lang === "ar" ? "اكتب نص الأول" : "Write some text first",
+      });
+      return;
+    }
+    setPreviewingTts(true);
+    if (ttsPreviewUrl) {
+      URL.revokeObjectURL(ttsPreviewUrl);
+      setTtsPreviewUrl(null);
+    }
+    try {
+      const blob = await previewTts(scriptText, selectedVoice, speechRate);
+      const url = URL.createObjectURL(blob);
+      setTtsPreviewUrl(url);
+      toast({
+        title: lang === "ar" ? "تم توليد المعاينة" : "Preview ready",
+        description: `${(blob.size / 1024).toFixed(1)} KB · ${selectedVoice}`,
+      });
+    } catch (e: any) {
+      toast({
+        variant: "destructive",
+        title: lang === "ar" ? "خطأ في TTS" : "TTS Error",
+        description: e?.message || String(e),
+      });
+    } finally {
+      setPreviewingTts(false);
+    }
+  };
+
+  // === توليد الفيديو ===
   const handleGenerateAI = async () => {
     setDebugInfo("");
-    if (!imageFile || !audioFile) {
-      const msg = !imageFile
-        ? (lang === "ar" ? "اختار شخصية الأول" : "Select a character first")
-        : (lang === "ar" ? "ارفع ملف صوتي الأول" : "Upload an audio file first");
+    if (!imageFile) {
+      const msg = lang === "ar" ? "ارفع صورة الأول" : "Upload an image first";
       setDebugInfo(msg);
       toast({
         variant: "destructive",
         title: lang === "ar" ? "بيانات ناقصة" : "Missing Data",
         description: msg,
       });
-      if (!imageFile) setActiveTab("character");
-      else setActiveTab("voice");
+      setActiveTab("character");
+      return;
+    }
+
+    const hasAudio = !!audioFile;
+    const hasScript = !!scriptText.trim();
+    if (!hasAudio && !hasScript) {
+      const msg = lang === "ar"
+        ? "ارفع ملف صوتي أو اكتب سكربت الأول"
+        : "Upload audio or write a script first";
+      setDebugInfo(msg);
+      toast({
+        variant: "destructive",
+        title: lang === "ar" ? "بيانات ناقصة" : "Missing Data",
+        description: msg,
+      });
+      setActiveTab("voice");
       return;
     }
 
@@ -374,21 +411,25 @@ export default function Home() {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoUrl(null);
 
-    // ⚠️ defer tab switch to next tick to avoid React insertBefore race
-    // (Next.js 16 + Turbopack + concurrent rendering)
     requestAnimationFrame(() => setActiveTab("preview"));
 
     try {
       // 1. ابدأ الـ job
-      setGenerateMessage(lang === "ar" ? "بتقديم الطلب للـ AI..." : "Submitting to AI...");
-      const { job_id } = await startLipSync(
-        imageFile,
-        audioFile,
-        imageFile.name || "character.png",
-        audioFile.name || "audio.wav",
-        "0,10,0,0",
-        1
+      setGenerateMessage(
+        audioMode === "script"
+          ? (lang === "ar" ? "بتوليد الصوت من السكربت..." : "Generating audio from script...")
+          : (lang === "ar" ? "بتقديم الطلب للـ AI..." : "Submitting to AI...")
       );
+      const { job_id } = await startLipSync(imageFile, {
+        audioFile: audioMode === "audio" ? audioFile : null,
+        scriptText: audioMode === "script" ? scriptText : undefined,
+        voice: selectedVoice,
+        rate: speechRate,
+        imageName: imageFile.name || "character.png",
+        audioName: audioFile?.name || "audio.wav",
+        pads: "0,10,0,0",
+        resizeFactor: 1,
+      });
       jobIdRef.current = job_id;
       console.log("Job started:", job_id);
 
@@ -401,9 +442,8 @@ export default function Home() {
           setGenerateMessage(status.message || (lang === "ar" ? "جاري المعالجة..." : "Processing..."));
         },
         1500,
-        240 // 6 دقائق timeout
+        240
       );
-
       console.log("Job completed:", finalStatus);
 
       // 3. حمّل الفيديو
@@ -421,7 +461,6 @@ export default function Home() {
         description: `${(blob.size / 1024 / 1024).toFixed(1)} MB · MP4 · Wav2Lip AI`,
       });
 
-      // 4. تنظيف
       setTimeout(() => cleanupJob(job_id), 30000);
     } catch (e: any) {
       const msg = e?.message || String(e);
@@ -460,19 +499,29 @@ export default function Home() {
   useEffect(() => {
     return () => {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
+      if (ttsPreviewUrl) URL.revokeObjectURL(ttsPreviewUrl);
       if (jobIdRef.current) cleanupJob(jobIdRef.current);
     };
-  }, [videoUrl]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
+  const hasInput = imageFile && (audioFile || scriptText.trim());
   const status = !imageFile
     ? t.statusSelectCharacter
-    : !audioFile
+    : !audioFile && !scriptText.trim()
     ? t.statusSelectAudio
     : backendStatus !== "ok"
     ? (lang === "ar" ? "في انتظار السيرفر..." : "Waiting for backend...")
     : t.statusReady;
 
   const isRTL = lang === "ar";
+  const selectedVoiceObj = voices.find((v) => v.id === selectedVoice);
+  const scriptChars = scriptText.length;
+  const rateOptions = [
+    { value: "-15%", label: t.speedSlow },
+    { value: "+0%", label: t.speedNormal },
+    { value: "+15%", label: t.speedFast },
+  ];
 
   return (
     <div
@@ -553,7 +602,7 @@ export default function Home() {
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid grid-cols-3 mb-6 bg-black/30 border border-purple-500/20">
                 <TabsTrigger value="character" className="data-[state=active]:bg-purple-500/30">
-                  <Users className="w-4 h-4 mr-2" />
+                  <User className="w-4 h-4 mr-2" />
                   <span className="hidden sm:inline">{t.tabCharacter}</span>
                 </TabsTrigger>
                 <TabsTrigger value="voice" className="data-[state=active]:bg-purple-500/30">
@@ -566,61 +615,39 @@ export default function Home() {
                 </TabsTrigger>
               </TabsList>
 
-              {/* Character Tab */}
+              {/* Character Tab - upload only */}
               <TabsContent value="character">
                 <Card className="p-6 bg-black/30 border-purple-500/20">
                   <div className="mb-4">
-                    <h3 className="text-lg font-semibold text-purple-200 mb-1">{t.sectionPresets}</h3>
-                    <p className="text-sm text-gray-400">{t.presetDesc}</p>
+                    <h3 className="text-lg font-semibold text-purple-200 mb-1">{t.sectionUpload}</h3>
+                    <p className="text-sm text-gray-400">{t.uploadHint}</p>
                   </div>
 
-                  <ScrollArea className="h-72 rounded-lg">
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3 p-1">
-                      {CHARACTER_FILES.map((file, i) => (
-                        <button
-                          key={i}
-                          onClick={() => handleSelectCharacter(i)}
-                          className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all hover:scale-105 ${
-                            selectedCharacter === i
-                              ? "border-purple-500 ring-2 ring-purple-500/50"
-                              : "border-transparent hover:border-purple-500/50"
-                          }`}
-                        >
-                          <img
-                            src={file}
-                            alt={t.characters[i]}
-                            className="w-full h-full object-cover"
-                            loading="lazy"
-                          />
-                          {selectedCharacter === i && (
-                            <div className="absolute inset-0 bg-purple-500/30 flex items-center justify-center">
-                              <CheckCircle2 className="w-6 h-6 text-white" />
-                            </div>
-                          )}
-                          <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[10px] py-1 px-1 text-center">
-                            #{i + 1}
-                          </div>
-                        </button>
-                      ))}
+                  <label className="block">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageUpload}
+                      className="hidden"
+                    />
+                    <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-10 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
+                      <Upload className="w-12 h-12 text-purple-400 mb-3" />
+                      <p className="text-base text-purple-200">{t.uploadButton}</p>
+                      <p className="text-xs text-gray-400 mt-1">{t.uploadHint}</p>
                     </div>
-                  </ScrollArea>
+                  </label>
 
-                  <div className="mt-6 pt-6 border-t border-purple-500/10">
-                    <h4 className="text-sm font-semibold text-purple-200 mb-2">{t.sectionUpload}</h4>
-                    <label className="block">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={handleImageUpload}
-                        className="hidden"
-                      />
-                      <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-6 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
-                        <Upload className="w-8 h-8 text-purple-400 mb-2" />
-                        <p className="text-sm text-purple-200">{t.uploadButton}</p>
-                        <p className="text-xs text-gray-400 mt-1">{t.uploadHint}</p>
+                  {imageFile && (
+                    <div className="mt-4 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center gap-3">
+                      <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-purple-100 truncate">{imageFile.name}</p>
+                        <p className="text-xs text-gray-400">
+                          {(imageFile.size / 1024).toFixed(1)} KB
+                        </p>
                       </div>
-                    </label>
-                  </div>
+                    </div>
+                  )}
                 </Card>
               </TabsContent>
 
@@ -629,25 +656,178 @@ export default function Home() {
                 <Card className="p-6 bg-black/30 border-purple-500/20">
                   <div className="mb-4">
                     <h3 className="text-lg font-semibold text-purple-200 mb-1">{t.sectionVoice}</h3>
-                    <p className="text-sm text-gray-400">{t.voiceHint}</p>
+                    <p className="text-sm text-gray-400">{t.voiceSelectHint}</p>
                   </div>
 
-                  <label className="block">
-                    <input
-                      type="file"
-                      accept="audio/*"
-                      onChange={handleAudioUpload}
-                      className="hidden"
-                    />
-                    <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-8 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
-                      <AudioLines className="w-10 h-10 text-purple-400 mb-3" />
-                      <p className="text-sm text-purple-200">{t.voiceButton}</p>
-                      <p className="text-xs text-gray-400 mt-1">{t.voiceHint}</p>
+                  {/* Mode switch */}
+                  <div className="mb-6">
+                    <Label className="text-xs text-gray-400 mb-2 block">{t.audioScriptTabs}</Label>
+                    <div className="grid grid-cols-2 gap-2 p-1 bg-black/30 rounded-lg border border-purple-500/20">
+                      <button
+                        type="button"
+                        onClick={() => setAudioMode("script")}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                          audioMode === "script"
+                            ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                            : "text-gray-400 hover:text-purple-200"
+                        }`}
+                      >
+                        <Type className="w-4 h-4" />
+                        {t.scriptMode}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAudioMode("audio")}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                          audioMode === "audio"
+                            ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                            : "text-gray-400 hover:text-purple-200"
+                        }`}
+                      >
+                        <AudioLines className="w-4 h-4" />
+                        {t.audioMode}
+                      </button>
                     </div>
-                  </label>
+                  </div>
 
-                  {audioBuffer && (
-                    <AudioPreview audioBuffer={audioBuffer} fileName={audioFileName} duration={audioDuration} />
+                  {/* Voice selector - visible in script mode */}
+                  {audioMode === "script" && (
+                    <>
+                      <div className="mb-5">
+                        <Label className="text-sm text-purple-200 mb-2 block flex items-center gap-2">
+                          <Volume2 className="w-4 h-4" />
+                          {t.sectionVoiceSelect}
+                        </Label>
+                        <Select value={selectedVoice} onValueChange={setSelectedVoice}>
+                          <SelectTrigger className="bg-black/40 border-purple-500/30 text-purple-100">
+                            <SelectValue placeholder={t.sectionVoiceSelect} />
+                          </SelectTrigger>
+                          <SelectContent className="bg-slate-900 border-purple-500/30 max-h-80">
+                            {voices.length === 0 ? (
+                              <SelectItem value="ar-EG-SalmaNeural">
+                                {lang === "ar" ? "سلمى (مصر - أنثى)" : "Salma (Egypt - Female)"}
+                              </SelectItem>
+                            ) : (
+                              voices.map((v) => (
+                                <SelectItem key={v.id} value={v.id}>
+                                  <span className="flex items-center gap-2">
+                                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                      v.gender === "Female"
+                                        ? "bg-pink-500/20 text-pink-300"
+                                        : "bg-blue-500/20 text-blue-300"
+                                    }`}>
+                                      {v.gender === "Female" ? "♀" : "♂"}
+                                    </span>
+                                    {lang === "ar" ? v.label_ar : v.label_en}
+                                  </span>
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* Speech rate */}
+                      <div className="mb-5">
+                        <Label className="text-sm text-purple-200 mb-2 block">{t.speedLabel}</Label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {rateOptions.map((opt) => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => setSpeechRate(opt.value)}
+                              className={`px-3 py-2 rounded-md text-sm transition-all ${
+                                speechRate === opt.value
+                                  ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                                  : "bg-black/30 text-gray-400 border border-transparent hover:border-purple-500/30"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Script input */}
+                      <div className="mb-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <Label className="text-sm text-purple-200 flex items-center gap-2">
+                            <Type className="w-4 h-4" />
+                            {t.sectionScript}
+                          </Label>
+                          <Badge variant="outline" className="text-xs">
+                            {scriptChars} {t.scriptCharsCount}
+                          </Badge>
+                        </div>
+                        <textarea
+                          value={scriptText}
+                          onChange={(e) => setScriptText(e.target.value.slice(0, 5000))}
+                          placeholder={t.scriptPlaceholder}
+                          rows={6}
+                          className="w-full px-3 py-2 rounded-lg bg-black/40 border border-purple-500/30 text-purple-100 placeholder-gray-500 focus:outline-none focus:border-purple-500/60 resize-y text-sm leading-relaxed"
+                          dir={isRTL ? "rtl" : "ltr"}
+                        />
+                        <p className="text-xs text-gray-400 mt-1">{t.scriptHint}</p>
+                      </div>
+
+                      {/* Preview TTS */}
+                      <Button
+                        type="button"
+                        onClick={handlePreviewTts}
+                        disabled={previewingTts || !scriptText.trim() || backendStatus !== "ok"}
+                        variant="outline"
+                        className="w-full border-purple-500/30 hover:bg-purple-500/10"
+                      >
+                        {previewingTts ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            {t.previewing}
+                          </>
+                        ) : (
+                          <>
+                            <Volume2 className="w-4 h-4 mr-2" />
+                            {t.previewVoice}
+                          </>
+                        )}
+                      </Button>
+
+                      {ttsPreviewUrl && (
+                        <div className="mt-3 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Music className="w-4 h-4 text-purple-300" />
+                            <span className="text-sm text-purple-100">
+                              {selectedVoiceObj
+                                ? (lang === "ar" ? selectedVoiceObj.label_ar : selectedVoiceObj.label_en)
+                                : selectedVoice}
+                            </span>
+                          </div>
+                          <audio controls autoPlay src={ttsPreviewUrl} className="w-full h-8" />
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* Audio file upload mode */}
+                  {audioMode === "audio" && (
+                    <>
+                      <label className="block">
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          onChange={handleAudioUpload}
+                          className="hidden"
+                        />
+                        <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-8 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
+                          <AudioLines className="w-10 h-10 text-purple-400 mb-3" />
+                          <p className="text-sm text-purple-200">{t.voiceButton}</p>
+                          <p className="text-xs text-gray-400 mt-1">{t.voiceHint}</p>
+                        </div>
+                      </label>
+
+                      {audioBuffer && (
+                        <AudioPreview audioBuffer={audioBuffer} fileName={audioFileName} duration={audioDuration} />
+                      )}
+                    </>
                   )}
                 </Card>
               </TabsContent>
@@ -671,10 +851,9 @@ export default function Home() {
                   </div>
 
                   <div className="space-y-4">
-                    {/* AI Generation Button - prominent */}
                     <Button
                       onClick={handleGenerateAI}
-                      disabled={isGenerating || !imageFile || !audioFile || backendStatus !== "ok"}
+                      disabled={isGenerating || !hasInput || backendStatus !== "ok"}
                       className="w-full bg-gradient-to-r from-yellow-500 via-purple-500 to-pink-500 hover:from-yellow-600 hover:via-purple-600 hover:to-pink-600 disabled:opacity-50 disabled:cursor-not-allowed"
                       size="lg"
                     >
@@ -702,7 +881,6 @@ export default function Home() {
                       </div>
                     )}
 
-                    {/* Warning if backend is down */}
                     {backendStatus === "down" && (
                       <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm flex items-start gap-2">
                         <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -782,16 +960,20 @@ export default function Home() {
                 <div className="flex items-center gap-2 mb-1">
                   <div
                     className={`w-2 h-2 rounded-full ${
-                      imageFile && audioFile && backendStatus === "ok"
+                      hasInput && backendStatus === "ok"
                         ? "bg-green-500"
                         : "bg-yellow-500"
                     } animate-pulse`}
                   />
                   <span className="text-xs text-purple-200">{status}</span>
                 </div>
-                {audioFile && (
+                {(audioFile || scriptText) && (
                   <div className="text-xs text-gray-400 mt-1">
-                    {audioDuration.toFixed(1)}s · {audioFileName}
+                    {audioMode === "audio" && audioFile
+                      ? `${audioDuration.toFixed(1)}s · ${audioFileName}`
+                      : audioMode === "script" && scriptText
+                      ? `${scriptText.length} ${t.scriptCharsCount} · ${selectedVoiceObj?.name || selectedVoice}`
+                      : null}
                   </div>
                 )}
                 {debugInfo && (
@@ -801,20 +983,18 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Selected character preview */}
-              {(selectedCharacter !== null || uploadedImage) && (
+              {/* Selected image preview */}
+              {uploadedImage && (
                 <div className="mt-3 p-2 rounded-lg bg-purple-500/5 border border-purple-500/20">
                   <p className="text-xs text-purple-200 mb-2">{t.selectedCharacter}</p>
                   <div className="flex items-center gap-2">
                     <img
-                      src={uploadedImage || CHARACTER_FILES[selectedCharacter!]}
+                      src={uploadedImage}
                       alt="Selected"
                       className="w-12 h-12 rounded-lg object-cover"
                     />
                     <span className="text-xs text-gray-300 truncate">
-                      {selectedCharacter !== null
-                        ? `#${selectedCharacter + 1} ${t.characters[selectedCharacter]}`
-                        : (imageFile?.name || t.uploadButton)}
+                      {imageFile?.name || t.uploadButton}
                     </span>
                   </div>
                 </div>

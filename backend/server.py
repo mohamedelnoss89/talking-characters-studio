@@ -22,6 +22,7 @@ import uvicorn
 
 # Import the runner
 import wav2lip_runner
+import tts_engine
 
 app = FastAPI(title="Wav2Lip Lip Sync API", version="1.0")
 
@@ -58,44 +59,126 @@ async def health():
         "status": "ok",
         "device": wav2lip_runner.DEVICE,
         "model_loaded": wav2lip_runner._model is not None,
+        "tts_available": True,
     }
+
+
+# ============================================================
+# TTS endpoints
+# ============================================================
+@app.get("/voices")
+async def list_voices():
+    """يرجع قائمة الأصوات المقترحة."""
+    return {"voices": tts_engine.get_voices(), "default": tts_engine.get_default_voice()}
+
+
+@app.post("/tts")
+async def text_to_speech(
+    text: str = Form(...),
+    voice: str = Form("ar-EG-SalmaNeural"),
+    rate: str = Form("+0%"),
+):
+    """
+    يحوّل نص إلى ملف صوتي MP3.
+    Returns: MP3 file directly.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="النص فاضي")
+    if len(text) > 5000:
+        raise HTTPException(status_code=400, detail="النص طويل جداً (الحد الأقصى 5000 حرف)")
+
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = os.path.join(UPLOAD_DIR, "tts_" + job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    out_path = os.path.join(job_dir, "tts_output.mp3")
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            tts_engine.synthesize_speech,
+            text, voice, out_path, rate, "+0%", "+0Hz"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"فشل TTS: {e}")
+
+    if not os.path.isfile(out_path):
+        raise HTTPException(status_code=500, detail="ملف الصوت ما اتولّدش")
+
+    return FileResponse(
+        out_path,
+        media_type="audio/mpeg",
+        filename=f"tts_{voice}.mp3",
+    )
 
 
 @app.post("/lip-sync")
 async def lip_sync(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),       # image OR audio (depending on 'kind')
-    audio: UploadFile = File(...),      # audio file
+    file: UploadFile = File(...),       # image (jpg/png)
+    audio: UploadFile = File(None),     # optional audio file (لو المستخدم رفع صوت جاهز)
+    text: str = Form(None),             # optional script text (لو المستخدم كتب سكربت)
+    voice: str = Form("ar-EG-SalmaNeural"),  # voice id لو هنستخدم TTS
+    rate: str = Form("+0%"),            # سرعة الكلام
     pads: str = Form("0,10,0,0"),
     resize_factor: int = Form(1),
 ):
     """
-    Accept image + audio, run Wav2Lip, return the result video.
+    Accept image + (script OR audio), run Wav2Lip, return the result video.
 
     - file: image (jpg/png) - the character face
-    - audio: audio file (wav/mp3)
+    - audio: optional audio file (wav/mp3) - لو المستخدم رفع صوت جاهز
+    - text: optional script - لو المستخدم كتب نص، هنولّد منه صوت بـ TTS
+    - voice: voice id لـ TTS
+    - rate: سرعة الكلام لـ TTS
     - pads: comma-separated padding "top,bottom,left,right"
     - resize_factor: 1 = full res
 
-    Returns the MP4 file directly.
+    لازم one of (audio, text) يكون موجود.
     """
+    if not audio and not (text and text.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="لازم ترفع ملف صوتي أو تكتب سكربت"
+        )
+
     job_id = str(uuid.uuid4())[:8]
     job_dir = os.path.join(UPLOAD_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
 
-    # Save uploaded files
+    # Save image
     image_ext = os.path.splitext(file.filename or "image.png")[1] or ".png"
     image_path = os.path.join(job_dir, f"input_image{image_ext}")
-    audio_ext = os.path.splitext(audio.filename or "audio.wav")[1] or ".wav"
-    audio_path = os.path.join(job_dir, f"input_audio{audio_ext}")
-
     try:
         with open(image_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
-        with open(audio_path, "wb") as f:
-            shutil.copyfileobj(audio.file, f)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save uploads: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save image: {e}")
+
+    # Audio: لو رفع صوت جاهز نستخدمه، غير كده نولّد بـ TTS
+    if audio and audio.filename:
+        audio_ext = os.path.splitext(audio.filename)[1] or ".wav"
+        audio_path = os.path.join(job_dir, f"input_audio{audio_ext}")
+        try:
+            with open(audio_path, "wb") as f:
+                shutil.copyfileobj(audio.file, f)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save audio: {e}")
+        tts_used = False
+    else:
+        # TTS path
+        audio_path = os.path.join(job_dir, "tts_audio.mp3")
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                tts_engine.synthesize_speech,
+                text, voice, audio_path, rate, "+0%", "+0Hz"
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"فشل TTS: {e}")
+        tts_used = True
 
     # Parse pads
     try:
