@@ -15,10 +15,19 @@ v2 improvements:
 """
 
 import os
+import sys
 import cv2
 import numpy as np
 import torch
 from typing import List, Optional, Tuple
+
+# Compatibility shim: basicsr imports torchvision.transforms.functional_tensor
+# but newer torchvision renamed it to _functional_tensor. Create the alias.
+try:
+    import torchvision.transforms._functional_tensor as _ft  # noqa
+    sys.modules.setdefault('torchvision.transforms.functional_tensor', _ft)
+except Exception:
+    pass
 
 # Lazy-loaded singleton
 _enhancer = None
