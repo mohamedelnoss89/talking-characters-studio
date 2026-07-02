@@ -26,6 +26,14 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: eye_blink module not available ({e})")
     BLINK_AVAILABLE = False
 
+# Head movement post-processing (sway + micro-movements + nods + tilt)
+try:
+    from head_movement import HeadMover
+    HEAD_MOVEMENT_AVAILABLE = True
+except ImportError as e:
+    print(f"[Wav2Lip] WARNING: head_movement module not available ({e})")
+    HEAD_MOVEMENT_AVAILABLE = False
+
 # Face enhancement (GFPGAN) - restores lip/face detail lost by Wav2Lip 96x96 upscale
 try:
     from face_enhancer import enhance_frames, FACE_ENHANCE_AVAILABLE
@@ -155,6 +163,7 @@ def run_lip_sync(
     face_det_batch_size: int = 4,
     wav2lip_batch_size: int = 16,
     progress_callback=None,
+    head_movement_intensity: float = 1.0,
 ) -> str:
     """
     يحول صورة + ملف صوتي لفيديو lip sync حقيقي
@@ -168,6 +177,7 @@ def run_lip_sync(
         face_det_batch_size: حجم batch لكشف الوجه
         wav2lip_batch_size: حجم batch لنموذج Wav2Lip
         progress_callback: callable(percent: int)
+        head_movement_intensity: شدة حركة الرأس (0=off, 1=normal, 1.5=strong)
     Returns:
         output_path
     """
@@ -472,6 +482,43 @@ def run_lip_sync(
         print("[Wav2Lip] Skipping blink (module not available)")
         if progress_callback:
             progress_callback(90)
+
+    # =====================================================================
+    # 9.5b. Head Movement (sway + micro-movements + nods + tilt)
+    # يطبّق بعد الرمش لأن الحركة تشتغل على الوجه النهائي (مع الرمش بداخله)
+    # =====================================================================
+    if HEAD_MOVEMENT_AVAILABLE and head_movement_intensity > 0.05:
+        print(f"[Wav2Lip] Applying head movement (professional, intensity={head_movement_intensity})...")
+        try:
+            # progress: 90-95% during head movement (5% range)
+            def _head_cb(p):
+                if progress_callback:
+                    progress_callback(90 + int(p * 0.05))
+            head_mover = HeadMover(
+                static_image=full_frames[0].copy(),
+                intensity=head_movement_intensity,
+            )
+            generated_frames = head_mover.process_video_frames(
+                generated_frames,
+                fps=FPS,
+                audio_path=audio_path,
+                progress_callback=_head_cb,
+            )
+            head_mover.close()
+            print("[Wav2Lip] Head movement applied successfully")
+        except Exception as e:
+            print(f"[Wav2Lip] WARNING: head movement failed: {e}")
+            import traceback
+            traceback.print_exc()
+            if progress_callback:
+                progress_callback(95)
+    else:
+        if HEAD_MOVEMENT_AVAILABLE:
+            print(f"[Wav2Lip] Head movement disabled (intensity={head_movement_intensity})")
+        else:
+            print("[Wav2Lip] Skipping head movement (module not available)")
+        if progress_callback:
+            progress_callback(95)
 
     if progress_callback:
         progress_callback(95)

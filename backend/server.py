@@ -123,6 +123,7 @@ async def lip_sync(
     rate: str = Form("+0%"),            # سرعة الكلام
     pads: str = Form("0,10,0,0"),
     resize_factor: int = Form(1),
+    head_movement: float = Form(1.0),   # شدة حركة الرأس (0=off, 1=normal, 1.5=strong)
 ):
     """
     Accept image + (script OR audio), run Wav2Lip, return the result video.
@@ -225,6 +226,7 @@ async def lip_sync(
                 4,    # face_det_batch_size
                 16,   # wav2lip_batch_size
                 progress_callback,
+                head_movement,  # head_movement_intensity
             )
             jobs[job_id]["status"] = "completed"
             jobs[job_id]["progress"] = 100

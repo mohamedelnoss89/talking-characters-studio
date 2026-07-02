@@ -165,6 +165,9 @@ export default function Home() {
   const [previewingTts, setPreviewingTts] = useState(false);
   const [ttsPreviewUrl, setTtsPreviewUrl] = useState<string | null>(null);
 
+  // Head movement intensity (0 = off, 0.5 = low, 1.0 = normal, 1.5 = high)
+  const [headMovement, setHeadMovement] = useState<number>(1.0);
+
   // Generation state
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateProgress, setGenerateProgress] = useState(0);
@@ -429,6 +432,7 @@ export default function Home() {
         audioName: audioFile?.name || "audio.wav",
         pads: "0,10,0,0",
         resizeFactor: 1,
+        headMovement,
       });
       jobIdRef.current = job_id;
       console.log("Job started:", job_id);
@@ -851,6 +855,36 @@ export default function Home() {
                   </div>
 
                   <div className="space-y-4">
+                    {/* Head movement intensity control */}
+                    <div className="p-4 rounded-lg bg-purple-500/5 border border-purple-500/20">
+                      <Label className="text-sm text-purple-200 mb-2 block flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-yellow-400" />
+                        {t.motionIntensity}
+                      </Label>
+                      <p className="text-xs text-gray-400 mb-3">{t.motionIntensityHint}</p>
+                      <div className="grid grid-cols-4 gap-2">
+                        {[
+                          { value: 0, label: t.motionIntensityOff },
+                          { value: 0.5, label: t.motionIntensityLow },
+                          { value: 1.0, label: t.motionIntensityMedium },
+                          { value: 1.5, label: t.motionIntensityHigh },
+                        ].map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setHeadMovement(opt.value)}
+                            className={`px-3 py-2 rounded-md text-sm transition-all ${
+                              headMovement === opt.value
+                                ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                                : "bg-black/30 text-gray-400 border border-transparent hover:border-purple-500/30"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     <Button
                       onClick={handleGenerateAI}
                       disabled={isGenerating || !hasInput || backendStatus !== "ok"}
