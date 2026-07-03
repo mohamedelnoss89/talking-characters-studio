@@ -55,10 +55,17 @@ class JobStatus(BaseModel):
 
 @app.get("/health")
 async def health():
+    # Don't crash if torch / Wav2Lip model isn't available — just report it.
+    try:
+        device = wav2lip_runner.DEVICE
+        model_loaded = wav2lip_runner._model is not None
+    except Exception:
+        device = "unavailable"
+        model_loaded = False
     return {
         "status": "ok",
-        "device": wav2lip_runner.DEVICE,
-        "model_loaded": wav2lip_runner._model is not None,
+        "device": device,
+        "model_loaded": model_loaded,
         "tts_available": True,
     }
 
@@ -301,9 +308,15 @@ async def cleanup_job(job_id: str):
 
 
 if __name__ == "__main__":
-    # Pre-load model so first request is fast
-    print("[Server] Pre-loading Wav2Lip model...")
-    wav2lip_runner.load_model()
-    print("[Server] Model loaded. Starting server on port 8000...")
-
+    # Try to pre-load the Wav2Lip model so first request is fast.
+    # If torch / Wav2Lip isn't installed, skip pre-loading — /voices and /tts
+    # will still work, only /lip-sync will fail with a clear error.
+    try:
+        print("[Server] Pre-loading Wav2Lip model...")
+        wav2lip_runner.load_model()
+        print("[Server] Model loaded.")
+    except Exception as e:
+        print(f"[Server] Wav2Lip model NOT loaded (video generation disabled): {e}")
+        print("[Server] /voices and /tts endpoints will still work.")
+    print("[Server] Starting server on port 8000...")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

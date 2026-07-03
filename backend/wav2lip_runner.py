@@ -1,24 +1,105 @@
 """
 Wav2Lip inference wrapper - يحول صورة + صوت لفيديو الـ lip sync حقيقي
+
+NOTE: Heavy imports (torch, cv2, models, face_detection, w2l_audio) are
+performed LAZILY inside the functions that need them. This allows the
+FastAPI server to import this module and serve /voices and /tts endpoints
+even when Wav2Lip's heavy dependencies (torch, the Wav2Lip/ submodule,
+checkpoint files) are not installed. Only /lip-sync will fail with a
+clear error in that case.
 """
 import sys
 import os
-
-# Add Wav2Lip to path
-WAV2LIP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Wav2Lip")
-sys.path.insert(0, WAV2LIP_DIR)
-
-import numpy as np
-import cv2
-import torch
 import subprocess
 import platform
-from tqdm import tqdm
-from models import Wav2Lip
-import face_detection
-import audio as w2l_audio
 
-# Eye blink post-processing
+# Add Wav2Lip to path (directory may not exist; that's fine, we check at use time)
+WAV2LIP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Wav2Lip")
+if os.path.isdir(WAV2LIP_DIR):
+    sys.path.insert(0, WAV2LIP_DIR)
+
+# These lightweight libs are always needed; import up front.
+import numpy as np
+import cv2  # opencv is always installed in this env
+
+# Lazy-loaded heavy modules (torch / Wav2Lip submodules). We expose them
+# via helper accessors so functions can call `_torch()` etc., and the
+# module remains importable even if torch is missing.
+_torch = None  # cache
+_w2l_models = None  # cache for `models.Wav2Lip`
+_face_detection = None  # cache
+_w2l_audio = None  # cache
+_tqdm = None  # cache
+
+
+def _torch():
+    """Lazy torch import. Raises ImportError with clear message if missing."""
+    global _torch
+    if _torch is None:
+        try:
+            import torch as _t
+        except ImportError as e:
+            raise ImportError(
+                "torch is not installed. Wav2Lip video generation requires "
+                "PyTorch. Install it with: pip install torch --index-url "
+                "https://download.pytorch.org/whl/cpu"
+            ) from e
+        _torch = _t
+    return _torch
+
+
+def _w2l_Wav2Lip():
+    global _w2l_models
+    if _w2l_models is None:
+        try:
+            from models import Wav2Lip
+        except ImportError as e:
+            raise ImportError(
+                f"Could not import Wav2Lip model class. Make sure the "
+                f"Wav2Lip/ submodule exists under backend/. Original error: {e}"
+            ) from e
+        _w2l_models = Wav2Lip
+    return _w2l_models
+
+
+def _face_detection():
+    global _face_detection
+    if _face_detection is None:
+        try:
+            import face_detection as fd
+        except ImportError as e:
+            raise ImportError(
+                f"face_detection package not available. Original error: {e}"
+            ) from e
+        _face_detection = fd
+    return _face_detection
+
+
+def _w2l_audio():
+    global _w2l_audio
+    if _w2l_audio is None:
+        try:
+            import audio as a
+        except ImportError as e:
+            raise ImportError(
+                f"Wav2Lip 'audio' helper module not available. Original error: {e}"
+            ) from e
+        _w2l_audio = a
+    return _w2l_audio
+
+
+def _tqdm():
+    global _tqdm
+    if _tqdm is None:
+        try:
+            from tqdm import tqdm as _t
+        except ImportError as e:
+            raise ImportError(f"tqdm not installed: {e}") from e
+        _tqdm = _t
+    return _tqdm
+
+
+# Eye blink post-processing (optional)
 try:
     from eye_blink import BlinkProcessor
     BLINK_AVAILABLE = True
@@ -26,15 +107,10 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: eye_blink module not available ({e})")
     BLINK_AVAILABLE = False
 
-# Head movement post-processing (sway + micro-movements + nods + tilt)
-try:
-    from head_movement import HeadMover
-    HEAD_MOVEMENT_AVAILABLE = True
-except ImportError as e:
-    print(f"[Wav2Lip] WARNING: head_movement module not available ({e})")
-    HEAD_MOVEMENT_AVAILABLE = False
+# Head movement is DISABLED by user request - keep flag for backward compat
+HEAD_MOVEMENT_AVAILABLE = False
 
-# Face enhancement (GFPGAN) - restores lip/face detail lost by Wav2Lip 96x96 upscale
+# Face enhancement (GFPGAN) - optional
 try:
     from face_enhancer import enhance_frames, FACE_ENHANCE_AVAILABLE
     ENHANCE_AVAILABLE = FACE_ENHANCE_AVAILABLE
@@ -42,7 +118,7 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: face_enhancer module not available ({e})")
     ENHANCE_AVAILABLE = False
 
-# Lip enhancement - temporal smoothing + sharpening for better lip motion
+# Lip enhancement - optional
 try:
     from lip_enhancer import enhance_lips_pipeline
     LIP_ENHANCE_AVAILABLE = True
@@ -50,7 +126,7 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: lip_enhancer module not available ({e})")
     LIP_ENHANCE_AVAILABLE = False
 
-# Pro Lip Enhancer v2 - per-frame tracking + edge-aware sharpening + detail transfer
+# Pro Lip Enhancer v2 - optional
 try:
     from pro_lip_enhancer import enhance_lips_pro
     PRO_LIP_AVAILABLE = True
@@ -58,8 +134,7 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: pro_lip_enhancer module not available ({e})")
     PRO_LIP_AVAILABLE = False
 
-# Professional enhancer - Frequency Blending لإضافة ملمس الوجه من GFPGAN
-# يحل مشكلة النخمشة بكفاءة: GFPGAN مرة واحدة + معالجة سريعة لكل إطار
+# Professional enhancer - optional
 try:
     from professional_enhancer import ProfessionalEnhancer
     PRO_ENHANCE_AVAILABLE = True
@@ -67,11 +142,36 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: professional_enhancer module not available ({e})")
     PRO_ENHANCE_AVAILABLE = False
 
-# Output dirs
-TEMP_DIR = os.path.join(WAV2LIP_DIR, "temp")
-RESULTS_DIR = os.path.join(WAV2LIP_DIR, "results")
-os.makedirs(TEMP_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
+
+def _check_wav2lip_available():
+    """Raises a clear, user-friendly error if Wav2Lip can't run."""
+    if not os.path.isdir(WAV2LIP_DIR):
+        raise RuntimeError(
+            f"Wav2Lip directory not found at {WAV2LIP_DIR}. "
+            f"Clone the Wav2Lip repo into backend/Wav2Lip to enable video generation."
+        )
+    ckpt = os.path.join(WAV2LIP_DIR, "checkpoints", "wav2lip_gan.pth")
+    if not os.path.isfile(ckpt):
+        raise RuntimeError(
+            f"Wav2Lip checkpoint not found at {ckpt}. "
+            f"Download wav2lip_gan.pth and place it under "
+            f"backend/Wav2Lip/checkpoints/."
+        )
+    # Will raise ImportError with clear message if torch is missing
+    _torch()
+
+
+# Output dirs (only create if Wav2Lip dir exists)
+if os.path.isdir(WAV2LIP_DIR):
+    TEMP_DIR = os.path.join(WAV2LIP_DIR, "temp")
+    RESULTS_DIR = os.path.join(WAV2LIP_DIR, "results")
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+else:
+    TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+    RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # Config
 CHECKPOINT_PATH = os.path.join(WAV2LIP_DIR, "checkpoints", "wav2lip_gan.pth")
@@ -79,17 +179,29 @@ IMG_SIZE = 96
 MEL_STEP_SIZE = 16
 FPS = 25
 
-# Device
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+# Device — defer real detection until torch is needed. Default to 'cpu'
+# so /health doesn't crash if torch is missing.
+DEVICE = 'cpu'
+try:
+    import torch as _torch_probebe  # noqa: F401
+    if _torch_probebe.cuda.is_available():
+        DEVICE = 'cuda'
+    del _torch_probebe
+except ImportError:
+    pass
 print(f"[Wav2Lip] Using device: {DEVICE}")
 
 # Load model once
 _model = None
 
+
 def load_model():
     global _model
     if _model is not None:
         return _model
+    _check_wav2lip_available()
+    torch = _torch()
+    Wav2Lip = _w2l_Wav2Lip()
     print(f"[Wav2Lip] Loading checkpoint from: {CHECKPOINT_PATH}")
     checkpoint = torch.load(CHECKPOINT_PATH, map_location=lambda storage, loc: storage)
     s = checkpoint["state_dict"]
@@ -116,6 +228,8 @@ def get_smoothened_boxes(boxes, T):
 
 
 def face_detect(images, pads=(0, 10, 0, 0), batch_size=16):
+    face_detection = _face_detection()
+    tqdm = _tqdm()
     detector = face_detection.FaceAlignment(
         face_detection.LandmarksType._2D,
         flip_input=False,
@@ -180,6 +294,11 @@ def run_lip_sync(
         output_path
     """
     print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}")
+
+    # Fail fast with a clear error if Wav2Lip is not set up
+    _check_wav2lip_available()
+    w2l_audio = _w2l_audio()
+    torch = _torch()
 
     # 1. Load image
     full_frames = [cv2.imread(image_path)]
