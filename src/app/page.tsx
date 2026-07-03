@@ -32,6 +32,10 @@ import {
   Type,
   Volume2,
   User,
+  Wand2,
+  Image as ImageIcon,
+  RefreshCw,
+  Info,
 } from "lucide-react";
 import { translations, type Language } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/toaster";
@@ -42,8 +46,14 @@ import {
   cleanupJob,
   listVoices,
   previewTts,
+  generateCharacter,
+  getCharacterOptions,
+  base64ImageToFile,
   type LipSyncJobStatus,
   type TtsVoice,
+  type CharacterStyle,
+  type CharacterGender,
+  type GeneratedCharacter,
 } from "@/lib/wav2lip-client";
 
 export default function Home() {
@@ -51,9 +61,21 @@ export default function Home() {
   const t = translations[lang];
 
   // Image state
+  const [charMode, setCharMode] = useState<"upload" | "generate">("upload");
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imageReady, setImageReady] = useState(false);
+
+  // Character generation state
+  const [charStyles, setCharStyles] = useState<CharacterStyle[]>([]);
+  const [charGenders, setCharGenders] = useState<CharacterGender[]>([]);
+  const [charPrompt, setCharPrompt] = useState<string>("");
+  const [charStyle, setCharStyle] = useState<string>("realistic");
+  const [charGender, setCharGender] = useState<string>("any");
+  const [generatingChar, setGeneratingChar] = useState(false);
+  const [genCharStep, setGenCharStep] = useState<string>("");
+  const [generatedChar, setGeneratedChar] = useState<GeneratedCharacter | null>(null);
+  const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
 
   // Audio/script state
   const [audioMode, setAudioMode] = useState<"script" | "audio">("script");
@@ -119,7 +141,7 @@ export default function Home() {
     };
   }, []);
 
-  // === تحميل قائمة الأصوات ===
+  // === تحميل قائمة الأصوات + خيارات توليد الشخصيات ===
   useEffect(() => {
     listVoices().then((resp) => {
       if (resp.voices && resp.voices.length > 0) {
@@ -128,6 +150,13 @@ export default function Home() {
       }
     }).catch((e) => {
       console.warn("Failed to load voices:", e);
+    });
+
+    getCharacterOptions().then((opts) => {
+      if (opts.styles?.length) setCharStyles(opts.styles);
+      if (opts.genders?.length) setCharGenders(opts.genders);
+    }).catch((e) => {
+      console.warn("Failed to load char options:", e);
     });
   }, []);
 
@@ -185,6 +214,11 @@ export default function Home() {
     setVideoUrl(null);
     setDebugInfo("");
 
+    // امسح أي شخصية مولّدة سابقة
+    setGeneratedChar(null);
+    if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
+    setGeneratedImageUrl(null);
+
     try {
       const img = await loadImage(url);
       imageRef.current = img;
@@ -195,6 +229,104 @@ export default function Home() {
       });
     } catch (e) {
       setDebugInfo(lang === "ar" ? "فشل تحميل الصورة" : "Failed to load image");
+    }
+  };
+
+  // === توليد شخصية جديدة بالـ AI ===
+  const handleGenerateCharacter = async () => {
+    const trimmed = charPrompt.trim();
+    if (!trimmed) {
+      toast({
+        variant: "destructive",
+        title: lang === "ar" ? "الوصف فاضي" : "Empty description",
+        description: lang === "ar" ? "اكتب وصف للشخصية الأول" : "Describe a character first",
+      });
+      return;
+    }
+    if (trimmed.length > 1000) {
+      toast({
+        variant: "destructive",
+        title: t.charPromptTooLong,
+        description: `${trimmed.length} / 1000`,
+      });
+      return;
+    }
+
+    setGeneratingChar(true);
+    setGenCharStep(t.generatingStep1);
+    setGeneratedChar(null);
+    if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
+    setGeneratedImageUrl(null);
+    setDebugInfo("");
+
+    try {
+      setGenCharStep(t.generatingStep1);
+      // ده نداء واحد بس - بيشتغل sync على السيرفر
+      const result = await generateCharacter({
+        prompt: trimmed,
+        style: charStyle,
+        gender: charGender,
+        language: lang,
+      });
+      setGenCharStep(t.generatingStep2);
+
+      // حوّل base64 لـ object URL للمعاينة
+      const cleaned = result.image_base64.replace(/^data:[^;]+;base64,/, "");
+      const binary = atob(cleaned);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: result.image_mime || "image/png" });
+      const url = URL.createObjectURL(blob);
+      setGeneratedImageUrl(url);
+      setGeneratedChar(result);
+
+      toast({
+        title: t.charSuccess,
+        description: lang === "ar" ? "الصورة جاهزة - اضغط \"استخدم الصورة دي\" للمتابعة" : "Image ready - click Use to continue",
+      });
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setDebugInfo(`${t.charError}: ${msg}`);
+      toast({
+        variant: "destructive",
+        title: t.charError,
+        description: msg,
+      });
+    } finally {
+      setGeneratingChar(false);
+      setGenCharStep("");
+    }
+  };
+
+  // اعتمد الشخصية المولّدة كصورة فعّالة (حطّها في imageFile)
+  const handleUseGeneratedCharacter = async () => {
+    if (!generatedChar || !generatedImageUrl) return;
+
+    // امسح أي video سابق
+    setVideoBlob(null);
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    setVideoUrl(null);
+    setDebugInfo("");
+
+    // حوّل base64 لـ File
+    const file = base64ImageToFile(
+      generatedChar.image_base64,
+      generatedChar.image_mime || "image/png",
+      `ai-character-${Date.now()}.png`
+    );
+    setImageFile(file);
+
+    try {
+      const img = await loadImage(generatedImageUrl);
+      imageRef.current = img;
+      setUploadedImage(generatedImageUrl);
+      setImageReady(true);
+      toast({
+        title: lang === "ar" ? "تم اعتماد الشخصية" : "Character selected",
+        description: lang === "ar" ? "تقدر تكمل للصوت والفيديو دلوقتي" : "Proceed to voice & video",
+      });
+    } catch (e) {
+      setDebugInfo(lang === "ar" ? "فشل تحميل صورة الشخصية" : "Failed to load generated image");
     }
   };
 
@@ -412,6 +544,7 @@ export default function Home() {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (ttsPreviewUrl) URL.revokeObjectURL(ttsPreviewUrl);
       if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl);
+      if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
       if (jobIdRef.current) cleanupJob(jobIdRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -527,38 +660,310 @@ export default function Home() {
                 </TabsTrigger>
               </TabsList>
 
-              {/* Character Tab - upload only */}
+              {/* Character Tab - upload OR generate */}
               <TabsContent value="character">
                 <Card className="p-6 bg-black/30 border-purple-500/20">
-                  <div className="mb-4">
-                    <h3 className="text-lg font-semibold text-purple-200 mb-1">{t.sectionUpload}</h3>
-                    <p className="text-sm text-gray-300">{t.uploadHint}</p>
+                  {/* Mode switch */}
+                  <div className="mb-6">
+                    <Label className="text-xs text-gray-300 mb-2 block">{t.charModeLabel}</Label>
+                    <div className="grid grid-cols-2 gap-2 p-1 bg-black/30 rounded-lg border border-purple-500/20">
+                      <button
+                        type="button"
+                        onClick={() => setCharMode("upload")}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                          charMode === "upload"
+                            ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                            : "text-gray-200 hover:text-purple-100"
+                        }`}
+                      >
+                        <Upload className="w-4 h-4" />
+                        {t.charModeUpload}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCharMode("generate")}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                          charMode === "generate"
+                            ? "bg-gradient-to-r from-purple-500/30 to-pink-500/30 text-purple-100 border border-pink-500/50"
+                            : "text-gray-200 hover:text-purple-100"
+                        }`}
+                      >
+                        <Wand2 className="w-4 h-4" />
+                        {t.charModeGenerate}
+                      </button>
+                    </div>
                   </div>
 
-                  <label className="block">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageUpload}
-                      className="hidden"
-                    />
-                    <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-10 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
-                      <Upload className="w-12 h-12 text-purple-400 mb-3" />
-                      <p className="text-base text-purple-200">{t.uploadButton}</p>
-                      <p className="text-xs text-gray-300 mt-1">{t.uploadHint}</p>
-                    </div>
-                  </label>
-
-                  {imageFile && (
-                    <div className="mt-4 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center gap-3">
-                      <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-purple-100 truncate">{imageFile.name}</p>
-                        <p className="text-xs text-gray-300">
-                          {(imageFile.size / 1024).toFixed(1)} KB
-                        </p>
+                  {/* === Upload mode === */}
+                  {charMode === "upload" && (
+                    <>
+                      <div className="mb-4">
+                        <h3 className="text-lg font-semibold text-purple-200 mb-1">{t.sectionUpload}</h3>
+                        <p className="text-sm text-gray-300">{t.uploadHint}</p>
                       </div>
-                    </div>
+
+                      <label className="block">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleImageUpload}
+                          className="hidden"
+                        />
+                        <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-10 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
+                          <Upload className="w-12 h-12 text-purple-400 mb-3" />
+                          <p className="text-base text-purple-200">{t.uploadButton}</p>
+                          <p className="text-xs text-gray-300 mt-1">{t.uploadHint}</p>
+                        </div>
+                      </label>
+
+                      {imageFile && (
+                        <div className="mt-4 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center gap-3">
+                          <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-purple-100 truncate">{imageFile.name}</p>
+                            <p className="text-xs text-gray-300">
+                              {(imageFile.size / 1024).toFixed(1)} KB
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* === Generate mode === */}
+                  {charMode === "generate" && (
+                    <>
+                      <div className="mb-4">
+                        <h3 className="text-lg font-semibold text-transparent bg-clip-text bg-gradient-to-r from-purple-300 to-pink-300 mb-1 flex items-center gap-2">
+                          <Wand2 className="w-5 h-5 text-pink-400" />
+                          {t.sectionGenerate}
+                        </h3>
+                        <p className="text-sm text-gray-300">{t.generateHint}</p>
+                      </div>
+
+                      {/* Prompt input */}
+                      <div className="mb-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <Label className="text-sm text-purple-200 flex items-center gap-2">
+                            <Type className="w-4 h-4" />
+                            {t.charPromptLabel}
+                          </Label>
+                          <Badge variant="outline" className="text-xs">
+                            {charPrompt.length} {t.charPromptChars}
+                          </Badge>
+                        </div>
+                        <textarea
+                          value={charPrompt}
+                          onChange={(e) => setCharPrompt(e.target.value.slice(0, 1000))}
+                          placeholder={t.charPromptPlaceholder}
+                          rows={4}
+                          className="w-full px-3 py-2 rounded-lg bg-black/40 border border-purple-500/30 text-purple-100 placeholder-gray-400 focus:outline-none focus:border-pink-500/60 resize-y text-sm leading-relaxed"
+                          dir={isRTL ? "rtl" : "ltr"}
+                        />
+
+                        {/* Quick ideas */}
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {(lang === "ar"
+                            ? [
+                                "رجل أعمال عربي شاب بنظارة وبدلة",
+                                "سيدة عربية في الأربعينات بابتسامة دافئة",
+                                "شاب خليجي بلحية مدروسة وغترة",
+                                "فتاة بشارب أسود وعيون خضراء",
+                                "شخصية كرتونية لطفل فضولي",
+                                "رجل مسؤول كبير في الستينات بهيئة وقور",
+                              ]
+                            : [
+                                "young Arab businessman with glasses and suit",
+                                "Arab woman in her 40s with warm smile",
+                                "Gulf young man with neat beard and gutra",
+                                "girl with black hair and green eyes",
+                                "cartoon character of a curious child",
+                                "dignified senior official in his 60s",
+                              ]
+                          ).map((idea, i) => (
+                            <button
+                              key={i}
+                              type="button"
+                              onClick={() => setCharPrompt(idea)}
+                              className="px-2 py-1 rounded-md text-xs bg-black/40 border border-purple-500/20 text-purple-200 hover:border-pink-500/40 hover:text-pink-200 transition-all"
+                            >
+                              {idea}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Style + Gender selectors */}
+                      <div className="grid grid-cols-2 gap-3 mb-5">
+                        <div>
+                          <Label className="text-sm text-purple-200 mb-2 block flex items-center gap-2">
+                            <ImageIcon className="w-4 h-4" />
+                            {t.charStyleLabel}
+                          </Label>
+                          <Select value={charStyle} onValueChange={setCharStyle}>
+                            <SelectTrigger className="bg-black/40 border-purple-500/30 text-purple-100">
+                              <SelectValue placeholder={t.charStyleLabel} />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-900 border-purple-500/30">
+                              {(charStyles.length > 0
+                                ? charStyles
+                                : [
+                                    { id: "realistic", label: t.charStyleRealistic },
+                                    { id: "anime", label: t.charStyleAnime },
+                                    { id: "cartoon", label: t.charStyleCartoon },
+                                    { id: "3d", label: t.charStyle3d },
+                                    { id: "oil", label: t.charStyleOil },
+                                    { id: "watercolor", label: t.charStyleWatercolor },
+                                  ]
+                              ).map((s) => (
+                                <SelectItem key={s.id} value={s.id}>
+                                  {s.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-sm text-purple-200 mb-2 block flex items-center gap-2">
+                            <User className="w-4 h-4" />
+                            {t.charGenderLabel}
+                          </Label>
+                          <Select value={charGender} onValueChange={setCharGender}>
+                            <SelectTrigger className="bg-black/40 border-purple-500/30 text-purple-100">
+                              <SelectValue placeholder={t.charGenderLabel} />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-900 border-purple-500/30">
+                              {(charGenders.length > 0
+                                ? charGenders
+                                : [
+                                    { id: "any", label_ar: t.charGenderAny, label_en: t.charGenderAny },
+                                    { id: "male", label_ar: t.charGenderMale, label_en: t.charGenderMale },
+                                    { id: "female", label_ar: t.charGenderFemale, label_en: t.charGenderFemale },
+                                  ]
+                              ).map((g) => (
+                                <SelectItem key={g.id} value={g.id}>
+                                  {lang === "ar" ? g.label_ar : g.label_en}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {/* Generate button */}
+                      <Button
+                        onClick={handleGenerateCharacter}
+                        disabled={generatingChar || !charPrompt.trim()}
+                        className="w-full bg-gradient-to-r from-purple-500 via-pink-500 to-yellow-500 hover:from-purple-600 hover:via-pink-600 hover:to-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                        size="lg"
+                      >
+                        {generatingChar ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            {t.generatingCharacter}
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 className="w-4 h-4 mr-2" />
+                            {t.generateCharacterBtn}
+                          </>
+                        )}
+                      </Button>
+
+                      {/* Progress / step indicator */}
+                      {generatingChar && genCharStep && (
+                        <div className="mt-3 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                          <div className="flex items-center gap-2 text-sm text-purple-100">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>{genCharStep}</span>
+                          </div>
+                          <p className="text-[10px] text-gray-400 mt-1">
+                            {lang === "ar"
+                              ? "الـ AI بيرسم الشخصية - ده بياخد 15-30 ثانية"
+                              : "AI is drawing the character - takes 15-30 seconds"}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Generated image + description */}
+                      {generatedChar && generatedImageUrl && !generatingChar && (
+                        <div className="mt-4 space-y-3">
+                          <div className="aspect-square rounded-lg overflow-hidden bg-black border border-pink-500/30 relative">
+                            <img
+                              src={generatedImageUrl}
+                              alt="Generated character"
+                              className="w-full h-full object-contain"
+                            />
+                            <div className="absolute top-2 right-2 px-2 py-1 rounded-md bg-black/70 backdrop-blur-sm border border-pink-500/30">
+                              <span className="text-[10px] font-bold text-pink-300 flex items-center gap-1">
+                                <Sparkles className="w-3 h-3" />
+                                AI GENERATED
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Description */}
+                          <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Info className="w-4 h-4 text-purple-300" />
+                              <span className="text-sm font-semibold text-purple-100">
+                                {t.charDescriptionTitle}
+                              </span>
+                            </div>
+                            <p
+                              className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap"
+                              dir={isRTL ? "rtl" : "ltr"}
+                            >
+                              {lang === "ar"
+                                ? generatedChar.description_ar || generatedChar.description_en
+                                : generatedChar.description_en || generatedChar.description_ar}
+                            </p>
+                            {generatedChar.prompt_used && (
+                              <details className="mt-2">
+                                <summary className="text-xs text-purple-300 cursor-pointer hover:text-purple-200">
+                                  {t.charPromptUsed}
+                                </summary>
+                                <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
+                                  {generatedChar.prompt_used}
+                                </p>
+                              </details>
+                            )}
+                          </div>
+
+                          {/* Action buttons */}
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              onClick={handleGenerateCharacter}
+                              variant="outline"
+                              className="border-purple-500/30 hover:bg-purple-500/10"
+                            >
+                              <RefreshCw className="w-4 h-4 mr-2" />
+                              {t.charRegenerate}
+                            </Button>
+                            <Button
+                              onClick={handleUseGeneratedCharacter}
+                              className="bg-green-600 hover:bg-green-700"
+                            >
+                              <CheckCircle2 className="w-4 h-4 mr-2" />
+                              {t.charUseThis}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Active selected file (after Use) */}
+                      {imageFile && generatedChar && (
+                        <div className="mt-3 p-3 rounded-lg bg-green-500/10 border border-green-500/30 flex items-center gap-3">
+                          <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-green-100 truncate">{imageFile.name}</p>
+                            <p className="text-xs text-gray-300">
+                              {(imageFile.size / 1024).toFixed(1)} KB · {lang === "ar" ? "جاهز للمتابعة" : "ready"}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </Card>
               </TabsContent>

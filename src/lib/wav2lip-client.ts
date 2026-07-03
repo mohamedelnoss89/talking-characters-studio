@@ -202,3 +202,121 @@ export async function checkBackendHealth(): Promise<{
   if (!res.ok) throw new Error("Backend not reachable");
   return res.json();
 }
+
+// ============================================================
+// توليد الشخصيات بالـ AI (Character Generation)
+// ============================================================
+
+export interface CharacterStyle {
+  id: string;
+  label: string;
+}
+
+export interface CharacterGender {
+  id: string;
+  label_ar: string;
+  label_en: string;
+}
+
+export interface GenerateCharacterOptions {
+  prompt: string;
+  style?: string;       // realistic | anime | cartoon | 3d | oil | watercolor
+  gender?: string;      // male | female | any
+  language?: "ar" | "en";
+}
+
+export interface GeneratedCharacter {
+  success: boolean;
+  image_base64: string;       // PNG base64 (بدون data: prefix)
+  image_mime: string;
+  prompt_used: string;        // الـ prompt البصري اللي اتولّد
+  description_ar: string;
+  description_en: string;
+  style: string;
+  gender: string;
+}
+
+/**
+ * يجيب قائمة الـ styles و الـ genders المتاحة لتوليد الشخصيات.
+ */
+export async function getCharacterOptions(): Promise<{
+  styles: CharacterStyle[];
+  genders: CharacterGender[];
+}> {
+  try {
+    const res = await fetch(`/api/generate-character`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+    return res.json();
+  } catch {
+    // fallback ثابت
+    return {
+      styles: [
+        { id: "realistic", label: "واقعي / Realistic" },
+        { id: "anime", label: "أنمي / Anime" },
+        { id: "cartoon", label: "كرتون / Cartoon" },
+        { id: "3d", label: "3D" },
+        { id: "oil", label: "زيت / Oil" },
+        { id: "watercolor", label: "ألوان مائية / Watercolor" },
+      ],
+      genders: [
+        { id: "any", label_ar: "أي نوع", label_en: "Any" },
+        { id: "male", label_ar: "ذكر", label_en: "Male" },
+        { id: "female", label_ar: "أنثى", label_en: "Female" },
+      ],
+    };
+  }
+}
+
+/**
+ * يولّد شخصية جديدة بالـ AI من وصف نصي.
+ * - يرجع base64 PNG + وصف بالعربي والإنجليزي.
+ * - لا يحتاج الـ Python backend - ده Node.js فقط.
+ */
+export async function generateCharacter(
+  options: GenerateCharacterOptions
+): Promise<GeneratedCharacter> {
+  const { prompt, style = "realistic", gender = "any", language = "ar" } = options;
+
+  if (!prompt.trim()) {
+    throw new Error(language === "ar" ? "اكتب وصف للشخصية" : "Describe the character first");
+  }
+
+  const res = await fetch(`/api/generate-character`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, style, gender, language }),
+  });
+
+  if (!res.ok) {
+    let errMsg = `Generation failed (${res.status})`;
+    try {
+      const errBody = await res.json();
+      if (errBody?.error) errMsg = errBody.error;
+    } catch {
+      // ignore
+    }
+    throw new Error(errMsg);
+  }
+
+  return res.json();
+}
+
+/**
+ * يحوّل base64 PNG إلى File object عشان يبقى متوافق مع بقية الـ flow
+ * (نفس الـ interface بتاع رفع الصورة).
+ */
+export function base64ImageToFile(
+  base64: string,
+  mime: string = "image/png",
+  filename: string = "ai-character.png"
+): File {
+  // نظّف الـ data URL prefix لو موجود
+  const cleaned = base64.replace(/^data:[^;]+;base64,/, "");
+  const binary = atob(cleaned);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], { type: mime });
+  return new File([blob], filename, { type: mime });
+}
