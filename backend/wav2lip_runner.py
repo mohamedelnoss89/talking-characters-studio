@@ -25,17 +25,17 @@ import cv2  # opencv is always installed in this env
 # Lazy-loaded heavy modules (torch / Wav2Lip submodules). We expose them
 # via helper accessors so functions can call `_torch()` etc., and the
 # module remains importable even if torch is missing.
-_torch = None  # cache
+_torch_module = None  # cache (NOT named _torch — that's the accessor fn)
 _w2l_models = None  # cache for `models.Wav2Lip`
-_face_detection = None  # cache
-_w2l_audio = None  # cache
-_tqdm = None  # cache
+_face_detection_module = None  # cache
+_w2l_audio_module = None  # cache
+_tqdm_module = None  # cache
 
 
 def _torch():
     """Lazy torch import. Raises ImportError with clear message if missing."""
-    global _torch
-    if _torch is None:
+    global _torch_module
+    if _torch_module is None:
         try:
             import torch as _t
         except ImportError as e:
@@ -44,8 +44,8 @@ def _torch():
                 "PyTorch. Install it with: pip install torch --index-url "
                 "https://download.pytorch.org/whl/cpu"
             ) from e
-        _torch = _t
-    return _torch
+        _torch_module = _t
+    return _torch_module
 
 
 def _w2l_Wav2Lip():
@@ -63,40 +63,40 @@ def _w2l_Wav2Lip():
 
 
 def _face_detection():
-    global _face_detection
-    if _face_detection is None:
+    global _face_detection_module
+    if _face_detection_module is None:
         try:
             import face_detection as fd
         except ImportError as e:
             raise ImportError(
                 f"face_detection package not available. Original error: {e}"
             ) from e
-        _face_detection = fd
-    return _face_detection
+        _face_detection_module = fd
+    return _face_detection_module
 
 
 def _w2l_audio():
-    global _w2l_audio
-    if _w2l_audio is None:
+    global _w2l_audio_module
+    if _w2l_audio_module is None:
         try:
             import audio as a
         except ImportError as e:
             raise ImportError(
                 f"Wav2Lip 'audio' helper module not available. Original error: {e}"
             ) from e
-        _w2l_audio = a
-    return _w2l_audio
+        _w2l_audio_module = a
+    return _w2l_audio_module
 
 
 def _tqdm():
-    global _tqdm
-    if _tqdm is None:
+    global _tqdm_module
+    if _tqdm_module is None:
         try:
             from tqdm import tqdm as _t
         except ImportError as e:
             raise ImportError(f"tqdm not installed: {e}") from e
-        _tqdm = _t
-    return _tqdm
+        _tqdm_module = _t
+    return _tqdm_module
 
 
 # Eye blink post-processing (optional)
@@ -118,29 +118,45 @@ except ImportError as e:
     print(f"[Wav2Lip] WARNING: face_enhancer module not available ({e})")
     ENHANCE_AVAILABLE = False
 
-# Lip enhancement - optional
+# Lip enhancement - optional (also depends on legacy mediapipe.solutions API)
+LIP_ENHANCE_AVAILABLE = False
 try:
-    from lip_enhancer import enhance_lips_pipeline
-    LIP_ENHANCE_AVAILABLE = True
+    import mediapipe as _mp_probe2  # noqa: F401
+    if hasattr(_mp_probe2, 'solutions') and hasattr(_mp_probe2.solutions, 'face_mesh'):
+        from lip_enhancer import enhance_lips_pipeline
+        LIP_ENHANCE_AVAILABLE = True
+        del _mp_probe2
+    else:
+        print("[Wav2Lip] WARNING: lip_enhancer disabled (mediapipe.solutions API not available)")
 except ImportError as e:
     print(f"[Wav2Lip] WARNING: lip_enhancer module not available ({e})")
-    LIP_ENHANCE_AVAILABLE = False
 
-# Pro Lip Enhancer v2 - optional
+# Pro Lip Enhancer v2 - optional (uses legacy mediapipe.solutions API which
+# was removed in mediapipe 0.10+; disable gracefully when unavailable).
+PRO_LIP_AVAILABLE = False
 try:
-    from pro_lip_enhancer import enhance_lips_pro
-    PRO_LIP_AVAILABLE = True
+    import mediapipe as _mp_probe  # noqa: F401
+    if hasattr(_mp_probe, 'solutions') and hasattr(_mp_probe.solutions, 'face_mesh'):
+        from pro_lip_enhancer import enhance_lips_pro
+        PRO_LIP_AVAILABLE = True
+        del _mp_probe
+    else:
+        print("[Wav2Lip] WARNING: pro_lip_enhancer disabled (mediapipe.solutions API not available)")
 except ImportError as e:
     print(f"[Wav2Lip] WARNING: pro_lip_enhancer module not available ({e})")
-    PRO_LIP_AVAILABLE = False
 
-# Professional enhancer - optional
+# Professional enhancer - optional (also depends on legacy mediapipe API)
+PRO_ENHANCE_AVAILABLE = False
 try:
-    from professional_enhancer import ProfessionalEnhancer
-    PRO_ENHANCE_AVAILABLE = True
+    import mediapipe as _mp_probe3  # noqa: F401
+    if hasattr(_mp_probe3, 'solutions') and hasattr(_mp_probe3.solutions, 'face_mesh'):
+        from professional_enhancer import ProfessionalEnhancer
+        PRO_ENHANCE_AVAILABLE = True
+        del _mp_probe3
+    else:
+        print("[Wav2Lip] WARNING: professional_enhancer disabled (mediapipe.solutions API not available)")
 except ImportError as e:
     print(f"[Wav2Lip] WARNING: professional_enhancer module not available ({e})")
-    PRO_ENHANCE_AVAILABLE = False
 
 
 def _check_wav2lip_available():
@@ -183,10 +199,10 @@ FPS = 25
 # so /health doesn't crash if torch is missing.
 DEVICE = 'cpu'
 try:
-    import torch as _torch_probebe  # noqa: F401
-    if _torch_probebe.cuda.is_available():
+    import torch as _torch_probe  # noqa: F401
+    if _torch_probe.cuda.is_available():
         DEVICE = 'cuda'
-    del _torch_probebe
+    del _torch_probe
 except ImportError:
     pass
 print(f"[Wav2Lip] Using device: {DEVICE}")
@@ -203,13 +219,44 @@ def load_model():
     torch = _torch()
     Wav2Lip = _w2l_Wav2Lip()
     print(f"[Wav2Lip] Loading checkpoint from: {CHECKPOINT_PATH}")
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=lambda storage, loc: storage)
-    s = checkpoint["state_dict"]
-    new_s = {}
-    for k, v in s.items():
-        new_s[k.replace('module.', '')] = v
-    model = Wav2Lip()
-    model.load_state_dict(new_s)
+
+    # The Wav2Lip+GAN checkpoint may be saved as either:
+    #   (a) a pickled dict with "state_dict" key (original Wav2Lip), OR
+    #   (b) a TorchScript archive (newer PyTorch auto-detects and dispatches
+    #       to torch.jit.load).
+    # We try both. weights_only=False is required for option (a) on torch 2.6+.
+    try:
+        checkpoint = torch.load(
+            CHECKPOINT_PATH,
+            map_location=lambda storage, loc: storage,
+            weights_only=False,
+        )
+        # If it's a dict with "state_dict", use original path
+        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            s = checkpoint["state_dict"]
+            new_s = {k.replace('module.', ''): v for k, v in s.items()}
+            model = Wav2Lip()
+            model.load_state_dict(new_s)
+            print("[Wav2Lip] Model loaded from pickled state_dict")
+        elif hasattr(checkpoint, "state_dict"):
+            # TorchScript module — extract state_dict into Wav2Lip class
+            sd = checkpoint.state_dict()
+            new_s = {k.replace('module.', ''): v for k, v in sd.items()}
+            model = Wav2Lip()
+            model.load_state_dict(new_s)
+            print("[Wav2Lip] Model loaded from TorchScript state_dict")
+        else:
+            raise RuntimeError(f"Unrecognized checkpoint format: {type(checkpoint)}")
+    except (RuntimeError, ValueError) as e:
+        # Fall back to torch.jit.load if torch.load fails (TorchScript archive)
+        print(f"[Wav2Lip] torch.load failed ({e}); trying torch.jit.load...")
+        jit_model = torch.jit.load(CHECKPOINT_PATH, map_location='cpu')
+        sd = jit_model.state_dict()
+        new_s = {k.replace('module.', ''): v for k, v in sd.items()}
+        model = Wav2Lip()
+        model.load_state_dict(new_s)
+        print("[Wav2Lip] Model loaded from TorchScript via jit.load")
+
     model = model.to(DEVICE)
     model.eval()
     _model = model

@@ -35,11 +35,17 @@ async function startBackend() {
   
   try {
     const serverPath = path.join(process.cwd(), "backend", "server.py");
+    const libsPath = path.join(process.cwd(), ".libs");
+    // Set LD_LIBRARY_PATH so mediapipe can find libGLESv2.so.2
+    const extraLd = `${libsPath}/usr/lib/x86_64-linux-gnu:${libsPath}`;
+    const existingLd = (process.env.LD_LIBRARY_PATH || '').trim();
+    const ldLibraryPath = existingLd ? `${extraLd}:${existingLd}` : extraLd;
+    
     const proc = spawn("/home/z/.venv/bin/python", ["-u", serverPath], {
       cwd: path.join(process.cwd(), "backend"),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: { ...process.env, PYTHONUNBUFFERED: "1", LD_LIBRARY_PATH: ldLibraryPath },
     });
     
     proc.stdout?.on("data", (data) => {
