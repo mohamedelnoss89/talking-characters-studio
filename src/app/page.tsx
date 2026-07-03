@@ -198,7 +198,7 @@ export default function Home() {
     if (imageReady && !videoUrl) {
       drawPreview();
     }
-  }, [imageReady, videoUrl, drawPreview]);
+  }, [imageReady, videoUrl, drawPreview, generatedChar]);
 
   // رفع صورة من الجهاز
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -280,9 +280,41 @@ export default function Home() {
       setGeneratedImageUrl(url);
       setGeneratedChar(result);
 
+      // امسح أي فيديو سابق
+      setVideoBlob(null);
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      setVideoUrl(null);
+      setDebugInfo("");
+
+      //Auto-wire the generated image into the preview canvas + imageFile
+      //عشان مربع المعاينة يشتغل على طول من غير ما المستخدم يضغط حاجة تانية
+      const file = base64ImageToFile(
+        result.image_base64,
+        result.image_mime || "image/png",
+        `ai-character-${Date.now()}.png`
+      );
+      setImageFile(file);
+
+      try {
+        const img = await loadImage(url);
+        imageRef.current = img;
+        setUploadedImage(url);
+        // force preview redraw:
+        // نمرّ بـ false الأول عشان useEffect يتشغّل تاني حتى لو imageReady كان true
+        setImageReady(false);
+        // استنى frame عشان الـ false يتعمل render الأول
+        requestAnimationFrame(() => {
+          setImageReady(true);
+        });
+      } catch (e) {
+        setDebugInfo(lang === "ar" ? "فشل تحميل صورة الشخصية" : "Failed to load generated image");
+      }
+
       toast({
         title: t.charSuccess,
-        description: lang === "ar" ? "الصورة جاهزة - اضغط \"استخدم الصورة دي\" للمتابعة" : "Image ready - click Use to continue",
+        description: lang === "ar"
+          ? "الشخصية جاهزة في المعاينة - تقدر تكمل للصوت والفيديو"
+          : "Character ready in preview - proceed to voice & video",
       });
     } catch (e: any) {
       const msg = e?.message || String(e);
@@ -298,36 +330,15 @@ export default function Home() {
     }
   };
 
-  // اعتمد الشخصية المولّدة كصورة فعّالة (حطّها في imageFile)
-  const handleUseGeneratedCharacter = async () => {
-    if (!generatedChar || !generatedImageUrl) return;
-
-    // امسح أي video سابق
-    setVideoBlob(null);
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoUrl(null);
-    setDebugInfo("");
-
-    // حوّل base64 لـ File
-    const file = base64ImageToFile(
-      generatedChar.image_base64,
-      generatedChar.image_mime || "image/png",
-      `ai-character-${Date.now()}.png`
-    );
-    setImageFile(file);
-
-    try {
-      const img = await loadImage(generatedImageUrl);
-      imageRef.current = img;
-      setUploadedImage(generatedImageUrl);
-      setImageReady(true);
-      toast({
-        title: lang === "ar" ? "تم اعتماد الشخصية" : "Character selected",
-        description: lang === "ar" ? "تقدر تكمل للصوت والفيديو دلوقتي" : "Proceed to voice & video",
-      });
-    } catch (e) {
-      setDebugInfo(lang === "ar" ? "فشل تحميل صورة الشخصية" : "Failed to load generated image");
-    }
+  // زرار "استخدم الصورة دي" - بقى مجرد shortcut للانتقال لتبويب الصوت
+  // (الصورة اتاعتمدت تلقائيًا فوق)
+  const handleUseGeneratedCharacter = () => {
+    if (!generatedChar) return;
+    setActiveTab("voice");
+    toast({
+      title: lang === "ar" ? "تم اعتماد الشخصية" : "Character selected",
+      description: lang === "ar" ? "تقدر تكمل للصوت والفيديو دلوقتي" : "Proceed to voice & video",
+    });
   };
 
   // رفع ملف صوتي - مباشرة بدون AudioContext (أسرع وما بيقعش مع الصيغ المختلفة)
@@ -945,7 +956,7 @@ export default function Home() {
                               className="bg-green-600 hover:bg-green-700"
                             >
                               <CheckCircle2 className="w-4 h-4 mr-2" />
-                              {t.charUseThis}
+                              {lang === "ar" ? "التالي: الصوت" : "Next: Voice"}
                             </Button>
                           </div>
                         </div>
