@@ -234,6 +234,7 @@ export interface GeneratedCharacter {
   description_en: string;
   style: string;
   gender: string;
+  error?: string;             // موجود لو success=false
 }
 
 /**
@@ -281,24 +282,42 @@ export async function generateCharacter(
     throw new Error(language === "ar" ? "اكتب وصف للشخصية" : "Describe the character first");
   }
 
-  const res = await fetch(`/api/generate-character`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, style, gender, language }),
-  });
+  // استخدام AbortController عشان نضمن مهلة 90 ثانية (الـ AI بياخد ~30 ثانية عادة)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 90_000);
 
-  if (!res.ok) {
-    let errMsg = `Generation failed (${res.status})`;
-    try {
-      const errBody = await res.json();
-      if (errBody?.error) errMsg = errBody.error;
-    } catch {
-      // ignore
+  try {
+    const res = await fetch(`/api/generate-character`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, style, gender, language }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      let errMsg = `Generation failed (${res.status})`;
+      try {
+        const errBody = await res.json();
+        if (errBody?.error) errMsg = errBody.error;
+      } catch {
+        // ignore
+      }
+      throw new Error(errMsg);
     }
-    throw new Error(errMsg);
-  }
 
-  return res.json();
+    return res.json();
+  } catch (e: any) {
+    if (e?.name === "AbortError") {
+      throw new Error(
+        language === "ar"
+          ? "انتهى الوقت - الـ AI بطيء. حاول تاني."
+          : "Timed out - AI is slow. Try again."
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**

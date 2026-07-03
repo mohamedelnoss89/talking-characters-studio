@@ -268,6 +268,16 @@ export default function Home() {
         gender: charGender,
         language: lang,
       });
+
+      // Sanity check: الـ response لازم يكون فيه image_base64
+      if (!result.image_base64 || result.image_base64.length < 1000) {
+        throw new Error(
+          result.error || (lang === "ar"
+            ? "الـ AI رجّع صورة فاضية - حاول تاني بوصف مختلف"
+            : "AI returned empty image - try again with a different description")
+        );
+      }
+
       setGenCharStep(t.generatingStep2);
 
       // حوّل base64 لـ object URL للمعاينة
@@ -286,8 +296,8 @@ export default function Home() {
       setVideoUrl(null);
       setDebugInfo("");
 
-      //Auto-wire the generated image into the preview canvas + imageFile
-      //عشان مربع المعاينة يشتغل على طول من غير ما المستخدم يضغط حاجة تانية
+      // Auto-wire the generated image into the preview canvas + imageFile
+      // عشان مربع المعاينة يشتغل على طول من غير ما المستخدم يضغط حاجة تانية
       const file = base64ImageToFile(
         result.image_base64,
         result.image_mime || "image/png",

@@ -13,7 +13,7 @@ import ZAI from "z-ai-web-dev-sdk";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const maxDuration = 120; // ثواني - توليد الصور ممكن ياخد وقت
+export const maxDuration = 300; // 5 دقايق - توليد الصور ممكن ياخد وقت
 
 interface CharacterRequestBody {
   prompt?: string;
@@ -88,7 +88,10 @@ The user gives you a short concept. You must output ONLY a single JSON object (n
   "description_en": "An English description of the character in 2-4 complete sentences, including suggested name, personality, appearance, and a suitable voice/accent hint."
 }
 
-Constraints:
+CRITICAL RULES:
+- The description MUST describe the SPECIFIC character the user asked for ("${userPrompt}").
+- Do NOT output generic filler text like "بيئة الاختبار" / "test environment" / "this is a generic character" / "you can use this to test the app".
+- Do NOT mention that the character is for testing or that this is a test environment.
 - The subject MUST be a ${GENDER_HINT[gender] || "person"}.
 - Visual style direction: ${styleLabel}.
 - Keep it strictly valid JSON. No trailing commas. No comments. No code fences.`;
@@ -137,10 +140,29 @@ Return the JSON now.`;
   const styleSuffix = STYLE_PRESETS[style]?.suffix || STYLE_PRESETS.realistic.suffix;
   const imagePrompt = `${parsed.visual_prompt}, ${styleSuffix}`;
 
+  // Sanitize descriptions: لو الـ LLM output filler عام (زي "بيئة الاختبار") اعمله override
+  // بنص محدد بطلب المستخدم
+  const FILLER_PATTERNS = [
+    /بيئة\s*الاختبار/i,
+    /test\s*environment/i,
+    /generic\s*character/i,
+    /this\s*is\s*a\s*test/i,
+    /use\s*this\s*(to\s*)?test/i,
+  ];
+  const isFiller = (s: string | undefined) =>
+    !s || s.trim().length < 10 || FILLER_PATTERNS.some((re) => re.test(s));
+
+  const descriptionAr = isFiller(parsed.description_ar)
+    ? `شخصية مولّدة بالذكاء الاصطناعي بناءً على وصف: "${userPrompt}".`
+    : parsed.description_ar!;
+  const descriptionEn = isFiller(parsed.description_en)
+    ? `AI-generated character based on concept: "${userPrompt}".`
+    : parsed.description_en!;
+
   return {
     imagePrompt,
-    descriptionAr: parsed.description_ar || "",
-    descriptionEn: parsed.description_en || "",
+    descriptionAr,
+    descriptionEn,
   };
 }
 
@@ -196,7 +218,25 @@ export async function POST(req: NextRequest) {
     );
 
     // 2. ولّد الصورة
-    const base64Image = await generateCharacterImage(imagePrompt);
+    let base64Image: string;
+    try {
+      base64Image = await generateCharacterImage(imagePrompt);
+    } catch (imgErr: any) {
+      console.error("[generate-character] image generation failed:", imgErr);
+      // رجّع الـ description حتى لو فشلت الصورة - الـ UI ممكن يعرضه على الأقل
+      return NextResponse.json(
+        {
+          success: false,
+          error: lang === "ar"
+            ? "فشل توليد الصورة. حاول تاني بوصف مختلف."
+            : "Image generation failed. Try again with a different description.",
+          description_ar: descriptionAr,
+          description_en: descriptionEn,
+          prompt_used: imagePrompt,
+        },
+        { status: 502 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
@@ -211,7 +251,12 @@ export async function POST(req: NextRequest) {
   } catch (err: any) {
     console.error("[generate-character] error:", err);
     return NextResponse.json(
-      { error: err?.message || "Character generation failed" },
+      {
+        success: false,
+        error: err?.message
+          ? `${err.message}`
+          : "Character generation failed",
+      },
       { status: 500 }
     );
   }
