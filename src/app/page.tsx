@@ -454,7 +454,7 @@ export default function Home() {
               <h1 className="text-xl font-bold bg-gradient-to-r from-purple-300 to-pink-300 bg-clip-text text-transparent">
                 {t.appTitle}
               </h1>
-              <p className="text-xs text-gray-400 flex items-center gap-1">
+              <p className="text-xs text-gray-300 flex items-center gap-1">
                 <Cpu className="w-3 h-3" />
                 {t.aiPoweredBy}
               </p>
@@ -532,7 +532,7 @@ export default function Home() {
                 <Card className="p-6 bg-black/30 border-purple-500/20">
                   <div className="mb-4">
                     <h3 className="text-lg font-semibold text-purple-200 mb-1">{t.sectionUpload}</h3>
-                    <p className="text-sm text-gray-400">{t.uploadHint}</p>
+                    <p className="text-sm text-gray-300">{t.uploadHint}</p>
                   </div>
 
                   <label className="block">
@@ -545,7 +545,7 @@ export default function Home() {
                     <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-10 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
                       <Upload className="w-12 h-12 text-purple-400 mb-3" />
                       <p className="text-base text-purple-200">{t.uploadButton}</p>
-                      <p className="text-xs text-gray-400 mt-1">{t.uploadHint}</p>
+                      <p className="text-xs text-gray-300 mt-1">{t.uploadHint}</p>
                     </div>
                   </label>
 
@@ -554,7 +554,7 @@ export default function Home() {
                       <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm text-purple-100 truncate">{imageFile.name}</p>
-                        <p className="text-xs text-gray-400">
+                        <p className="text-xs text-gray-300">
                           {(imageFile.size / 1024).toFixed(1)} KB
                         </p>
                       </div>
@@ -568,12 +568,12 @@ export default function Home() {
                 <Card className="p-6 bg-black/30 border-purple-500/20">
                   <div className="mb-4">
                     <h3 className="text-lg font-semibold text-purple-200 mb-1">{t.sectionVoice}</h3>
-                    <p className="text-sm text-gray-400">{t.voiceSelectHint}</p>
+                    <p className="text-sm text-gray-300">{t.voiceSelectHint}</p>
                   </div>
 
                   {/* Mode switch */}
                   <div className="mb-6">
-                    <Label className="text-xs text-gray-400 mb-2 block">{t.audioScriptTabs}</Label>
+                    <Label className="text-xs text-gray-300 mb-2 block">{t.audioScriptTabs}</Label>
                     <div className="grid grid-cols-2 gap-2 p-1 bg-black/30 rounded-lg border border-purple-500/20">
                       <button
                         type="button"
@@ -581,7 +581,7 @@ export default function Home() {
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
                           audioMode === "script"
                             ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
-                            : "text-gray-400 hover:text-purple-200"
+                            : "text-gray-200 hover:text-purple-100"
                         }`}
                       >
                         <Type className="w-4 h-4" />
@@ -593,7 +593,7 @@ export default function Home() {
                         className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
                           audioMode === "audio"
                             ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
-                            : "text-gray-400 hover:text-purple-200"
+                            : "text-gray-200 hover:text-purple-100"
                         }`}
                       >
                         <AudioLines className="w-4 h-4" />
@@ -651,7 +651,7 @@ export default function Home() {
                               className={`px-3 py-2 rounded-md text-sm transition-all ${
                                 speechRate === opt.value
                                   ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
-                                  : "bg-black/30 text-gray-400 border border-transparent hover:border-purple-500/30"
+                                  : "bg-black/30 text-gray-200 border border-transparent hover:border-purple-500/30"
                               }`}
                             >
                               {opt.label}
@@ -676,10 +676,10 @@ export default function Home() {
                           onChange={(e) => setScriptText(e.target.value.slice(0, 5000))}
                           placeholder={t.scriptPlaceholder}
                           rows={6}
-                          className="w-full px-3 py-2 rounded-lg bg-black/40 border border-purple-500/30 text-purple-100 placeholder-gray-500 focus:outline-none focus:border-purple-500/60 resize-y text-sm leading-relaxed"
+                          className="w-full px-3 py-2 rounded-lg bg-black/40 border border-purple-500/30 text-purple-100 placeholder-gray-400 focus:outline-none focus:border-purple-500/60 resize-y text-sm leading-relaxed"
                           dir={isRTL ? "rtl" : "ltr"}
                         />
-                        <p className="text-xs text-gray-400 mt-1">{t.scriptHint}</p>
+                        <p className="text-xs text-gray-300 mt-1">{t.scriptHint}</p>
                       </div>
 
                       {/* Preview TTS */}
@@ -732,7 +732,7 @@ export default function Home() {
                         <div className="flex flex-col items-center justify-center border-2 border-dashed border-purple-500/30 rounded-lg p-8 cursor-pointer hover:border-purple-500/60 hover:bg-purple-500/5 transition-all">
                           <AudioLines className="w-10 h-10 text-purple-400 mb-3" />
                           <p className="text-sm text-purple-200">{t.voiceButton}</p>
-                          <p className="text-xs text-gray-400 mt-1">{t.voiceHint}</p>
+                          <p className="text-xs text-gray-300 mt-1">{t.voiceHint}</p>
                         </div>
                       </label>
 
@@ -798,7 +798,7 @@ export default function Home() {
                         <p className="text-xs text-center text-purple-200">
                           {generateMessage || t.generating}
                         </p>
-                        <p className="text-[10px] text-center text-gray-500">
+                        <p className="text-[10px] text-center text-gray-400">
                           {lang === "ar"
                             ? "الذكاء الاصطناعي بيتعلم بآلاف الأمثلة - استنى شوية"
                             : "AI is trained on thousands of examples - please wait"}
@@ -893,7 +893,7 @@ export default function Home() {
                   <span className="text-xs text-purple-200">{status}</span>
                 </div>
                 {(audioFile || scriptText) && (
-                  <div className="text-xs text-gray-400 mt-1">
+                  <div className="text-xs text-gray-300 mt-1">
                     {audioMode === "audio" && audioFile
                       ? `${audioDuration.toFixed(1)}s · ${audioFileName}`
                       : audioMode === "script" && scriptText
@@ -932,7 +932,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="mt-auto border-t border-purple-500/20 bg-black/20 py-6">
         <div className="container mx-auto px-4 text-center">
-          <p className="text-xs text-gray-500">{t.footer}</p>
+          <p className="text-xs text-gray-400">{t.footer}</p>
         </div>
       </footer>
 
