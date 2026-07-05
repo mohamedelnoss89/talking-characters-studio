@@ -1,52 +1,34 @@
 #!/bin/bash
-# يبدأ الـ backend (Wav2Lip) و الـ frontend (Next.js) مع بعض
+# Launcher script - بيشتغل من cron أو يدوي
+# بيفحص لو السيرفرين شغالين، لو لأ يشغلهم
 
-set -e
+LOGFILE=/tmp/server-launcher.log
+echo "[$(date +%H:%M:%S)] Launcher running..." >> $LOGFILE
 
-cd /home/z/my-project
-
-echo "=== 1. بدء Wav2Lip Backend (port 8000) ==="
-# تحقق لو شغال بالفعل
-if curl -sS http://localhost:8000/health > /dev/null 2>&1; then
-  echo "[OK] Backend already running"
-else
-  echo "Starting backend..."
-  (setsid bash -c 'cd /home/z/my-project/backend && python3 server.py > /tmp/wav2lip-server.log 2>&1' &)
-  echo "Waiting for backend to load model (may take ~10s)..."
-  for i in $(seq 1 30); do
-    if curl -sS http://localhost:8000/health > /dev/null 2>&1; then
-      echo "[OK] Backend started after ${i}s"
-      curl -sS http://localhost:8000/health
-      echo ""
-      break
-    fi
-    sleep 1
-  done
+# فحص backend
+if ! curl -s -m 3 -o /dev/null http://localhost:8000/health 2>/dev/null; then
+  echo "[$(date +%H:%M:%S)] Backend down - starting..." >> $LOGFILE
+  pkill -9 -f "server.py" 2>/dev/null
+  sleep 1
+  cd /home/z/my-project/backend
+  LD_LIBRARY_PATH="/home/z/my-project/.libs/usr/lib/x86_64-linux-gnu:/home/z/my-project/.libs" \
+    /home/z/.venv/bin/python -u server.py > /tmp/backend.log 2>&1 &
+  echo $! > /tmp/backend.pid
+  disown
+  sleep 5
 fi
 
-echo ""
-echo "=== 2. بدء Next.js Frontend (port 3000) ==="
-# تحقق لو شغال بالفعل
-if curl -sS http://localhost:3000/ > /dev/null 2>&1; then
-  echo "[OK] Frontend already running"
-else
-  echo "Starting frontend..."
-  (setsid bash -c 'cd /home/z/my-project && npm run dev > /tmp/next-dev.log 2>&1' &)
-  echo "Waiting for frontend..."
-  for i in $(seq 1 20); do
-    if curl -sS http://localhost:3000/ > /dev/null 2>&1; then
-      echo "[OK] Frontend started after ${i}s"
-      break
-    fi
-    sleep 1
-  done
+# فحص Next.js
+if ! curl -s -m 3 -o /dev/null http://localhost:3000/api/health 2>/dev/null; then
+  echo "[$(date +%H:%M:%S)] Next.js down - starting..." >> $LOGFILE
+  pkill -9 -f "next-server" 2>/dev/null
+  pkill -9 -f "next dev" 2>/dev/null
+  sleep 1
+  cd /home/z/my-project
+  npm run dev > /tmp/next-dev.log 2>&1 &
+  echo $! > /tmp/next.pid
+  disown
+  sleep 12
 fi
 
-echo ""
-echo "=== الخدمات شغالة ==="
-echo "Frontend:  http://localhost:3000"
-echo "Backend:   http://localhost:8000"
-echo "Health:    http://localhost:8000/health"
-echo ""
-echo "Backend log:  /tmp/wav2lip-server.log"
-echo "Frontend log: /tmp/next-dev.log"
+echo "[$(date +%H:%M:%S)] Done. Backend: $(curl -s -m 2 http://localhost:8000/health 2>/dev/null | head -c 50) | Next: $(curl -s -m 2 -o /dev/null -w '%{http_code}' http://localhost:3000/api/health 2>/dev/null)" >> $LOGFILE
