@@ -20,9 +20,23 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
-# Import the runner
-import wav2lip_runner
-import tts_engine
+# Import tts_engine (needed for /voices and /tts) — try gracefully
+try:
+    import tts_engine
+    TTS_AVAILABLE = True
+except Exception as e:
+    print(f"[Server] WARNING: tts_engine not available ({e})")
+    TTS_AVAILABLE = False
+
+# Import wav2lip_runner — if missing (torch/checkpoints), run in degraded mode.
+# /health and /voices and /tts still work; /lip-sync will return a clear error.
+WAV2LIP_AVAILABLE = False
+try:
+    import wav2lip_runner
+    WAV2LIP_AVAILABLE = True
+except Exception as e:
+    print(f"[Server] WARNING: wav2lip_runner not available ({e}). Running in degraded mode — /lip-sync disabled.")
+    WAV2LIP_AVAILABLE = False
 
 app = FastAPI(title="Wav2Lip Lip Sync API", version="1.0")
 
@@ -57,9 +71,10 @@ class JobStatus(BaseModel):
 async def health():
     return {
         "status": "ok",
-        "device": wav2lip_runner.DEVICE,
-        "model_loaded": wav2lip_runner._model is not None,
-        "tts_available": True,
+        "device": (wav2lip_runner.DEVICE if WAV2LIP_AVAILABLE else "cpu"),
+        "model_loaded": (WAV2LIP_AVAILABLE and wav2lip_runner._model is not None),
+        "tts_available": TTS_AVAILABLE,
+        "wav2lip_available": WAV2LIP_AVAILABLE,
     }
 
 
@@ -69,6 +84,14 @@ async def health():
 @app.get("/voices")
 async def list_voices():
     """يرجع قائمة الأصوات المقترحة."""
+    if not TTS_AVAILABLE:
+        # fallback hardcoded list
+        return {"voices": [
+            {"id": "ar-EG-SalmaNeural", "name": "سلمى", "gender": "Female", "lang": "ar-EG", "label_ar": "سلمى (مصر - أنثى)", "label_en": "Salma (Egypt - Female)"},
+            {"id": "ar-EG-ShakirNeural", "name": "شاكر", "gender": "Male", "lang": "ar-EG", "label_ar": "شاكر (مصر - ذكر)", "label_en": "Shakir (Egypt - Male)"},
+            {"id": "ar-SA-HamedNeural", "name": "حامد", "gender": "Male", "lang": "ar-SA", "label_ar": "حامد (السعودية - ذكر)", "label_en": "Hamed (Saudi - Male)"},
+            {"id": "ar-SA-ZariyahNeural", "name": "زارية", "gender": "Female", "lang": "ar-SA", "label_ar": "زارية (السعودية - أنثى)", "label_en": "Zariyah (Saudi - Female)"},
+        ], "default": "ar-EG-SalmaNeural"}
     return {"voices": tts_engine.get_voices(), "default": tts_engine.get_default_voice()}
 
 
@@ -82,6 +105,9 @@ async def text_to_speech(
     يحوّل نص إلى ملف صوتي MP3.
     Returns: MP3 file directly.
     """
+    if not TTS_AVAILABLE:
+        raise HTTPException(status_code=503, detail="TTS engine غير متوفر على السيرفر")
+
     text = (text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="النص فاضي")
@@ -137,6 +163,12 @@ async def lip_sync(
 
     لازم one of (audio, text) يكون موجود.
     """
+    if not WAV2LIP_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="عذرًا، نموذج Wav2Lip غير مثبت على السيرفر. ميزة lip-sync معطّلة مؤقتًا — بس ميزة توليد الشخصيات وTTS شغّالة."
+        )
+
     if not audio and not (text and text.strip()):
         raise HTTPException(
             status_code=400,
@@ -301,9 +333,16 @@ async def cleanup_job(job_id: str):
 
 
 if __name__ == "__main__":
-    # Pre-load model so first request is fast
-    print("[Server] Pre-loading Wav2Lip model...")
-    wav2lip_runner.load_model()
-    print("[Server] Model loaded. Starting server on port 8000...")
+    # Pre-load model so first request is fast (only if available)
+    if WAV2LIP_AVAILABLE:
+        print("[Server] Pre-loading Wav2Lip model...")
+        try:
+            wav2lip_runner.load_model()
+            print("[Server] Model loaded.")
+        except Exception as e:
+            print(f"[Server] Model load failed ({e}) — /lip-sync will return 503.")
+    else:
+        print("[Server] Running in degraded mode (Wav2Lip not installed). /health, /voices, /tts still work.")
 
+    print("[Server] Starting server on port 8000...")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
