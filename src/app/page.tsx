@@ -54,6 +54,7 @@ import {
   type CharacterStyle,
   type CharacterGender,
   type GeneratedCharacter,
+  editCharacter,
 } from "@/lib/wav2lip-client";
 
 export default function Home() {
@@ -76,6 +77,12 @@ export default function Home() {
   const [genCharStep, setGenCharStep] = useState<string>("");
   const [generatedChar, setGeneratedChar] = useState<GeneratedCharacter | null>(null);
   const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
+
+  // Image editing state (AI image-to-image)
+  const [editPrompt, setEditPrompt] = useState("");
+  const [editingChar, setEditingChar] = useState(false);
+  const [editStep, setEditStep] = useState("");
+  const [showEditBox, setShowEditBox] = useState(false);
 
   // Audio/script state
   const [audioMode, setAudioMode] = useState<"script" | "audio">("script");
@@ -351,6 +358,74 @@ export default function Home() {
       title: lang === "ar" ? "تم اعتماد الشخصية" : "Character selected",
       description: lang === "ar" ? "تقدر تكمل للصوت والفيديو دلوقتي" : "Proceed to voice & video",
     });
+  };
+
+  // تعديل الصورة المولّدة بالـ AI (image-to-image)
+  const handleEditCharacter = async () => {
+    if (!generatedChar || !generatedChar.image_base64) return;
+    const trimmed = editPrompt.trim();
+    if (!trimmed) {
+      toast({
+        title: lang === "ar" ? "اكتب التعديل" : "Describe the edit",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setEditingChar(true);
+    setEditStep(lang === "ar" ? "بتعديل الصورة..." : "Editing image...");
+
+    try {
+      const result = await editCharacter({
+        image_base64: generatedChar.image_base64,
+        edit_prompt: trimmed,
+        language: lang,
+      }, (progress, message) => {
+        if (message) setEditStep(message);
+      });
+
+      // حدّث الصورة المعروضة بالصورة المعدّلة
+      const cleaned = result.image_base64.replace(/^data:[^;]+;base64,/, "");
+      const binary = atob(cleaned);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: result.image_mime || "image/png" });
+      const url = URL.createObjectURL(blob);
+
+      if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
+      setGeneratedImageUrl(url);
+      setGeneratedChar({
+        ...generatedChar,
+        image_base64: result.image_base64,
+        image_mime: result.image_mime,
+        prompt_used: `${generatedChar.prompt_used} + EDIT: ${trimmed}`,
+      });
+
+      // حدّث الـ imageFile كمان
+      const file = base64ImageToFile(
+        result.image_base64,
+        result.image_mime || "image/png",
+        "ai-character-edited.png"
+      );
+      setImageFile(file);
+      setImageReady(true);
+
+      setEditPrompt("");
+      setShowEditBox(false);
+      toast({
+        title: lang === "ar" ? "تم تعديل الصورة" : "Image edited",
+        description: lang === "ar" ? "الصورة المعدّلة جاهزة" : "Edited image is ready",
+      });
+    } catch (e: any) {
+      toast({
+        title: lang === "ar" ? "⚠ فشل التعديل" : "⚠ Edit failed",
+        description: e?.message || (lang === "ar" ? "حاول تاني" : "Try again"),
+        variant: "destructive",
+      });
+    } finally {
+      setEditingChar(false);
+      setEditStep("");
+    }
   };
 
   // رفع ملف صوتي - مباشرة بدون AudioContext (أسرع وما بيقعش مع الصيغ المختلفة)
@@ -976,8 +1051,76 @@ export default function Home() {
                             )}
                           </div>
 
+                          {/* Edit box (AI image-to-image) */}
+                          {showEditBox && !editingChar && (
+                            <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30 space-y-2">
+                              <Label className="text-xs text-blue-200 block">
+                                {lang === "ar" ? "اكتب التعديل اللي عاوزه" : "Describe the edit you want"}
+                              </Label>
+                              <textarea
+                                value={editPrompt}
+                                onChange={(e) => setEditPrompt(e.target.value)}
+                                placeholder={lang === "ar"
+                                  ? "مثال: ضيف نظارة، غيّر لون البدلة لـ أزرق، خلّي الخلفية مكتب..."
+                                  : "e.g. add glasses, change suit color to blue, make background an office..."}
+                                rows={3}
+                                maxLength={500}
+                                dir={isRTL ? "rtl" : "ltr"}
+                                className="w-full px-3 py-2 text-sm bg-black/40 border border-blue-500/30 rounded-md text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-400 resize-none"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  onClick={handleEditCharacter}
+                                  className="flex-1 bg-blue-600 hover:bg-blue-700"
+                                >
+                                  <Wand2 className="w-4 h-4 mr-2" />
+                                  {lang === "ar" ? "نفّذ التعديل" : "Apply Edit"}
+                                </Button>
+                                <Button
+                                  onClick={() => { setShowEditBox(false); setEditPrompt(""); }}
+                                  variant="outline"
+                                  className="border-blue-500/30"
+                                >
+                                  {lang === "ar" ? "إلغاء" : "Cancel"}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Editing progress */}
+                          {editingChar && (
+                            <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center gap-3">
+                              <Loader2 className="w-5 h-5 text-blue-300 animate-spin flex-shrink-0" />
+                              <div className="flex-1">
+                                <p className="text-sm text-blue-100">{editStep || (lang === "ar" ? "جاري التعديل..." : "Editing...")}</p>
+                                <p className="text-xs text-blue-300/70">
+                                  {lang === "ar" ? "التعديل بالـ AI بياخد ~30 ثانية" : "AI edit takes ~30 seconds"}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Quick edit suggestion chips */}
+                          {!showEditBox && !editingChar && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {(lang === "ar"
+                                ? ["ضيف نظارة", "غيّر الخلفية لمكتب", "اجعلها أنمي", "أضف ابتسامة"]
+                                : ["Add glasses", "Office background", "Make it anime", "Add a smile"]
+                              ).map((suggestion) => (
+                                <button
+                                  key={suggestion}
+                                  type="button"
+                                  onClick={() => { setEditPrompt(suggestion); setShowEditBox(true); }}
+                                  className="px-2.5 py-1 text-xs rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-200 hover:bg-blue-500/20 transition-colors"
+                                >
+                                  {suggestion}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
                           {/* Action buttons */}
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-3 gap-2">
                             <Button
                               onClick={handleGenerateCharacter}
                               variant="outline"
@@ -987,11 +1130,20 @@ export default function Home() {
                               {t.charRegenerate}
                             </Button>
                             <Button
+                              onClick={() => setShowEditBox(!showEditBox)}
+                              variant="outline"
+                              className="border-blue-500/30 hover:bg-blue-500/10 text-blue-200"
+                              disabled={editingChar}
+                            >
+                              <Wand2 className="w-4 h-4 mr-2" />
+                              {lang === "ar" ? "عدّل الصورة" : "Edit Image"}
+                            </Button>
+                            <Button
                               onClick={handleUseGeneratedCharacter}
                               className="bg-green-600 hover:bg-green-700"
                             >
                               <CheckCircle2 className="w-4 h-4 mr-2" />
-                              {lang === "ar" ? "التالي: الصوت" : "Next: Voice"}
+                              {lang === "ar" ? "التالي" : "Next"}
                             </Button>
                           </div>
                         </div>

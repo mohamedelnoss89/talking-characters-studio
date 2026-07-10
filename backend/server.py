@@ -523,6 +523,142 @@ async def list_character_styles():
     }
 
 
+# ============================================================
+# Character Editing endpoints (AI image-to-image editing)
+# ============================================================
+# POST /edit-character → يبدأ job تعديل صورة موجودة ويرجع job_id فوراً
+# GET  /edit-character/{job_id} → polling للحالة
+
+EDIT_SCRIPT_PATH = os.path.join(BACKEND_DIR, "edit_character_worker.js")
+edit_jobs: dict[str, dict] = {}
+
+
+def _run_edit_job(job_id: str, image_b64: str, edit_prompt: str, language: str):
+    """Background thread: calls the Node worker to edit the image."""
+    job = edit_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        job["status"] = "processing"
+        job["progress"] = 10
+        job["message"] = "بتعديل الصورة..." if language == "ar" else "Editing image..."
+
+        env = os.environ.copy()
+        # Pass input via stdin to avoid "Argument list too long" for large images
+        input_payload = _json.dumps({
+            "image_base64": image_b64,
+            "edit_prompt": edit_prompt,
+            "language": language,
+        })
+        result = _subprocess.run(
+            ["node", EDIT_SCRIPT_PATH],
+            input=input_payload,
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+
+        if result.returncode != 0:
+            job["status"] = "error"
+            job["error"] = f"Worker failed: {result.stderr[:200]}" if result.stderr else "Worker failed"
+            job["message"] = job["error"]
+            return
+
+        out = result.stdout.strip()
+        first = out.find("{")
+        last = out.rfind("}")
+        if first == -1 or last == -1:
+            job["status"] = "error"
+            job["error"] = "Invalid worker output"
+            job["message"] = job["error"]
+            return
+
+        data = _json.loads(out[first:last + 1])
+        if not data.get("success"):
+            job["status"] = "error"
+            job["error"] = data.get("error", "Edit failed")
+            job["message"] = job["error"]
+            return
+
+        job["status"] = "completed"
+        job["progress"] = 100
+        job["message"] = "اكتمل التعديل" if language == "ar" else "Edit done"
+        job["image_base64"] = data.get("image_base64", "")
+        job["image_mime"] = data.get("image_mime", "image/png")
+        job["prompt_used"] = data.get("prompt_used", edit_prompt)
+
+    except _subprocess.TimeoutExpired:
+        job["status"] = "error"
+        job["error"] = "انتهى الوقت" if language == "ar" else "Timed out"
+        job["message"] = job["error"]
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        job["message"] = job["error"]
+
+
+class EditCharRequest(BaseModel):
+    image_base64: str
+    edit_prompt: str
+    language: str = "ar"
+
+
+@app.post("/edit-character")
+async def edit_character(req: EditCharRequest):
+    """Start an image edit job. Returns job_id immediately."""
+    image_b64 = (req.image_base64 or "").strip()
+    edit_prompt = (req.edit_prompt or "").strip()
+    language = "en" if req.language == "en" else "ar"
+
+    if not image_b64 or len(image_b64) < 1000:
+        raise HTTPException(status_code=400, detail="صورة غير صالحة" if language == "ar" else "Invalid image")
+    if not edit_prompt:
+        raise HTTPException(status_code=400, detail="اكتب التعديل المطلوب" if language == "ar" else "Describe the edit")
+    if len(edit_prompt) > 1000:
+        raise HTTPException(status_code=400, detail="التعديل طويل جداً" if language == "ar" else "Edit too long")
+
+    job_id = f"edit_{uuid.uuid4().hex[:12]}"
+    edit_jobs[job_id] = {
+        "status": "processing",
+        "progress": 10,
+        "message": "بتعديل الصورة..." if language == "ar" else "Editing image...",
+        "started_at": asyncio.get_event_loop().time(),
+    }
+
+    t = threading.Thread(
+        target=_run_edit_job,
+        args=(job_id, image_b64, edit_prompt, language),
+        daemon=True,
+    )
+    t.start()
+
+    return {"success": True, "job_id": job_id}
+
+
+@app.get("/edit-character/{job_id}")
+async def get_edit_character_status(job_id: str):
+    """Poll image edit job status."""
+    job = edit_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    now = asyncio.get_event_loop().time()
+    for jid in list(edit_jobs.keys()):
+        j = edit_jobs.get(jid)
+        if j and j.get("started_at") and now - j["started_at"] > 600:
+            if jid != job_id:
+                edit_jobs.pop(jid, None)
+
+    return {
+        "success": job.get("status") == "completed",
+        "status": job.get("status", "processing"),
+        "progress": job.get("progress", 0),
+        "message": job.get("message", ""),
+        "image_base64": job.get("image_base64", ""),
+        "image_mime": job.get("image_mime", "image/png"),
+        "prompt_used": job.get("prompt_used", ""),
+        "error": job.get("error"),
+    }
+
+
 if __name__ == "__main__":
     # Pre-load model so first request is fast (only if available)
     if WAV2LIP_AVAILABLE:

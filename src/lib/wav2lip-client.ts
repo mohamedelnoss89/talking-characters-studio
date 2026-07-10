@@ -382,3 +382,110 @@ export function base64ImageToFile(
   const blob = new Blob([bytes], { type: mime });
   return new File([blob], filename, { type: mime });
 }
+
+// ============================================================
+// تعديل الشخصيات بالـ AI (Image-to-Image Editing)
+// ============================================================
+
+export interface EditCharacterOptions {
+  image_base64: string;       // الصورة الأصلية (base64 بدون data: prefix)
+  edit_prompt: string;        // وصف التعديل المطلوب
+  language?: "ar" | "en";
+}
+
+export interface EditedCharacter {
+  success: boolean;
+  image_base64: string;
+  image_mime: string;
+  prompt_used: string;
+  error?: string;
+}
+
+/**
+ * يعدّل صورة شخصية موجودة بالـ AI بناءً على وصف نصي.
+ * - يستخدم job-based pattern زي generateCharacter.
+ * - onProgress callback عشان الـ UI يعرض التقدم.
+ */
+export async function editCharacter(
+  options: EditCharacterOptions,
+  onProgress?: (progress: number, message: string) => void
+): Promise<EditedCharacter> {
+  const { image_base64, edit_prompt, language = "ar" } = options;
+
+  if (!image_base64 || image_base64.length < 1000) {
+    throw new Error(language === "ar" ? "صورة غير صالحة" : "Invalid image");
+  }
+  if (!edit_prompt.trim()) {
+    throw new Error(language === "ar" ? "اكتب التعديل المطلوب" : "Describe the edit");
+  }
+
+  // 1. ابدأ الـ job
+  onProgress?.(10, language === "ar" ? "بتعديل الصورة..." : "Editing image...");
+  const startRes = await fetch(`/api/edit-character`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_base64, edit_prompt: edit_prompt.trim(), language }),
+  });
+
+  if (!startRes.ok) {
+    let errMsg = `Edit failed (HTTP ${startRes.status})`;
+    try {
+      const errBody = await startRes.json();
+      if (errBody?.error) errMsg = errBody.error;
+    } catch {}
+    throw new Error(errMsg);
+  }
+
+  const startBody = await startRes.json();
+  const jobId = startBody.job_id;
+  if (!jobId) {
+    throw new Error(language === "ar" ? "فشل بدء التعديل" : "Failed to start edit");
+  }
+
+  // 2. Poll كل 2 ثانية (حد أقصى 120 ثانية)
+  const maxAttempts = 60;
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+
+    let pollRes: Response;
+    try {
+      pollRes = await fetch(`/api/edit-character?id=${encodeURIComponent(jobId)}`, {
+        cache: "no-store",
+      });
+    } catch {
+      continue;
+    }
+
+    if (!pollRes.ok) {
+      if (pollRes.status === 404) {
+        throw new Error(language === "ar" ? "انتهت صلاحية الطلب" : "Job expired");
+      }
+      continue;
+    }
+
+    const data: EditedCharacter & { status: string; progress: number; message: string } = await pollRes.json();
+    onProgress?.(data.progress || 0, data.message || "");
+
+    if (data.status === "completed") {
+      if (!data.image_base64 || data.image_base64.length < 1000) {
+        throw new Error(
+          language === "ar" ? "فشل التعديل - حاول تاني" : "Edit failed - try again"
+        );
+      }
+      return {
+        success: true,
+        image_base64: data.image_base64,
+        image_mime: data.image_mime || "image/png",
+        prompt_used: data.prompt_used || edit_prompt,
+      };
+    }
+
+    if (data.status === "error") {
+      throw new Error(data.error || (language === "ar" ? "فشل التعديل" : "Edit failed"));
+    }
+  }
+
+  throw new Error(
+    language === "ar" ? "انتهى الوقت - حاول تاني" : "Timed out - try again"
+  );
+}
