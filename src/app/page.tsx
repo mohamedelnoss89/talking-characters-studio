@@ -669,15 +669,15 @@ export default function Home() {
           <div className="lg:col-span-2 space-y-6 order-2 lg:order-1">
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid grid-cols-3 mb-6 bg-black/30 border border-purple-500/20">
-                <TabsTrigger value="character" className="data-[state=active]:bg-purple-500/30">
+                <TabsTrigger value="character" className="data-[state=active]:bg-purple-500/30 data-[state=active]:text-white text-gray-200">
                   <User className="w-4 h-4 mr-2" />
                   <span className="hidden sm:inline">{t.tabCharacter}</span>
                 </TabsTrigger>
-                <TabsTrigger value="voice" className="data-[state=active]:bg-purple-500/30">
+                <TabsTrigger value="voice" className="data-[state=active]:bg-purple-500/30 data-[state=active]:text-white text-gray-200">
                   <Music className="w-4 h-4 mr-2" />
                   <span className="hidden sm:inline">{t.tabVoice}</span>
                 </TabsTrigger>
-                <TabsTrigger value="preview" className="data-[state=active]:bg-purple-500/30">
+                <TabsTrigger value="preview" className="data-[state=active]:bg-purple-500/30 data-[state=active]:text-white text-gray-200">
                   <Play className="w-4 h-4 mr-2" />
                   <span className="hidden sm:inline">{t.tabPreview}</span>
                 </TabsTrigger>
