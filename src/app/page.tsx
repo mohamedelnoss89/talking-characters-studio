@@ -718,6 +718,23 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  // تنزيل صورة الشخصية المولّدة بالـ AI
+  const handleDownloadCharacterImage = () => {
+    if (!generatedChar?.image_base64) return;
+    const mime = generatedChar.image_mime || "image/png";
+    const ext = mime === "image/jpeg" ? "jpg" : "png";
+    const b64 = generatedChar.image_base64.replace(/^data:[^;]+;base64,/, "");
+    const blob = new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `character-ai-${Date.now()}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const toggleLang = () => {
     const newLang = lang === "ar" ? "en" : "ar";
     setLang(newLang);
@@ -1283,7 +1300,7 @@ export default function Home() {
                           )}
 
                           {/* Action buttons */}
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                             <Button
                               onClick={handleGenerateCharacter}
                               variant="outline"
@@ -1300,6 +1317,14 @@ export default function Home() {
                             >
                               <Wand2 className="w-4 h-4 mr-2" />
                               {lang === "ar" ? "عدّل الصورة" : "Edit Image"}
+                            </Button>
+                            <Button
+                              onClick={handleDownloadCharacterImage}
+                              variant="outline"
+                              className="border-cyan-500/30 hover:bg-cyan-500/10 text-cyan-200"
+                            >
+                              <Download className="w-4 h-4 mr-2" />
+                              {t.charDownload}
                             </Button>
                             <Button
                               onClick={handleUseGeneratedCharacter}
