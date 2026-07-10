@@ -332,6 +332,197 @@ async def cleanup_job(job_id: str):
     return {"status": "cleaned"}
 
 
+
+# ============================================================
+# Character Generation endpoints (using z-ai-web-dev-sdk via subprocess)
+# ============================================================
+# بما إن توليد الصور بالـ AI بياخد ~30 ثانية، وعشان نتجنب أي proxy timeout،
+# بنستخدم job-based pattern:
+#   POST /generate-character → يبدأ job ويرجع job_id فوراً
+#   GET  /generate-character/{job_id} → polling للحالة
+# الـ generation بيشتغل في thread مستقل عشان ما يعملش block للـ event loop.
+
+import threading
+import json as _json
+import subprocess as _subprocess
+
+gen_jobs: dict[str, dict] = {}
+
+STYLE_PRESETS_PY = {
+    "realistic": "photorealistic, ultra-detailed, 8k, professional photography, natural lighting, sharp focus, high resolution portrait",
+    "anime": "anime style, cel-shaded, vibrant colors, detailed eyes, studio ghibli inspired, clean line art",
+    "cartoon": "cartoon style, bold outlines, flat colors, exaggerated features, playful, pixar-inspired 3D cartoon",
+    "3d": "3D render, octane render, cinema 4D, subsurface scattering, detailed textures, professional 3D character",
+    "oil": "oil painting, thick brush strokes, classical art style, rich textures, rembrandt lighting",
+    "watercolor": "watercolor painting, soft washes, delicate brushwork, artistic, hand-painted, flowing colors",
+}
+GENDER_HINT_PY = {
+    "male": "male, man, masculine features",
+    "female": "female, woman, feminine features",
+    "any": "",
+}
+
+# Path to the Node script that does the actual generation
+GEN_SCRIPT_PATH = os.path.join(BACKEND_DIR, "gen_character_worker.js")
+
+
+def _run_gen_job(job_id: str, prompt: str, style: str, gender: str, language: str):
+    """Background thread: calls the Node worker script to generate the character."""
+    job = gen_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        job["status"] = "processing"
+        job["progress"] = 5
+        job["message"] = "بدء التوليد..." if language == "ar" else "Starting..."
+
+        # Call the Node worker script
+        env = os.environ.copy()
+        result = _subprocess.run(
+            ["node", GEN_SCRIPT_PATH, _json.dumps({
+                "prompt": prompt,
+                "style": style,
+                "gender": gender,
+                "language": language,
+            })],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+
+        if result.returncode != 0:
+            job["status"] = "error"
+            job["error"] = f"Worker failed: {result.stderr[:200]}" if result.stderr else "Worker failed"
+            job["message"] = job["error"]
+            return
+
+        # Parse worker output (JSON on stdout)
+        out = result.stdout.strip()
+        # Find the JSON object (might have leading/trailing whitespace)
+        first = out.find("{")
+        last = out.rfind("}")
+        if first == -1 or last == -1:
+            job["status"] = "error"
+            job["error"] = "Invalid worker output"
+            job["message"] = job["error"]
+            return
+
+        data = _json.loads(out[first:last + 1])
+        if not data.get("success"):
+            job["status"] = "error"
+            job["error"] = data.get("error", "Generation failed")
+            job["message"] = job["error"]
+            return
+
+        job["status"] = "completed"
+        job["progress"] = 100
+        job["message"] = "اكتمل" if language == "ar" else "Done"
+        job["image_base64"] = data.get("image_base64", "")
+        job["image_mime"] = data.get("image_mime", "image/png")
+        job["prompt_used"] = data.get("prompt_used", "")
+        job["description_ar"] = data.get("description_ar", "")
+        job["description_en"] = data.get("description_en", "")
+        job["style"] = style
+        job["gender"] = gender
+
+    except _subprocess.TimeoutExpired:
+        job["status"] = "error"
+        job["error"] = "انتهى الوقت" if language == "ar" else "Timed out"
+        job["message"] = job["error"]
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        job["message"] = job["error"]
+
+
+class GenCharRequest(BaseModel):
+    prompt: str
+    style: str = "realistic"
+    gender: str = "any"
+    language: str = "ar"
+
+
+@app.post("/generate-character")
+async def generate_character(req: GenCharRequest):
+    """Start a character generation job. Returns job_id immediately."""
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="اكتب وصف للشخصية" if req.language == "ar" else "Describe a character")
+    if len(prompt) > 1000:
+        raise HTTPException(status_code=400, detail="الوصف طويل جداً" if req.language == "ar" else "Too long")
+
+    style = req.style if req.style in STYLE_PRESETS_PY else "realistic"
+    gender = req.gender if req.gender in GENDER_HINT_PY else "any"
+    language = "en" if req.language == "en" else "ar"
+
+    job_id = f"gen_{uuid.uuid4().hex[:12]}"
+    gen_jobs[job_id] = {
+        "status": "processing",
+        "progress": 5,
+        "message": "بدء التوليد..." if language == "ar" else "Starting...",
+        "started_at": asyncio.get_event_loop().time(),
+    }
+
+    # Start background thread
+    t = threading.Thread(
+        target=_run_gen_job,
+        args=(job_id, prompt, style, gender, language),
+        daemon=True,
+    )
+    t.start()
+
+    return {"success": True, "job_id": job_id}
+
+
+@app.get("/generate-character/{job_id}")
+async def get_gen_character_status(job_id: str):
+    """Poll character generation job status."""
+    job = gen_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Clean up old completed/error jobs (> 10 minutes)
+    now = asyncio.get_event_loop().time()
+    for jid in list(gen_jobs.keys()):
+        j = gen_jobs.get(jid)
+        if j and j.get("started_at") and now - j["started_at"] > 600:
+            if jid != job_id:
+                gen_jobs.pop(jid, None)
+
+    return {
+        "success": job.get("status") == "completed",
+        "status": job.get("status", "processing"),
+        "progress": job.get("progress", 0),
+        "message": job.get("message", ""),
+        "image_base64": job.get("image_base64", ""),
+        "image_mime": job.get("image_mime", "image/png"),
+        "prompt_used": job.get("prompt_used", ""),
+        "description_ar": job.get("description_ar", ""),
+        "description_en": job.get("description_en", ""),
+        "style": job.get("style", ""),
+        "gender": job.get("gender", ""),
+        "error": job.get("error"),
+    }
+
+
+@app.get("/character-styles")
+async def list_character_styles():
+    """Return available character styles."""
+    return {
+        "styles": [
+            {"id": "realistic", "label": "واقعي / Realistic"},
+            {"id": "anime", "label": "أنمي / Anime"},
+            {"id": "cartoon", "label": "كرتون / Cartoon"},
+            {"id": "3d", "label": "3D"},
+            {"id": "oil", "label": "زيت / Oil"},
+            {"id": "watercolor", "label": "ألوان مائية / Watercolor"},
+        ],
+        "genders": [
+            {"id": "any", "label_ar": "أي نوع", "label_en": "Any"},
+            {"id": "male", "label_ar": "ذكر", "label_en": "Male"},
+            {"id": "female", "label_ar": "أنثى", "label_en": "Female"},
+        ],
+    }
+
+
 if __name__ == "__main__":
     # Pre-load model so first request is fast (only if available)
     if WAV2LIP_AVAILABLE:

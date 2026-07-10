@@ -261,12 +261,14 @@ export default function Home() {
 
     try {
       setGenCharStep(t.generatingStep1);
-      // ده نداء واحد بس - بيشتغل sync على السيرفر
+      // job-based: POST يبدأ الشغل، poll كل 2s — كده الـ ALB مش بيتقطع
       const result = await generateCharacter({
         prompt: trimmed,
         style: charStyle,
         gender: charGender,
         language: lang,
+      }, (progress, message) => {
+        if (message) setGenCharStep(message);
       });
 
       // Sanity check: الـ response لازم يكون فيه image_base64

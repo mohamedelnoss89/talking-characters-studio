@@ -270,11 +270,13 @@ export async function getCharacterOptions(): Promise<{
 
 /**
  * يولّد شخصية جديدة بالـ AI من وصف نصي.
- * - يرجع base64 PNG + وصف بالعربي والإنجليزي.
- * - لا يحتاج الـ Python backend - ده Node.js فقط.
+ * - يستخدم job-based pattern: POST يبدأ الشغل ويرجع job_id، وبعدين poll كل 2s.
+ * - ده عشان نتجنب proxy/ALB timeout (الـ streaming approach كان بيتقطع بعد 30s).
+ * - onProgress callback عشان الـ UI يعرض التقدم.
  */
 export async function generateCharacter(
-  options: GenerateCharacterOptions
+  options: GenerateCharacterOptions,
+  onProgress?: (progress: number, message: string) => void
 ): Promise<GeneratedCharacter> {
   const { prompt, style = "realistic", gender = "any", language = "ar" } = options;
 
@@ -282,84 +284,83 @@ export async function generateCharacter(
     throw new Error(language === "ar" ? "اكتب وصف للشخصية" : "Describe the character first");
   }
 
-  // استخدام AbortController عشان نضمن مهلة 90 ثانية (الـ AI بياخد ~30 ثانية عادة)
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 90_000);
+  // 1. ابدأ الـ job
+  onProgress?.(5, language === "ar" ? "بدء التوليد..." : "Starting...");
+  const startRes = await fetch(`/api/generate-character`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, style, gender, language }),
+  });
 
-  try {
-    const res = await fetch(`/api/generate-character`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ prompt, style, gender, language }),
-      signal: controller.signal,
-    });
+  if (!startRes.ok) {
+    let errMsg = `Generation failed (HTTP ${startRes.status})`;
+    try {
+      const errBody = await startRes.json();
+      if (errBody?.error) errMsg = errBody.error;
+    } catch {}
+    throw new Error(errMsg);
+  }
 
-    // اقرأ الـ response كـ text الأول عشان نقدر نـ parse يدوي ونتعامل مع
-    // أي whitespace/heartbeat bytes قد يبعتها السيرفر أو البروكسي
-    const rawText = await res.text();
+  const startBody = await startRes.json();
+  const jobId = startBody.job_id;
+  if (!jobId) {
+    throw new Error(language === "ar" ? "فشل بدء التوليد" : "Failed to start generation");
+  }
 
-    if (!res.ok) {
-      let errMsg = `Generation failed (HTTP ${res.status})`;
-      try {
-        const errBody = JSON.parse(rawText);
-        if (errBody?.error) errMsg = errBody.error;
-      } catch {
-        // لو مش JSON، استخدم أول 200 حرف كرسالة خطأ
-        if (rawText && rawText.trim().length > 0) {
-          errMsg = rawText.trim().slice(0, 200);
-        }
-      }
-      throw new Error(errMsg);
+  // 2. Poll للحالة كل 2 ثانية (حد أقصى 120 ثانية)
+  const maxAttempts = 60;
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+
+    let pollRes: Response;
+    try {
+      pollRes = await fetch(`/api/generate-character?id=${encodeURIComponent(jobId)}`, {
+        cache: "no-store",
+      });
+    } catch {
+      // network hiccup — retry
+      continue;
     }
 
-    // parse يدوي عشان نتجاهل أي leading/trailing whitespace أو heartbeat bytes
-    let result: GeneratedCharacter;
-    try {
-      result = JSON.parse(rawText) as GeneratedCharacter;
-    } catch (parseErr: any) {
-      // حاول نلاقي أول { وآخر } وناخد اللي بينهم
-      const firstBrace = rawText.indexOf("{");
-      const lastBrace = rawText.lastIndexOf("}");
-      if (firstBrace !== -1 && lastBrace > firstBrace) {
-        try {
-          result = JSON.parse(rawText.slice(firstBrace, lastBrace + 1)) as GeneratedCharacter;
-        } catch {
-          throw new Error(
-            language === "ar"
-              ? "استجابة غير صالحة من السيرفر"
-              : "Invalid response from server"
-          );
-        }
-      } else {
+    if (!pollRes.ok) {
+      if (pollRes.status === 404) {
+        throw new Error(language === "ar" ? "انتهت صلاحية الطلب - حاول تاني" : "Job expired - try again");
+      }
+      continue;
+    }
+
+    const data: GeneratedCharacter & { status: string; progress: number; message: string } = await pollRes.json();
+    onProgress?.(data.progress || 0, data.message || "");
+
+    if (data.status === "completed") {
+      if (!data.image_base64 || data.image_base64.length < 1000) {
         throw new Error(
           language === "ar"
-            ? "استجابة غير صالحة من السيرفر (لا يوجد JSON)"
-            : "Invalid server response (no JSON found)"
+            ? "الـ AI رجّع صورة فاضية - حاول تاني بوصف مختلف"
+            : "AI returned empty image - try again with a different description"
         );
       }
+      return {
+        success: true,
+        image_base64: data.image_base64,
+        image_mime: data.image_mime || "image/png",
+        prompt_used: data.prompt_used || "",
+        description_ar: data.description_ar || "",
+        description_en: data.description_en || "",
+        style: data.style || style,
+        gender: data.gender || gender,
+      };
     }
 
-    if (!result.image_base64 || result.image_base64.length < 1000) {
-      throw new Error(
-        result.error || (language === "ar"
-          ? "الـ AI رجّع صورة فاضية - حاول تاني بوصف مختلف"
-          : "AI returned empty image - try again with a different description")
-      );
+    if (data.status === "error") {
+      throw new Error(data.error || (language === "ar" ? "فشل التوليد" : "Generation failed"));
     }
-
-    return result;
-  } catch (e: any) {
-    if (e?.name === "AbortError") {
-      throw new Error(
-        language === "ar"
-          ? "انتهى الوقت - الـ AI بطيء. حاول تاني."
-          : "Timed out - AI is slow. Try again."
-      );
-    }
-    throw e;
-  } finally {
-    clearTimeout(timeoutId);
+    // status === "processing" → keep polling
   }
+
+  throw new Error(
+    language === "ar" ? "انتهى الوقت - الـ AI بطيء. حاول تاني." : "Timed out - AI is slow. Try again."
+  );
 }
 
 /**
