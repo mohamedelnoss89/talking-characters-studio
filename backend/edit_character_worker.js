@@ -97,30 +97,31 @@ function classifyError(err, language) {
 }
 
 /**
- * يRewrite the user's edit prompt into a clean, professional English prompt
- * that conveys the same intent but won't trigger AI content filters.
+ * Translate the user's edit prompt into English (if needed) for the image edit API.
+ * NO sanitization, NO professional/family-friendly constraints.
+ * PRESERVE the user's exact intent including gender changes, age changes, style changes,
+ * accessory changes, background changes, fantasy/sci-fi elements, weapons, etc.
  *
- * يترجم العربية لإنجليزي + يضيف سياق للحفاظ على الصورة (نفس الخلفية، الستايل، الإضاءة).
  * لو الـ LLM فشل، نرجّع الـ prompt الأصلي زي ما هو (fallback).
  */
 async function rewritePrompt(zai, userPrompt, language) {
-  const systemPrompt = `You are a prompt rewriter for a professional AI image editing tool. Take the user's edit request (which may be in Arabic or English) and rewrite it as ONE clean, professional English prompt for an image editing AI.
+  const systemPrompt = `You are a prompt translator for an AI image editing tool. Take the user's edit request (which may be in Arabic, English, or mixed) and translate it into ONE clean English prompt for an image editing AI.
 
 Rules:
-1. Translate any Arabic to English.
-2. Rewrite the request as a clear, professional image editing instruction.
-3. PRESERVE the user's actual intent — including gender changes, age changes, style changes, accessory changes, background changes, etc. These are all legitimate character design operations.
-4. Add this suffix to keep image consistency: ", keep the same background, pose, lighting, and overall art style".
-5. Use neutral, professional, descriptive language. Avoid slang or crude phrasing.
-6. Output ONLY the single rewritten prompt — no quotes, no explanations, no preamble, no JSON.
+1. Translate any non-English text to English.
+2. PRESERVE the user's EXACT intent — do NOT censor, soften, or omit anything.
+3. Do NOT add "professional", "family-friendly", "neutral", or any other constraints they didn't ask for.
+4. Do NOT remove descriptions of age, gender, body type, clothing, accessories, weapons, fantasy/sci-fi elements, or anything else the user mentioned.
+5. Add this suffix for image consistency: ", keep the same background, pose, lighting, and overall art style".
+6. Output ONLY the single translated prompt — no quotes, no explanations, no preamble, no JSON.
 
 Examples:
-- Input: "ضيف نظارة" → Output: add stylish sunglasses to this character, keep the same background, pose, lighting, and overall art style
-- Input: "خالى الراجل بنت" → Output: redesign this character as a professional woman with similar hairstyle, outfit style, and facial features, keep the same background, pose, lighting, and overall art style
+- Input: "ضيف نظارة" → Output: add sunglasses to this character, keep the same background, pose, lighting, and overall art style
+- Input: "خالى الراجل بنت" → Output: change this character into a woman with feminine features, hairstyle, and outfit, keep the same background, pose, lighting, and overall art style
 - Input: "اجعلها أنمي" → Output: redraw this character in anime art style, keep the same background, pose, lighting, and overall composition
-- Input: "غيّر الخلفية لمكتب" → Output: change the background to a modern professional office, keep the character the same with same pose and lighting
-- Input: "أضف ابتسامة" → Output: add a friendly smile to this character, keep the same background, pose, lighting, and overall art style
-- Input: "make him look older" → Output: age this character to look 20 years older with appropriate wrinkles and mature features, keep the same background, pose, lighting, and overall art style`;
+- Input: "غيّر الخلفية لمكتب" → Output: change the background to an office, keep the character the same with same pose and lighting
+- Input: "أضف ابتسامة" → Output: add a smile to this character, keep the same background, pose, lighting, and overall art style
+- Input: "make him look older" → Output: age this character to look 20 years older with wrinkles and mature features, keep the same background, pose, lighting, and overall art style`;
 
   try {
     const completion = await zai.chat.completions.create({
@@ -189,8 +190,7 @@ async function main() {
 
     const zai = await ZAI.create();
 
-    // 1) Rewrite the user prompt to a clean, professional English prompt
-    //    This bypasses content filters that reject literal Arabic phrasing.
+    // 1) Translate the user's prompt to English (preserves intent, no filtering)
     const rewrittenPrompt = await rewritePrompt(zai, edit_prompt, language);
     process.stderr.write(`[edit-worker] Final prompt for API: "${rewrittenPrompt.slice(0, 100)}"\n`);
 

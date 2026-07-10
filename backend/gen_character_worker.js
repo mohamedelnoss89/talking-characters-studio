@@ -9,6 +9,9 @@
  * IMPORTANT: On ANY error (including API content-filter rejects), we write a JSON
  * error object to stdout AND exit with code 0. The backend reads stdout JSON first.
  * This way the user gets a clean error message instead of a Node stack trace.
+ *
+ * لا توجد أي قيود على وصف المستخدم — الوصف بيتعدّى للـ AI زي ما هو.
+ * الـ LLM مجرد مترجم من العربية للإنجليزية (لو احتاج) وبيحافظ على نية المستخدم بالكامل.
  */
 
 const ZAI = require('z-ai-web-dev-sdk').default;
@@ -23,8 +26,8 @@ const STYLE_PRESETS = {
 };
 
 const GENDER_HINT = {
-  male: "male, man, masculine features",
-  female: "female, woman, feminine features",
+  male: "male",
+  female: "female",
   any: "",
 };
 
@@ -42,7 +45,6 @@ function sanitizeBase64(b64) {
 
 /**
  * Classify the API error and return a clean, user-friendly message.
- * Detects content filter rejects (code 1301) and other common API errors.
  */
 function classifyError(err, language) {
   const msg = (err && err.message) ? err.message : String(err);
@@ -54,8 +56,8 @@ function classifyError(err, language) {
     return {
       error_type: "content_filter",
       message: isAr
-        ? "الوصف اللي كتبته اترفض من فلتر المحتوى في الـ AI. جرّب صياغة تانية أو اوصاف أبسط."
-        : "Your prompt was rejected by the AI content filter. Try a simpler or different phrasing."
+        ? "الـ AI رفض هذا الوصف من فلتر المحتوى. جرّب صياغة تانية."
+        : "The AI rejected this prompt via content filter. Try a different phrasing."
     };
   }
 
@@ -109,32 +111,32 @@ function classifyError(err, language) {
 }
 
 /**
- * Expand the user's concept into a detailed English visual prompt + descriptions.
- * Uses LLM to translate Arabic → professional English character description.
+ * Translate the user's prompt into a detailed English visual prompt + descriptions.
+ * NO content filtering, NO sanitization — preserve the user's intent EXACTLY.
  *
- * The system prompt is designed to produce professional, safe, filter-friendly
- * descriptions that won't trigger content filters.
+ * If the input is already English, still expand it visually (add appearance/clothing/lighting/etc
+ * hints based on the chosen style).
+ *
+ * If the LLM fails, fall back to using the user's original prompt directly + style hint.
  */
-async function expandConcept(userPrompt, style, gender, lang) {
+async function translateAndExpand(userPrompt, style, gender, lang) {
   const styleHint = STYLE_PRESETS[style] || STYLE_PRESETS.realistic;
   const genderHint = GENDER_HINT[gender] || "";
 
-  const systemPrompt = `You are a professional character designer for a family-friendly creative studio. The user wants a character based on their description (which may be in Arabic or English).
+  const systemPrompt = `You are a prompt translator and expander for an AI image generator.
 
-Your task: Generate a JSON object with these exact fields:
-- "visual_prompt": A detailed ENGLISH visual description for an image generator. Include: appearance, clothing, expression, pose, background, lighting. Combine with: ${styleHint}. ${genderHint}. Keep it under 300 words.
-- "description_ar": وصف الشخصية بالعربية في 2-3 جمل. ذاكر الاسم المقترح والمظهر والشخصية.
-- "description_en": English description in 2-3 sentences. Include suggested name, appearance, and personality.
+The user gave a character description (may be in Arabic, English, or mixed). Your task is to produce a JSON object with these exact fields:
 
-IMPORTANT RULES for the visual_prompt:
-1. Use professional, neutral, descriptive language only.
-2. Describe the character as a fully-clothed, dignified professional portrait subject.
-3. Use terms like "professional portrait", "character study", "studio photograph".
-4. Do NOT include any suggestive, violent, or sensitive descriptors.
-5. Keep the description focused on: face, hair, clothing style, pose, expression, background, lighting.
-6. Translate any Arabic input to clean professional English first.
+- "visual_prompt": A detailed ENGLISH visual description for an image generator. Take the user's description LITERALLY and TRANSLATE it to English (if not already English), then ADD visual details about: appearance, clothing, expression, pose, background, lighting. Append style hints: "${styleHint}". ${genderHint ? `Subject gender: ${genderHint}.` : ""} Keep it under 300 words.
+- "description_ar": وصف الشخصية بالعربية في 2-3 جمل. ذاكر المظهر والشخصية.
+- "description_en": English description in 2-3 sentences. Include appearance and personality.
 
-Output ONLY the JSON object, no markdown, no explanation.`;
+CRITICAL RULES:
+1. PRESERVE the user's exact intent — do NOT censor, soften, or omit anything they asked for.
+2. Do NOT add "professional", "family-friendly", "fully-clothed", or any other constraints they didn't ask for.
+3. Do NOT remove descriptions of age, gender, body type, expression, clothing, accessories, weapons, fantasy/sci-fi elements, or anything else the user mentioned.
+4. Just translate (if needed) and visually expand — nothing more, nothing less.
+5. Output ONLY the JSON object, no markdown, no explanation.`;
 
   let parsed;
   try {
@@ -155,11 +157,10 @@ Output ONLY the JSON object, no markdown, no explanation.`;
       throw new Error("No JSON in LLM response");
     }
   } catch (e) {
-    process.stderr.write(`[worker] LLM expand failed: ${e.message}\n`);
-    // Fallback: build a safe, simple prompt from the user's input + style
-    // Translate Arabic to a generic safe description to avoid content filter
+    process.stderr.write(`[worker] LLM translate failed: ${e.message}\n`);
+    // Fallback: use the user's original prompt directly (NO sanitization)
     parsed = {
-      visual_prompt: `professional portrait photograph of a character, ${genderHint}, ${styleHint}, studio lighting, neutral background, high quality`,
+      visual_prompt: `${userPrompt}, ${styleHint}, ${genderHint}`.trim(),
       description_ar: `شخصية مولّدة بالذكاء الاصطناعي بناءً على: ${userPrompt}`,
       description_en: `AI-generated character based on: ${userPrompt}`,
     };
@@ -187,45 +188,6 @@ async function generateImage(imagePrompt) {
   return sanitizeBase64(b64);
 }
 
-/**
- * Check if an error is a content-filter rejection.
- */
-function isContentFilterError(err) {
-  const msg = (err && err.message) ? err.message : String(err);
-  return msg.includes('"code":"1301"') || msg.includes('"contentFilter"') ||
-         msg.includes('敏感内容') || msg.includes('unsafe or sensitive');
-}
-
-/**
- * Simplify a detailed visual prompt into a minimal, filter-safe version.
- * Strips potentially sensitive descriptors (ethnicity, age, etc.) and keeps
- * only the core concept + style.
- */
-function simplifyPrompt(imagePrompt, style, gender) {
-  const styleHint = STYLE_PRESETS[style] || STYLE_PRESETS.realistic;
-  const genderHint = GENDER_HINT[gender] || "";
-  // Build a minimal, generic prompt that's very unlikely to trigger filters
-  return `professional portrait photograph, ${genderHint}, ${styleHint}, studio lighting, neutral background, high quality, friendly expression`;
-}
-
-/**
- * Try to generate an image. If the first attempt is rejected by the content
- * filter, retry ONCE with a simplified generic prompt.
- */
-async function generateImageWithRetry(imagePrompt, style, gender) {
-  try {
-    return await generateImage(imagePrompt);
-  } catch (err) {
-    if (isContentFilterError(err)) {
-      process.stderr.write(`[worker] Content filter rejected prompt. Retrying with simplified prompt...\n`);
-      const simplified = simplifyPrompt(imagePrompt, style, gender);
-      process.stderr.write(`[worker] Simplified prompt: ${simplified.slice(0, 80)}...\n`);
-      return await generateImage(simplified);
-    }
-    throw err; // re-throw non-filter errors
-  }
-}
-
 async function main() {
   const input = JSON.parse(process.argv[2]);
   const { prompt, style = "realistic", gender = "any", language = "ar" } = input;
@@ -240,11 +202,12 @@ async function main() {
   }
 
   try {
-    process.stderr.write(`[worker] Expanding concept for: "${prompt}"\n`);
-    const { imagePrompt, descriptionAr, descriptionEn } = await expandConcept(prompt, style, gender, language);
+    process.stderr.write(`[worker] Translating/expanding: "${prompt}"\n`);
+    const { imagePrompt, descriptionAr, descriptionEn } = await translateAndExpand(prompt, style, gender, language);
 
-    process.stderr.write(`[worker] Generating image (prompt: ${imagePrompt.slice(0, 80)}...)\n`);
-    const base64Image = await generateImageWithRetry(imagePrompt, style, gender);
+    process.stderr.write(`[worker] Generating image (prompt: ${imagePrompt.slice(0, 120)}...)\n`);
+    // NO retry-with-sanitized-prompt. Use the user's actual intent directly.
+    const base64Image = await generateImage(imagePrompt);
 
     if (!base64Image || base64Image.length < 1000) {
       throw new Error("Image too small / empty");
