@@ -526,8 +526,11 @@ export async function editCharacter(
 
     if (data.status === "error") {
       const errMsg = data.error || (language === "ar" ? "فشل التعديل" : "Edit failed");
-      console.error(`[editCharacter] Edit failed after ${elapsed()}s:`, errMsg);
-      throw new Error(errMsg);
+      const errType = (data as any).error_type || "unknown";
+      console.error(`[editCharacter] Edit failed after ${elapsed()}s type=${errType}:`, errMsg);
+      const e = new Error(errMsg) as Error & { error_type?: string };
+      e.error_type = errType;
+      throw e;
     }
   }
 

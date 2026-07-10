@@ -423,11 +423,26 @@ export default function Home() {
         description: lang === "ar" ? "الصورة المعدّلة جاهزة" : "Edited image is ready",
       });
     } catch (e: any) {
+      const errType = e?.error_type || "unknown";
+      // خصّص الرسالة حسب نوع الخطأ
+      let title = lang === "ar" ? "⚠ فشل التعديل" : "⚠ Edit failed";
+      let desc = e?.message || (lang === "ar" ? "حاول تاني" : "Try again");
+
+      if (errType === "content_filter") {
+        title = lang === "ar" ? "🚫 المحتوى مرفوض" : "🚫 Content rejected";
+        // الـ message من الـ backend أصلاً مظبوط للغة دي
+      } else if (errType === "rate_limit") {
+        title = lang === "ar" ? "⏳ الـ AI مشغول" : "⏳ AI busy";
+      } else if (errType === "timeout") {
+        title = lang === "ar" ? "⌛ انتهى الوقت" : "⌛ Timed out";
+      }
+
       toast({
-        title: lang === "ar" ? "⚠ فشل التعديل" : "⚠ Edit failed",
-        description: e?.message || (lang === "ar" ? "حاول تاني" : "Try again"),
+        title,
+        description: desc,
         variant: "destructive",
       });
+      console.warn("[handleEditCharacter] error:", errType, e?.message);
     } finally {
       setEditingChar(false);
       setEditStep("");

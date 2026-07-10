@@ -561,40 +561,56 @@ def _run_edit_job(job_id: str, image_b64: str, edit_prompt: str, language: str):
         )
 
         elapsed = _time.time() - t0
+        out = result.stdout.strip()
+
+        # Try to parse stdout JSON FIRST, even if returncode != 0.
+        # The worker writes a clean JSON error object to stdout before exiting,
+        # so we should never rely on stderr for the user-facing error message.
+        parsed = None
+        first = out.find("{")
+        last = out.rfind("}")
+        if first != -1 and last != -1:
+            try:
+                parsed = _json.loads(out[first:last + 1])
+            except Exception:
+                parsed = None
+
+        if parsed is not None and isinstance(parsed, dict):
+            if parsed.get("success"):
+                job["status"] = "completed"
+                job["progress"] = 100
+                job["message"] = "اكتمل التعديل" if language == "ar" else "Edit done"
+                job["image_base64"] = parsed.get("image_base64", "")
+                job["image_mime"] = parsed.get("image_mime", "image/png")
+                job["prompt_used"] = parsed.get("prompt_used", edit_prompt)
+                print(f"[edit-job {job_id}] COMPLETED elapsed={elapsed:.1f}s img_len={len(job['image_base64'])}", flush=True)
+                return
+            else:
+                err = parsed.get("error", "Edit failed")
+                err_type = parsed.get("error_type", "unknown")
+                print(f"[edit-job {job_id}] FAILED type={err_type} elapsed={elapsed:.1f}s err={err[:200]!r}", flush=True)
+                job["status"] = "error"
+                job["error"] = err
+                job["error_type"] = err_type
+                job["message"] = err
+                return
+
+        # Fallback: no JSON in stdout — use stderr
         if result.returncode != 0:
             err_tail = (result.stderr or "")[-400:]
             print(f"[edit-job {job_id}] FAILED rc={result.returncode} elapsed={elapsed:.1f}s stderr={err_tail}", flush=True)
             job["status"] = "error"
             job["error"] = f"Worker failed: {err_tail[-200:]}" if result.stderr else "Worker failed"
+            job["error_type"] = "worker_crash"
             job["message"] = job["error"]
             return
 
-        out = result.stdout.strip()
-        first = out.find("{")
-        last = out.rfind("}")
-        if first == -1 or last == -1:
-            print(f"[edit-job {job_id}] FAILED invalid output elapsed={elapsed:.1f}s stdout_head={out[:200]!r}", flush=True)
-            job["status"] = "error"
-            job["error"] = "Invalid worker output"
-            job["message"] = job["error"]
-            return
-
-        data = _json.loads(out[first:last + 1])
-        if not data.get("success"):
-            err = data.get("error", "Edit failed")
-            print(f"[edit-job {job_id}] FAILED worker_error={err!r} elapsed={elapsed:.1f}s", flush=True)
-            job["status"] = "error"
-            job["error"] = err
-            job["message"] = job["error"]
-            return
-
-        job["status"] = "completed"
-        job["progress"] = 100
-        job["message"] = "اكتمل التعديل" if language == "ar" else "Edit done"
-        job["image_base64"] = data.get("image_base64", "")
-        job["image_mime"] = data.get("image_mime", "image/png")
-        job["prompt_used"] = data.get("prompt_used", edit_prompt)
-        print(f"[edit-job {job_id}] COMPLETED elapsed={elapsed:.1f}s img_len={len(job['image_base64'])}", flush=True)
+        # No JSON, rc=0 — shouldn't happen, but handle it
+        print(f"[edit-job {job_id}] FAILED invalid output elapsed={elapsed:.1f}s stdout_head={out[:200]!r}", flush=True)
+        job["status"] = "error"
+        job["error"] = "Invalid worker output"
+        job["error_type"] = "invalid_output"
+        job["message"] = job["error"]
 
     except _subprocess.TimeoutExpired:
         elapsed = _time.time() - t0
@@ -671,6 +687,7 @@ async def get_edit_character_status(job_id: str):
         "image_mime": job.get("image_mime", "image/png"),
         "prompt_used": job.get("prompt_used", ""),
         "error": job.get("error"),
+        "error_type": job.get("error_type"),
     }
 
 
