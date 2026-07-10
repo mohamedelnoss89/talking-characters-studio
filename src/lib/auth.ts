@@ -1,15 +1,22 @@
 /**
- * Auth utilities — JWT-based admin login.
+ * Auth utilities — JWT-based multi-user login.
+ *
+ * User accounts are stored in SQLite (see db.ts). Passwords are bcrypt-hashed.
  *
  * Configuration:
- *   - ADMIN_USERNAME (env, default "admin")
- *   - ADMIN_PASSWORD (env, plain text, default "admin123" — change in production!)
  *   - AUTH_SECRET (env, JWT signing secret — auto-generated fallback for dev only)
+ *   - AUTH_DB_PATH (env, optional path to SQLite DB; default <cwd>/data/auth.db)
  *
- * The session cookie "tcs_session" contains a signed JWT with the username
- * and an expiry timestamp. The middleware verifies it on protected routes.
+ * The session cookie "tcs_session" contains a signed JWT with the user id +
+ * username and an expiry timestamp. The middleware verifies it on protected
+ * routes.
  */
 import { SignJWT, jwtVerify } from "jose";
+import {
+  verifyUser,
+  getSafeUserById,
+  type SafeUser,
+} from "@/lib/db";
 
 const COOKIE_NAME = "tcs_session";
 const SESSION_DURATION_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -32,75 +39,41 @@ function getSecret(): Uint8Array {
 }
 
 export interface SessionPayload {
+  userId: number;
   username: string;
   // ISO string — informational, the JWT exp claim is authoritative
   issuedAt?: string;
 }
 
 /**
- * Returns the admin username (from env or default).
+ * Verify the given username/password against the user DB.
+ * Returns the safe user record on success, null on failure.
  */
-export function getAdminUsername(): string {
-  return process.env.ADMIN_USERNAME || "admin";
-}
-
-/**
- * Returns the admin password (from env or default).
- * NOTE: For a simple admin-only setup we store the password in env as plain text.
- * If you want multiple users with hashed passwords, switch to a DB-backed store.
- */
-export function getAdminPassword(): string {
-  return process.env.ADMIN_PASSWORD || "admin123";
-}
-
-/**
- * Verify the given username/password against the admin credentials.
- */
-export function verifyCredentials(
+export async function verifyCredentials(
   username: string,
   password: string
-): { ok: boolean; reason?: string } {
-  const expectedUser = getAdminUsername();
-  const expectedPass = getAdminPassword();
-
-  // Constant-time-ish comparison (not strictly necessary for plain-text env creds,
-  // but good hygiene).
-  if (
-    username.length !== expectedUser.length ||
-    password.length !== expectedPass.length
-  ) {
-    return { ok: false, reason: "invalid_credentials" };
-  }
-
-  let userMatch = 0;
-  let passMatch = 0;
-  for (let i = 0; i < Math.max(username.length, expectedUser.length); i++) {
-    if ((username.charCodeAt(i) || 0) === (expectedUser.charCodeAt(i) || 0)) userMatch++;
-  }
-  for (let i = 0; i < Math.max(password.length, expectedPass.length); i++) {
-    if ((password.charCodeAt(i) || 0) === (expectedPass.charCodeAt(i) || 0)) passMatch++;
-  }
-
-  if (userMatch !== expectedUser.length || passMatch !== expectedPass.length) {
-    return { ok: false, reason: "invalid_credentials" };
-  }
-  return { ok: true };
+): Promise<SafeUser | null> {
+  return verifyUser(username, password);
 }
 
 /**
- * Sign a JWT for the given username. Used by /api/login.
+ * Sign a JWT for the given user. Used by /api/login.
  */
-export async function createSessionToken(username: string): Promise<string> {
+export async function createSessionToken(user: {
+  id: number;
+  username: string;
+}): Promise<string> {
   const now = new Date();
   return await new SignJWT({
-    username,
+    userId: user.id,
+    username: user.username,
     issuedAt: now.toISOString(),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt(Math.floor(now.getTime() / 1000))
     .setExpirationTime(`${SESSION_DURATION_SECONDS}s`)
     .setIssuer("talking-characters-studio")
-    .setSubject(username)
+    .setSubject(String(user.id))
     .sign(getSecret());
 }
 
@@ -116,14 +89,34 @@ export async function verifySessionToken(
     const { payload } = await jwtVerify(token, getSecret(), {
       issuer: "talking-characters-studio",
     });
-    if (!payload || typeof payload.username !== "string") return null;
+    if (
+      !payload ||
+      typeof payload.username !== "string" ||
+      typeof payload.userId !== "number"
+    ) {
+      return null;
+    }
     return {
+      userId: payload.userId,
       username: payload.username,
-      issuedAt: typeof payload.issuedAt === "string" ? payload.issuedAt : undefined,
+      issuedAt:
+        typeof payload.issuedAt === "string" ? payload.issuedAt : undefined,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve a session payload to a full safe user record (re-reads DB).
+ * Returns null if the user has been deleted or the session is invalid.
+ */
+export async function resolveSessionUser(
+  token: string | undefined | null
+): Promise<SafeUser | null> {
+  const session = await verifySessionToken(token);
+  if (!session) return null;
+  return getSafeUserById(session.userId);
 }
 
 export const AUTH_COOKIE_NAME = COOKIE_NAME;

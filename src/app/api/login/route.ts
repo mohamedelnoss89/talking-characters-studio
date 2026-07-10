@@ -1,9 +1,10 @@
 /**
  * POST /api/login
  * Body: { username, password, lang?: "ar" | "en" }
- * Sets an httpOnly cookie with a signed JWT on success.
+ * Verifies credentials against the user DB, sets an httpOnly cookie with a
+ * signed JWT on success.
  *
- * Response: { success: true, username } on success,
+ * Response: { success: true, username, displayName? } on success,
  *           { success: false, error } with HTTP 401 on failure.
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -33,25 +34,34 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: lang === "ar" ? "اكتب اسم المستخدم وكلمة المرور" : "Enter username and password",
+        error:
+          lang === "ar"
+            ? "اكتب اسم المستخدم وكلمة المرور"
+            : "Enter username and password",
       },
       { status: 400 }
     );
   }
 
-  const result = verifyCredentials(username, password);
-  if (!result.ok) {
+  const user = await verifyCredentials(username, password);
+  if (!user) {
     return NextResponse.json(
       {
         success: false,
-        error: lang === "ar" ? "اسم المستخدم أو كلمة المرور غير صحيحة" : "Invalid credentials",
+        error:
+          lang === "ar"
+            ? "اسم المستخدم أو كلمة المرور غير صحيحة"
+            : "Invalid credentials",
       },
       { status: 401 }
     );
   }
 
   // Issue JWT
-  const token = await createSessionToken(username);
+  const token = await createSessionToken({
+    id: user.id,
+    username: user.username,
+  });
 
   // Build the response and set the cookie.
   // NOTE: httpOnly so client-side JS can't read it (XSS protection).
@@ -60,7 +70,8 @@ export async function POST(req: NextRequest) {
   const isProduction = process.env.NODE_ENV === "production";
   const res = NextResponse.json({
     success: true,
-    username,
+    username: user.username,
+    displayName: user.displayName,
     message: lang === "ar" ? "تم تسجيل الدخول" : "Logged in",
   });
   res.cookies.set(AUTH_COOKIE_NAME, token, {
@@ -87,5 +98,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     authenticated: true,
     username: session.username,
+    userId: session.userId,
   });
 }

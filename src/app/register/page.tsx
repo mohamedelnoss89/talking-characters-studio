@@ -2,8 +2,16 @@
 
 import { useState, useEffect, FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Loader2, LogIn, Eye, EyeOff, Globe, UserPlus } from "lucide-react";
 import Link from "next/link";
+import {
+  Sparkles,
+  Loader2,
+  UserPlus,
+  Eye,
+  EyeOff,
+  Globe,
+  LogIn,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,16 +19,16 @@ import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 
 /**
- * Login page — admin-only auth.
- * Reads ADMIN_USERNAME / ADMIN_PASSWORD from server env via /api/login.
- *
+ * Register page — multi-user signup.
  * Bilingual (ar/en) — defaults to Arabic, RTL.
  */
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
   const { toast } = useToast();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lang, setLang] = useState<"ar" | "en">("ar");
@@ -39,49 +47,58 @@ export default function LoginPage() {
 
   const isRTL = lang === "ar";
   const t = {
-    title: lang === "ar" ? "تسجيل الدخول" : "Sign In",
+    title: lang === "ar" ? "إنشاء حساب جديد" : "Create Account",
     subtitle:
       lang === "ar"
-        ? "ادخل بياناتك للوصول لاستوديو الشخصيات المتكلمة"
-        : "Enter your credentials to access the Talking Characters Studio",
+        ? "اعمل حسابك الخاص على استوديو الشخصيات المتكلمة"
+        : "Sign up for your own Talking Characters Studio account",
     username: lang === "ar" ? "اسم المستخدم" : "Username",
-    usernamePlaceholder: lang === "ar" ? "اكتب اسم المستخدم" : "Enter username",
+    usernamePlaceholder:
+      lang === "ar" ? "3–32 حرف، حروف وأرقام و _ و -" : "3–32 chars, letters/digits/_/-",
+    displayName: lang === "ar" ? "الاسم المعروض (اختياري)" : "Display name (optional)",
+    displayNamePlaceholder:
+      lang === "ar" ? "الاسم اللي هيظهر في الـ header" : "Name shown in the header",
     password: lang === "ar" ? "كلمة المرور" : "Password",
-    passwordPlaceholder: lang === "ar" ? "اكتب كلمة المرور" : "Enter password",
-    submit: lang === "ar" ? "دخول" : "Sign In",
-    submitting: lang === "ar" ? "جاري الدخول..." : "Signing in...",
-    noAccount: lang === "ar" ? "معندكش حساب؟" : "Don't have an account?",
-    signUp: lang === "ar" ? "اعمل حساب جديد" : "Sign up",
-    errEmpty:
-      lang === "ar"
-        ? "اكتب اسم المستخدم وكلمة المرور"
-        : "Enter username and password",
-    errInvalid:
-      lang === "ar"
-        ? "اسم المستخدم أو كلمة المرور غير صحيحة"
-        : "Invalid username or password",
-    errServer:
-      lang === "ar"
-        ? "مشكلة في السيرفر — حاول تاني"
-        : "Server error — try again",
-    success: lang === "ar" ? "تم تسجيل الدخول" : "Logged in",
+    passwordPlaceholder:
+      lang === "ar" ? "6 حروف على الأقل" : "At least 6 characters",
+    confirmPassword: lang === "ar" ? "تأكيد كلمة المرور" : "Confirm password",
+    confirmPasswordPlaceholder: lang === "ar" ? "أعد كتابة كلمة المرور" : "Re-enter password",
+    submit: lang === "ar" ? "إنشاء الحساب" : "Create Account",
+    submitting: lang === "ar" ? "جاري الإنشاء..." : "Creating...",
+    haveAccount: lang === "ar" ? "عندك حساب بالفعل؟" : "Already have an account?",
+    signIn: lang === "ar" ? "سجّل دخول" : "Sign in",
+    errEmpty: lang === "ar" ? "اكتب اسم المستخدم وكلمة المرور" : "Enter username and password",
+    errMatch: lang === "ar" ? "كلمتا المرور مش متطابقين" : "Passwords don't match",
+    errShort: lang === "ar" ? "كلمة المرور قصيرة جداً (6 على الأقل)" : "Password too short (min 6)",
+    success: lang === "ar" ? "تم إنشاء الحساب" : "Account created",
+    errServer: lang === "ar" ? "مشكلة في السيرفر — حاول تاني" : "Server error — try again",
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+
     if (!username.trim() || !password) {
       toast({ title: t.errEmpty, variant: "destructive" });
+      return;
+    }
+    if (password.length < 6) {
+      toast({ title: t.errShort, variant: "destructive" });
+      return;
+    }
+    if (password !== confirmPassword) {
+      toast({ title: t.errMatch, variant: "destructive" });
       return;
     }
 
     setLoading(true);
     try {
-      const res = await fetch("/api/login", {
+      const res = await fetch("/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username: username.trim(),
           password,
+          displayName: displayName.trim(),
           lang,
         }),
       });
@@ -89,17 +106,23 @@ export default function LoginPage() {
 
       if (!res.ok || !data.success) {
         toast({
-          title: lang === "ar" ? "⚠ فشل الدخول" : "⚠ Login failed",
-          description: data.error || t.errInvalid,
+          title: lang === "ar" ? "⚠ فشل التسجيل" : "⚠ Registration failed",
+          description: data.error || "",
           variant: "destructive",
         });
         setLoading(false);
         return;
       }
 
-      toast({ title: t.success, description: data.username });
+      toast({
+        title: t.success,
+        description:
+          lang === "ar"
+            ? `أهلاً ${data.user?.username || username}!`
+            : `Welcome, ${data.user?.username || username}!`,
+      });
       // Give the cookie a moment to settle, then redirect
-      setTimeout(() => router.replace("/"), 300);
+      setTimeout(() => router.replace("/"), 350);
     } catch (err: any) {
       toast({
         title: t.errServer,
@@ -142,7 +165,7 @@ export default function LoginPage() {
           <p className="text-sm text-gray-400 mt-2 px-4">{t.subtitle}</p>
         </div>
 
-        {/* Login Card */}
+        {/* Register Card */}
         <form
           onSubmit={handleSubmit}
           className="bg-black/30 backdrop-blur-md border border-purple-500/20 rounded-2xl p-6 space-y-5 shadow-2xl"
@@ -161,6 +184,24 @@ export default function LoginPage() {
               autoComplete="username"
               autoFocus
               disabled={loading}
+              dir="ltr"
+              className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 text-left"
+            />
+          </div>
+
+          {/* Display name (optional) */}
+          <div className="space-y-1.5">
+            <Label htmlFor="displayName" className="text-gray-200">
+              {t.displayName}
+            </Label>
+            <Input
+              id="displayName"
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder={t.displayNamePlaceholder}
+              autoComplete="nickname"
+              disabled={loading}
               dir={isRTL ? "rtl" : "ltr"}
               className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400"
             />
@@ -178,10 +219,10 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={t.passwordPlaceholder}
-                autoComplete="current-password"
+                autoComplete="new-password"
                 disabled={loading}
-                dir={isRTL ? "rtl" : "ltr"}
-                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 pr-10"
+                dir="ltr"
+                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 pr-10 text-left"
               />
               <button
                 type="button"
@@ -199,6 +240,24 @@ export default function LoginPage() {
             </div>
           </div>
 
+          {/* Confirm password */}
+          <div className="space-y-1.5">
+            <Label htmlFor="confirmPassword" className="text-gray-200">
+              {t.confirmPassword}
+            </Label>
+            <Input
+              id="confirmPassword"
+              type={showPassword ? "text" : "password"}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder={t.confirmPasswordPlaceholder}
+              autoComplete="new-password"
+              disabled={loading}
+              dir="ltr"
+              className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 text-left"
+            />
+          </div>
+
           {/* Submit */}
           <Button
             type="submit"
@@ -212,21 +271,21 @@ export default function LoginPage() {
               </>
             ) : (
               <>
-                <LogIn className="w-4 h-4 me-2" />
+                <UserPlus className="w-4 h-4 me-2" />
                 {t.submit}
               </>
             )}
           </Button>
 
-          {/* Sign up link */}
+          {/* Have account? Sign in */}
           <div className="text-center pt-2 border-t border-white/5">
-            <span className="text-sm text-gray-400">{t.noAccount} </span>
+            <span className="text-sm text-gray-400">{t.haveAccount} </span>
             <Link
-              href="/register"
+              href="/login"
               className="text-sm text-purple-300 hover:text-purple-200 inline-flex items-center gap-1 underline-offset-2 hover:underline"
             >
-              <UserPlus className="w-3.5 h-3.5" />
-              {t.signUp}
+              <LogIn className="w-3.5 h-3.5" />
+              {t.signIn}
             </Link>
           </div>
         </form>

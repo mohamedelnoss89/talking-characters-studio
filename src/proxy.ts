@@ -1,5 +1,5 @@
 /**
- * Next.js middleware — protects all routes except /login and /api/login.
+ * Next.js proxy — protects all routes except public auth paths.
  *
  * - Reads the tcs_session cookie.
  * - Verifies the JWT via jose (edge-compatible).
@@ -7,7 +7,9 @@
  *
  * Public paths:
  *   - /login (the login page)
+ *   - /register (the signup page)
  *   - /api/login (POST to authenticate)
+ *   - /api/register (POST to create a new account)
  *   - /api/logout (POST to clear session)
  *   - /api/health (so external probes don't need auth)
  *   - /_next/* (Next.js internals)
@@ -30,11 +32,14 @@ function getSecret(): Uint8Array {
 function isPublicPath(pathname: string): boolean {
   return (
     pathname === LOGIN_PATH ||
+    pathname === "/register" ||
     pathname === "/api/login" ||
+    pathname === "/api/register" ||
     pathname === "/api/logout" ||
     pathname === "/api/health" ||
     pathname.startsWith("/_next/") ||
     pathname.startsWith("/static/") ||
+    pathname.startsWith("/fonts/") ||
     pathname === "/favicon.ico" ||
     pathname === "/robots.txt"
   );
