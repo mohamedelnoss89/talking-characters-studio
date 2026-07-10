@@ -82,6 +82,8 @@ export default function Home() {
   const [editPrompt, setEditPrompt] = useState("");
   const [editingChar, setEditingChar] = useState(false);
   const [editStep, setEditStep] = useState("");
+  const [editProgress, setEditProgress] = useState(0);
+  const [editElapsed, setEditElapsed] = useState(0);
   const [showEditBox, setShowEditBox] = useState(false);
 
   // Audio/script state
@@ -374,14 +376,18 @@ export default function Home() {
 
     setEditingChar(true);
     setEditStep(lang === "ar" ? "بتعديل الصورة..." : "Editing image...");
+    setEditProgress(5);
+    setEditElapsed(0);
 
     try {
       const result = await editCharacter({
         image_base64: generatedChar.image_base64,
         edit_prompt: trimmed,
         language: lang,
-      }, (progress, message) => {
+      }, (progress, message, elapsedSec) => {
         if (message) setEditStep(message);
+        if (typeof progress === "number") setEditProgress(progress);
+        if (typeof elapsedSec === "number") setEditElapsed(elapsedSec);
       });
 
       // حدّث الصورة المعروضة بالصورة المعدّلة
@@ -425,6 +431,8 @@ export default function Home() {
     } finally {
       setEditingChar(false);
       setEditStep("");
+      setEditProgress(0);
+      setEditElapsed(0);
     }
   };
 
@@ -1089,13 +1097,29 @@ export default function Home() {
 
                           {/* Editing progress */}
                           {editingChar && (
-                            <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center gap-3">
-                              <Loader2 className="w-5 h-5 text-blue-300 animate-spin flex-shrink-0" />
-                              <div className="flex-1">
-                                <p className="text-sm text-blue-100">{editStep || (lang === "ar" ? "جاري التعديل..." : "Editing...")}</p>
-                                <p className="text-xs text-blue-300/70">
-                                  {lang === "ar" ? "التعديل بالـ AI بياخد ~30 ثانية" : "AI edit takes ~30 seconds"}
-                                </p>
+                            <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30 space-y-2">
+                              <div className="flex items-center gap-3">
+                                <Loader2 className="w-5 h-5 text-blue-300 animate-spin flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-blue-100 truncate">
+                                    {editStep || (lang === "ar" ? "جاري التعديل..." : "Editing...")}
+                                  </p>
+                                  <p className="text-xs text-blue-300/70">
+                                    {lang === "ar"
+                                      ? `التعديل بالـ AI بياخد ~30 ثانية · ${editElapsed}ث مضت`
+                                      : `AI edit takes ~30s · ${editElapsed}s elapsed`}
+                                  </p>
+                                </div>
+                                <span className="text-xs font-mono text-blue-200 flex-shrink-0">
+                                  {editProgress}%
+                                </span>
+                              </div>
+                              {/* Progress bar */}
+                              <div className="w-full h-1.5 bg-blue-950/50 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all duration-500 ease-out"
+                                  style={{ width: `${Math.min(100, Math.max(3, editProgress))}%` }}
+                                />
                               </div>
                             </div>
                           )}

@@ -345,6 +345,7 @@ async def cleanup_job(job_id: str):
 import threading
 import json as _json
 import subprocess as _subprocess
+import time as _time
 
 gen_jobs: dict[str, dict] = {}
 
@@ -538,10 +539,12 @@ def _run_edit_job(job_id: str, image_b64: str, edit_prompt: str, language: str):
     job = edit_jobs.get(job_id)
     if not job:
         return
+    t0 = _time.time()
     try:
         job["status"] = "processing"
         job["progress"] = 10
         job["message"] = "بتعديل الصورة..." if language == "ar" else "Editing image..."
+        print(f"[edit-job {job_id}] start prompt={edit_prompt[:60]!r} img_len={len(image_b64)}", flush=True)
 
         env = os.environ.copy()
         # Pass input via stdin to avoid "Argument list too long" for large images
@@ -550,15 +553,19 @@ def _run_edit_job(job_id: str, image_b64: str, edit_prompt: str, language: str):
             "edit_prompt": edit_prompt,
             "language": language,
         })
+        print(f"[edit-job {job_id}] payload size: {len(input_payload)} bytes", flush=True)
         result = _subprocess.run(
             ["node", EDIT_SCRIPT_PATH],
             input=input_payload,
-            capture_output=True, text=True, timeout=120, env=env,
+            capture_output=True, text=True, timeout=180, env=env,
         )
 
+        elapsed = _time.time() - t0
         if result.returncode != 0:
+            err_tail = (result.stderr or "")[-400:]
+            print(f"[edit-job {job_id}] FAILED rc={result.returncode} elapsed={elapsed:.1f}s stderr={err_tail}", flush=True)
             job["status"] = "error"
-            job["error"] = f"Worker failed: {result.stderr[:200]}" if result.stderr else "Worker failed"
+            job["error"] = f"Worker failed: {err_tail[-200:]}" if result.stderr else "Worker failed"
             job["message"] = job["error"]
             return
 
@@ -566,6 +573,7 @@ def _run_edit_job(job_id: str, image_b64: str, edit_prompt: str, language: str):
         first = out.find("{")
         last = out.rfind("}")
         if first == -1 or last == -1:
+            print(f"[edit-job {job_id}] FAILED invalid output elapsed={elapsed:.1f}s stdout_head={out[:200]!r}", flush=True)
             job["status"] = "error"
             job["error"] = "Invalid worker output"
             job["message"] = job["error"]
@@ -573,8 +581,10 @@ def _run_edit_job(job_id: str, image_b64: str, edit_prompt: str, language: str):
 
         data = _json.loads(out[first:last + 1])
         if not data.get("success"):
+            err = data.get("error", "Edit failed")
+            print(f"[edit-job {job_id}] FAILED worker_error={err!r} elapsed={elapsed:.1f}s", flush=True)
             job["status"] = "error"
-            job["error"] = data.get("error", "Edit failed")
+            job["error"] = err
             job["message"] = job["error"]
             return
 
@@ -584,12 +594,17 @@ def _run_edit_job(job_id: str, image_b64: str, edit_prompt: str, language: str):
         job["image_base64"] = data.get("image_base64", "")
         job["image_mime"] = data.get("image_mime", "image/png")
         job["prompt_used"] = data.get("prompt_used", edit_prompt)
+        print(f"[edit-job {job_id}] COMPLETED elapsed={elapsed:.1f}s img_len={len(job['image_base64'])}", flush=True)
 
     except _subprocess.TimeoutExpired:
+        elapsed = _time.time() - t0
+        print(f"[edit-job {job_id}] TIMEOUT after {elapsed:.1f}s", flush=True)
         job["status"] = "error"
         job["error"] = "انتهى الوقت" if language == "ar" else "Timed out"
         job["message"] = job["error"]
     except Exception as e:
+        elapsed = _time.time() - t0
+        print(f"[edit-job {job_id}] EXCEPTION after {elapsed:.1f}s: {e}", flush=True)
         job["status"] = "error"
         job["error"] = str(e)
         job["message"] = job["error"]

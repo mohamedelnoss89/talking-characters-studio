@@ -404,11 +404,12 @@ export interface EditedCharacter {
 /**
  * يعدّل صورة شخصية موجودة بالـ AI بناءً على وصف نصي.
  * - يستخدم job-based pattern زي generateCharacter.
- * - onProgress callback عشان الـ UI يعرض التقدم.
+ * - onProgress callback عشان الـ UI يعرض التقدم + الوقت المنقضي.
+ * - timeout كبير (180s) + retry على network errors.
  */
 export async function editCharacter(
   options: EditCharacterOptions,
-  onProgress?: (progress: number, message: string) => void
+  onProgress?: (progress: number, message: string, elapsedSec?: number) => void
 ): Promise<EditedCharacter> {
   const { image_base64, edit_prompt, language = "ar" } = options;
 
@@ -419,8 +420,17 @@ export async function editCharacter(
     throw new Error(language === "ar" ? "اكتب التعديل المطلوب" : "Describe the edit");
   }
 
+  const t0 = Date.now();
+  const elapsed = () => Math.floor((Date.now() - t0) / 1000);
+
+  console.log("[editCharacter] Starting edit job", {
+    image_size: image_base64.length,
+    prompt: edit_prompt.slice(0, 60),
+    language,
+  });
+
   // 1. ابدأ الـ job
-  onProgress?.(10, language === "ar" ? "بتعديل الصورة..." : "Editing image...");
+  onProgress?.(5, language === "ar" ? "بتعديل الصورة..." : "Editing image...", 0);
   const startRes = await fetch(`/api/edit-character`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -433,6 +443,7 @@ export async function editCharacter(
       const errBody = await startRes.json();
       if (errBody?.error) errMsg = errBody.error;
     } catch {}
+    console.error("[editCharacter] POST failed:", startRes.status, errMsg);
     throw new Error(errMsg);
   }
 
@@ -442,17 +453,32 @@ export async function editCharacter(
     throw new Error(language === "ar" ? "فشل بدء التعديل" : "Failed to start edit");
   }
 
-  // 2. Poll كل 2 ثانية (حد أقصى 120 ثانية)
-  const maxAttempts = 60;
+  console.log("[editCharacter] Job started:", jobId);
+
+  // 2. Poll كل 2 ثانية (حد أقصى 180 ثانية = 90 محاولة)
+  //    التعديل بالـ AI بياخد بين 15-60 ثانية عادةً.
+  const maxAttempts = 90;
+  let consecutiveErrors = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000));
 
-    let pollRes: Response;
+    let pollRes: Response | null = null;
     try {
       pollRes = await fetch(`/api/edit-character?id=${encodeURIComponent(jobId)}`, {
         cache: "no-store",
       });
-    } catch {
+      consecutiveErrors = 0;
+    } catch (e: any) {
+      consecutiveErrors++;
+      console.warn(`[editCharacter] Poll #${i} network error:`, e?.message);
+      // اكمل لو أقل من 5 أخطاء ورا بعض
+      if (consecutiveErrors >= 5) {
+        throw new Error(
+          language === "ar"
+            ? "فقد الاتصال بالسيرفر - اتأكد من النت وجرّب تاني"
+            : "Lost connection - check network and retry"
+        );
+      }
       continue;
     }
 
@@ -460,11 +486,27 @@ export async function editCharacter(
       if (pollRes.status === 404) {
         throw new Error(language === "ar" ? "انتهت صلاحية الطلب" : "Job expired");
       }
+      console.warn(`[editCharacter] Poll #${i} HTTP ${pollRes.status}`);
       continue;
     }
 
-    const data: EditedCharacter & { status: string; progress: number; message: string } = await pollRes.json();
-    onProgress?.(data.progress || 0, data.message || "");
+    let data: EditedCharacter & { status: string; progress: number; message: string };
+    try {
+      data = await pollRes.json();
+    } catch (e: any) {
+      console.warn(`[editCharacter] Poll #${i} JSON parse error:`, e?.message);
+      continue;
+    }
+
+    // اختياري: سجّل كل poll للتشخيص
+    if (i % 5 === 0 || i < 3) {
+      console.log(`[editCharacter] Poll #${i} status=${data.status} progress=${data.progress} elapsed=${elapsed()}s`);
+    }
+
+    // حدّث الـ progress على أساس الوقت المنقضي (مزيف بس بيدي إحساس بالتقدم)
+    const fakeProgress = Math.min(95, 10 + Math.floor((elapsed() / 60) * 85));
+    const displayProgress = Math.max(data.progress || 0, fakeProgress);
+    onProgress?.(displayProgress, data.message || (language === "ar" ? "جاري التعديل..." : "Editing..."), elapsed());
 
     if (data.status === "completed") {
       if (!data.image_base64 || data.image_base64.length < 1000) {
@@ -472,6 +514,8 @@ export async function editCharacter(
           language === "ar" ? "فشل التعديل - حاول تاني" : "Edit failed - try again"
         );
       }
+      console.log(`[editCharacter] Edit completed in ${elapsed()}s`);
+      onProgress?.(100, language === "ar" ? "اكتمل التعديل" : "Done", elapsed());
       return {
         success: true,
         image_base64: data.image_base64,
@@ -481,11 +525,14 @@ export async function editCharacter(
     }
 
     if (data.status === "error") {
-      throw new Error(data.error || (language === "ar" ? "فشل التعديل" : "Edit failed"));
+      const errMsg = data.error || (language === "ar" ? "فشل التعديل" : "Edit failed");
+      console.error(`[editCharacter] Edit failed after ${elapsed()}s:`, errMsg);
+      throw new Error(errMsg);
     }
   }
 
+  console.error(`[editCharacter] Timed out after ${elapsed()}s`);
   throw new Error(
-    language === "ar" ? "انتهى الوقت - حاول تاني" : "Timed out - try again"
+    language === "ar" ? `انتهى الوقت (${elapsed()}ث) - حاول تاني` : `Timed out (${elapsed()}s) - try again`
   );
 }
