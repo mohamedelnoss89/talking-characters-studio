@@ -102,6 +102,10 @@ export async function POST(req: NextRequest) {
 /**
  * GET /api/login — returns whether the current session is valid.
  * Useful for client-side auth checks without going through middleware.
+ *
+ * NOTE: We intentionally do NOT return the email here — the UI only needs
+ * the display name, and we don't want to leak the email to client-side JS
+ * unnecessarily. (The JWT still contains it, but it's not exposed via API.)
  */
 export async function GET(req: NextRequest) {
   const token = req.cookies.get(AUTH_COOKIE_NAME)?.value;
@@ -110,10 +114,21 @@ export async function GET(req: NextRequest) {
   if (!session) {
     return NextResponse.json({ authenticated: false }, { status: 200 });
   }
+
+  // Resolve the display name from the DB (not stored in the JWT itself).
+  let displayName: string | null = null;
+  try {
+    const { resolveSessionUser } = await import("@/lib/auth");
+    const user = await resolveSessionUser(token);
+    displayName = user?.displayName || null;
+  } catch {
+    // ignore — we still return authenticated:true
+  }
+
   return NextResponse.json({
     authenticated: true,
     username: session.username,
-    email: session.email,
+    displayName,
     userId: session.userId,
   });
 }

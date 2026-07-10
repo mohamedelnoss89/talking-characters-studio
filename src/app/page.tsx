@@ -37,6 +37,7 @@ import {
   RefreshCw,
   Info,
   LogOut,
+  ChevronDown,
 } from "lucide-react";
 import { translations, type Language } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/toaster";
@@ -113,7 +114,7 @@ export default function Home() {
   const [backendStatus, setBackendStatus] = useState<"checking" | "ok" | "down" | "starting">("checking");
   const [backendInfo, setBackendInfo] = useState<{ device: string; model_loaded: boolean } | null>(null);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
-  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -160,31 +161,42 @@ export default function Home() {
       .then((r) => r.json())
       .then((data) => {
         if (data?.authenticated) {
-          // Prefer displayName (the human-readable name); fall back to email
-          // then username for legacy accounts.
-          setCurrentUser(data.displayName || data.email || data.username || null);
-          if (data.email) setCurrentUserEmail(data.email);
+          // Show only the display name in the header — email is NOT shown.
+          setCurrentUser(
+            data.displayName || data.username || (lang === "ar" ? "حسابي" : "My account")
+          );
         }
       })
       .catch(() => {});
-  }, []);
+  }, [lang]);
 
   // === تسجيل الخروج ===
   const handleLogout = async () => {
     setLoggingOut(true);
+    setUserMenuOpen(false);
     try {
       await fetch("/api/logout", { method: "POST" });
-      // امسح الحالة وروّح لصفحة الدخول
       setCurrentUser(null);
-      setCurrentUserEmail(null);
       window.location.href = "/login";
     } catch (e) {
-      // حتى لو الـ request فشل، روّح للـ login
       window.location.href = "/login";
     } finally {
       setLoggingOut(false);
     }
   };
+
+  // === إغلاق قائمة المستخدم لما يدوس برّه ===
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-user-menu]")) {
+        setUserMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [userMenuOpen]);
 
   // === تحميل قائمة الأصوات + خيارات توليد الشخصيات ===
   useEffect(() => {
@@ -792,34 +804,63 @@ export default function Home() {
               <Globe className="w-4 h-4 mr-2" />
               {lang === "ar" ? "English" : "عربي"}
             </Button>
-            {/* User badge + logout */}
+            {/* User dropdown menu — shows only the name, opens a menu on click */}
             {currentUser && (
-              <div className="flex items-center gap-2">
-                <Badge
-                  variant="outline"
-                  className="border-purple-500/40 text-purple-200 hidden sm:inline-flex"
-                  title={currentUserEmail || (lang === "ar" ? "المستخدم الحالي" : "Current user")}
+              <div className="relative" data-user-menu>
+                <button
+                  type="button"
+                  onClick={() => setUserMenuOpen((v) => !v)}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/5 border border-purple-500/30 text-gray-200 hover:bg-white/10 hover:border-purple-500/50 transition-colors text-sm"
+                  aria-haspopup="menu"
+                  aria-expanded={userMenuOpen}
                 >
-                  <User className="w-3 h-3 mr-1" />
-                  {currentUser}
-                </Badge>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleLogout}
-                  disabled={loggingOut}
-                  className="border-red-500/30 text-red-300 hover:bg-red-500/10"
-                  title={lang === "ar" ? "تسجيل الخروج" : "Sign out"}
-                >
-                  {loggingOut ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  ) : (
-                    <LogOut className="w-4 h-4 mr-2" />
-                  )}
-                  <span className="hidden sm:inline">
-                    {lang === "ar" ? "خروج" : "Logout"}
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 text-white text-xs font-bold shrink-0">
+                    {currentUser.charAt(0).toUpperCase()}
                   </span>
-                </Button>
+                  <span className="hidden sm:inline max-w-[140px] truncate">
+                    {currentUser}
+                  </span>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 text-gray-400 transition-transform ${userMenuOpen ? "rotate-180" : ""}`}
+                  />
+                </button>
+
+                {/* Dropdown */}
+                {userMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute end-0 mt-2 w-48 bg-[#161820] border border-purple-500/30 rounded-lg shadow-xl py-1 z-50"
+                    style={{ direction: lang === "ar" ? "rtl" : "ltr" }}
+                  >
+                    {/* User info header (name only — NO email) */}
+                    <div className="px-3 py-2 border-b border-white/5">
+                      <p className="text-xs text-gray-500">
+                        {lang === "ar" ? "داخل باسم" : "Signed in as"}
+                      </p>
+                      <p className="text-sm font-medium text-gray-200 truncate">
+                        {currentUser}
+                      </p>
+                    </div>
+
+                    {/* Logout */}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleLogout}
+                      disabled={loggingOut}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10 transition-colors disabled:opacity-60"
+                    >
+                      {loggingOut ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <LogOut className="w-4 h-4" />
+                      )}
+                      <span>
+                        {lang === "ar" ? "تسجيل الخروج" : "Sign out"}
+                      </span>
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
