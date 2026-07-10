@@ -353,14 +353,20 @@ export async function generateCharacter(
     }
 
     if (data.status === "error") {
-      throw new Error(data.error || (language === "ar" ? "فشل التوليد" : "Generation failed"));
+      const errMsg = data.error || (language === "ar" ? "فشل التوليد" : "Generation failed");
+      const errType = (data as any).error_type || "unknown";
+      const e = new Error(errMsg) as Error & { error_type?: string };
+      e.error_type = errType;
+      throw e;
     }
     // status === "processing" → keep polling
   }
 
-  throw new Error(
+  const e = new Error(
     language === "ar" ? "انتهى الوقت - الـ AI بطيء. حاول تاني." : "Timed out - AI is slow. Try again."
-  );
+  ) as Error & { error_type?: string };
+  e.error_type = "timeout";
+  throw e;
 }
 
 /**

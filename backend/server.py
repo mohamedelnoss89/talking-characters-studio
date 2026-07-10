@@ -386,30 +386,40 @@ def _run_gen_job(job_id: str, prompt: str, style: str, gender: str, language: st
                 "gender": gender,
                 "language": language,
             })],
-            capture_output=True, text=True, timeout=120, env=env,
+            capture_output=True, text=True, timeout=180, env=env,
         )
 
-        if result.returncode != 0:
-            job["status"] = "error"
-            job["error"] = f"Worker failed: {result.stderr[:200]}" if result.stderr else "Worker failed"
-            job["message"] = job["error"]
-            return
-
-        # Parse worker output (JSON on stdout)
-        out = result.stdout.strip()
-        # Find the JSON object (might have leading/trailing whitespace)
+        # Try to parse stdout JSON FIRST, even if returncode != 0.
+        # The worker writes a clean JSON error object to stdout before exiting,
+        # so we should never rely on stderr for the user-facing error message.
+        out = (result.stdout or "").strip()
+        parsed = None
         first = out.find("{")
         last = out.rfind("}")
-        if first == -1 or last == -1:
-            job["status"] = "error"
-            job["error"] = "Invalid worker output"
-            job["message"] = job["error"]
-            return
+        if first != -1 and last != -1:
+            try:
+                parsed = _json.loads(out[first:last + 1])
+            except Exception:
+                parsed = None
 
-        data = _json.loads(out[first:last + 1])
-        if not data.get("success"):
+        if parsed is not None and isinstance(parsed, dict):
+            if parsed.get("success"):
+                data = parsed
+            else:
+                err = parsed.get("error", "Generation failed")
+                err_type = parsed.get("error_type", "unknown")
+                print(f"[gen-job {job_id}] FAILED type={err_type} elapsed={result.stdout[:200]!r}", flush=True)
+                job["status"] = "error"
+                job["error"] = err
+                job["error_type"] = err_type
+                job["message"] = err
+                return
+        else:
+            # No JSON in stdout — fall back to stderr
+            err_tail = (result.stderr or "")[-400:]
+            print(f"[gen-job {job_id}] FAILED rc={result.returncode} stderr={err_tail}", flush=True)
             job["status"] = "error"
-            job["error"] = data.get("error", "Generation failed")
+            job["error"] = f"Worker failed: {err_tail[-200:]}" if result.stderr else "Worker failed"
             job["message"] = job["error"]
             return
 

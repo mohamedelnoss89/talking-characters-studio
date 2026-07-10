@@ -387,12 +387,29 @@ export default function Home() {
       });
     } catch (e: any) {
       const msg = e?.message || String(e);
+      const errType = e?.error_type || "unknown";
+      // خصّص الرسالة حسب نوع الخطأ
+      let title = t.charError;
+      let desc = msg;
+
+      if (errType === "content_filter") {
+        title = lang === "ar" ? "🚫 المحتوى مرفوض" : "🚫 Content rejected";
+        // الـ message من الـ backend أصلاً مظبوط للغة دي
+      } else if (errType === "rate_limit") {
+        title = lang === "ar" ? "⏳ الـ AI مشغول" : "⏳ AI busy";
+      } else if (errType === "timeout") {
+        title = lang === "ar" ? "⌛ انتهى الوقت" : "⌛ Timed out";
+      } else if (errType === "server") {
+        title = lang === "ar" ? "⚠ مشكلة في السيرفر" : "⚠ Server issue";
+      }
+
       setDebugInfo(`${t.charError}: ${msg}`);
       toast({
         variant: "destructive",
-        title: t.charError,
-        description: msg,
+        title,
+        description: desc,
       });
+      console.warn("[handleGenerateCharacter] error:", errType, msg);
     } finally {
       setGeneratingChar(false);
       setGenCharStep("");
