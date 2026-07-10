@@ -36,6 +36,7 @@ import {
   Image as ImageIcon,
   RefreshCw,
   Info,
+  LogOut,
 } from "lucide-react";
 import { translations, type Language } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/toaster";
@@ -111,6 +112,8 @@ export default function Home() {
   const [debugInfo, setDebugInfo] = useState<string>("");
   const [backendStatus, setBackendStatus] = useState<"checking" | "ok" | "down" | "starting">("checking");
   const [backendInfo, setBackendInfo] = useState<{ device: string; model_loaded: boolean } | null>(null);
+  const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -149,6 +152,34 @@ export default function Home() {
       clearInterval(id);
     };
   }, []);
+
+  // === فحص المستخدم الحالي (لعرض اسمه + زرار الخروج) ===
+  useEffect(() => {
+    fetch("/api/login", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.authenticated && data.username) {
+          setCurrentUser(data.username);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // === تسجيل الخروج ===
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    try {
+      await fetch("/api/logout", { method: "POST" });
+      // امسح الحالة وروّح لصفحة الدخول
+      setCurrentUser(null);
+      window.location.href = "/login";
+    } catch (e) {
+      // حتى لو الـ request فشل، روّح للـ login
+      window.location.href = "/login";
+    } finally {
+      setLoggingOut(false);
+    }
+  };
 
   // === تحميل قائمة الأصوات + خيارات توليد الشخصيات ===
   useEffect(() => {
@@ -756,6 +787,36 @@ export default function Home() {
               <Globe className="w-4 h-4 mr-2" />
               {lang === "ar" ? "English" : "عربي"}
             </Button>
+            {/* User badge + logout */}
+            {currentUser && (
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className="border-purple-500/40 text-purple-200 hidden sm:inline-flex"
+                  title={lang === "ar" ? "المستخدم الحالي" : "Current user"}
+                >
+                  <User className="w-3 h-3 mr-1" />
+                  {currentUser}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                  className="border-red-500/30 text-red-300 hover:bg-red-500/10"
+                  title={lang === "ar" ? "تسجيل الخروج" : "Sign out"}
+                >
+                  {loggingOut ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <LogOut className="w-4 h-4 mr-2" />
+                  )}
+                  <span className="hidden sm:inline">
+                    {lang === "ar" ? "خروج" : "Logout"}
+                  </span>
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </header>
