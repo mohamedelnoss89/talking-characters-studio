@@ -2,8 +2,18 @@
 
 import { useState, useEffect, FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Sparkles, Loader2, LogIn, Eye, EyeOff, Globe, UserPlus } from "lucide-react";
 import Link from "next/link";
+import {
+  Sparkles,
+  Loader2,
+  LogIn,
+  Eye,
+  EyeOff,
+  Globe,
+  UserPlus,
+  Mail,
+  Lock,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,15 +21,15 @@ import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 
 /**
- * Login page — admin-only auth.
- * Reads ADMIN_USERNAME / ADMIN_PASSWORD from server env via /api/login.
+ * Login page — multi-user auth.
+ * Login identifier is the email (username is also accepted as a fallback).
  *
  * Bilingual (ar/en) — defaults to Arabic, RTL.
  */
 export default function LoginPage() {
   const router = useRouter();
   const { toast } = useToast();
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -44,32 +54,30 @@ export default function LoginPage() {
       lang === "ar"
         ? "ادخل بياناتك للوصول لاستوديو الشخصيات المتكلمة"
         : "Enter your credentials to access the Talking Characters Studio",
-    username: lang === "ar" ? "اسم المستخدم" : "Username",
-    usernamePlaceholder: lang === "ar" ? "اكتب اسم المستخدم" : "Enter username",
-    password: lang === "ar" ? "كلمة المرور" : "Password",
-    passwordPlaceholder: lang === "ar" ? "اكتب كلمة المرور" : "Enter password",
+    email: lang === "ar" ? "البريد الإلكتروني" : "Email",
+    emailPlaceholder: lang === "ar" ? "you@example.com" : "you@example.com",
+    password: lang === "ar" ? "رقم السر" : "Password",
+    passwordPlaceholder: lang === "ar" ? "اكتب رقم السر" : "Enter password",
     submit: lang === "ar" ? "دخول" : "Sign In",
     submitting: lang === "ar" ? "جاري الدخول..." : "Signing in...",
     noAccount: lang === "ar" ? "معندكش حساب؟" : "Don't have an account?",
     signUp: lang === "ar" ? "اعمل حساب جديد" : "Sign up",
     errEmpty:
       lang === "ar"
-        ? "اكتب اسم المستخدم وكلمة المرور"
-        : "Enter username and password",
+        ? "اكتب البريد الإلكتروني ورقم السر"
+        : "Enter email and password",
     errInvalid:
       lang === "ar"
-        ? "اسم المستخدم أو كلمة المرور غير صحيحة"
-        : "Invalid username or password",
+        ? "البريد الإلكتروني أو رقم السر غير صحيح"
+        : "Invalid email or password",
     errServer:
-      lang === "ar"
-        ? "مشكلة في السيرفر — حاول تاني"
-        : "Server error — try again",
+      lang === "ar" ? "مشكلة في السيرفر — حاول تاني" : "Server error — try again",
     success: lang === "ar" ? "تم تسجيل الدخول" : "Logged in",
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password) {
+    if (!email.trim() || !password) {
       toast({ title: t.errEmpty, variant: "destructive" });
       return;
     }
@@ -80,7 +88,7 @@ export default function LoginPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: username.trim(),
+          email: email.trim(),
           password,
           lang,
         }),
@@ -97,7 +105,7 @@ export default function LoginPage() {
         return;
       }
 
-      toast({ title: t.success, description: data.username });
+      toast({ title: t.success, description: data.displayName || data.username });
       // Give the cookie a moment to settle, then redirect
       setTimeout(() => router.replace("/"), 300);
     } catch (err: any) {
@@ -147,23 +155,26 @@ export default function LoginPage() {
           onSubmit={handleSubmit}
           className="bg-black/30 backdrop-blur-md border border-purple-500/20 rounded-2xl p-6 space-y-5 shadow-2xl"
         >
-          {/* Username */}
+          {/* Email */}
           <div className="space-y-1.5">
-            <Label htmlFor="username" className="text-gray-200">
-              {t.username}
+            <Label htmlFor="email" className="text-gray-200">
+              {t.email}
             </Label>
-            <Input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder={t.usernamePlaceholder}
-              autoComplete="username"
-              autoFocus
-              disabled={loading}
-              dir={isRTL ? "rtl" : "ltr"}
-              className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400"
-            />
+            <div className="relative">
+              <Mail className="absolute top-1/2 -translate-y-1/2 start-3 w-4 h-4 text-gray-500" />
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder={t.emailPlaceholder}
+                autoComplete="email"
+                autoFocus
+                disabled={loading}
+                dir="ltr"
+                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 ps-10 text-left"
+              />
+            </div>
           </div>
 
           {/* Password */}
@@ -172,6 +183,7 @@ export default function LoginPage() {
               {t.password}
             </Label>
             <div className="relative">
+              <Lock className="absolute top-1/2 -translate-y-1/2 start-3 w-4 h-4 text-gray-500" />
               <Input
                 id="password"
                 type={showPassword ? "text" : "password"}
@@ -180,8 +192,8 @@ export default function LoginPage() {
                 placeholder={t.passwordPlaceholder}
                 autoComplete="current-password"
                 disabled={loading}
-                dir={isRTL ? "rtl" : "ltr"}
-                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 pr-10"
+                dir="ltr"
+                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 ps-10 pe-10 text-left"
               />
               <button
                 type="button"

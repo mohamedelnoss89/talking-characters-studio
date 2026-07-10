@@ -2,14 +2,15 @@
  * Auth utilities — JWT-based multi-user login.
  *
  * User accounts are stored in SQLite (see db.ts). Passwords are bcrypt-hashed.
+ * Login identifier is primarily the email, but username is also accepted.
  *
  * Configuration:
  *   - AUTH_SECRET (env, JWT signing secret — auto-generated fallback for dev only)
  *   - AUTH_DB_PATH (env, optional path to SQLite DB; default <cwd>/data/auth.db)
  *
- * The session cookie "tcs_session" contains a signed JWT with the user id +
- * username and an expiry timestamp. The middleware verifies it on protected
- * routes.
+ * The session cookie "tcs_session" contains a signed JWT with the user id,
+ * username, and email, plus an expiry timestamp. The middleware verifies it
+ * on protected routes.
  */
 import { SignJWT, jwtVerify } from "jose";
 import {
@@ -22,8 +23,6 @@ const COOKIE_NAME = "tcs_session";
 const SESSION_DURATION_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 // Lazily-computed secret — falls back to a dev-only secret if env is missing.
-// This is intentional: we want the app to work in dev without manual setup,
-// but warn loudly. In production, AUTH_SECRET must be set.
 function getSecret(): Uint8Array {
   const secret =
     process.env.AUTH_SECRET ||
@@ -41,19 +40,20 @@ function getSecret(): Uint8Array {
 export interface SessionPayload {
   userId: number;
   username: string;
+  email: string | null;
   // ISO string — informational, the JWT exp claim is authoritative
   issuedAt?: string;
 }
 
 /**
- * Verify the given username/password against the user DB.
+ * Verify credentials by email OR username + password.
  * Returns the safe user record on success, null on failure.
  */
 export async function verifyCredentials(
-  username: string,
+  identifier: string,
   password: string
 ): Promise<SafeUser | null> {
-  return verifyUser(username, password);
+  return verifyUser(identifier, password);
 }
 
 /**
@@ -62,11 +62,13 @@ export async function verifyCredentials(
 export async function createSessionToken(user: {
   id: number;
   username: string;
+  email: string | null;
 }): Promise<string> {
   const now = new Date();
   return await new SignJWT({
     userId: user.id,
     username: user.username,
+    email: user.email,
     issuedAt: now.toISOString(),
   })
     .setProtectedHeader({ alg: "HS256" })
@@ -99,6 +101,8 @@ export async function verifySessionToken(
     return {
       userId: payload.userId,
       username: payload.username,
+      email:
+        typeof payload.email === "string" ? payload.email : null,
       issuedAt:
         typeof payload.issuedAt === "string" ? payload.issuedAt : undefined,
     };

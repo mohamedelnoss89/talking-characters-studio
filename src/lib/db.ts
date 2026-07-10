@@ -4,6 +4,14 @@
  * Stores users in a single table with bcrypt-hashed passwords.
  * The DB file lives at <project_root>/data/auth.db (configurable via AUTH_DB_PATH env).
  *
+ * Schema:
+ *   - id            INTEGER PRIMARY KEY
+ *   - username      TEXT UNIQUE COLLATE NOCASE  (auto-generated from email prefix)
+ *   - email         TEXT UNIQUE COLLATE NOCASE  (primary login identifier)
+ *   - password_hash TEXT                        (bcrypt)
+ *   - display_name  TEXT                        (human-readable name, allows any language)
+ *   - created_at, updated_at  TEXT
+ *
  * This module is server-only — never import from client components.
  */
 import Database from "better-sqlite3";
@@ -12,12 +20,9 @@ import path from "path";
 import fs from "fs";
 
 // --- DB path resolution -----------------------------------------------------
-// Default: <project_root>/data/auth.db
-// In production this can be overridden via AUTH_DB_PATH env var.
-const DB_DIR =
-  process.env.AUTH_DB_PATH
-    ? path.dirname(process.env.AUTH_DB_PATH)
-    : path.join(process.cwd(), "data");
+const DB_DIR = process.env.AUTH_DB_PATH
+  ? path.dirname(process.env.AUTH_DB_PATH)
+  : path.join(process.cwd(), "data");
 const DB_PATH =
   process.env.AUTH_DB_PATH || path.join(DB_DIR, "auth.db");
 
@@ -32,8 +37,6 @@ try {
 }
 
 // --- DB connection ----------------------------------------------------------
-// better-sqlite3 is synchronous — no async/await needed.
-// We use a single shared connection. WAL mode for better concurrency.
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
@@ -51,10 +54,32 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 `);
 
+// --- Migration: add email column if missing --------------------------------
+// (Backward-compatible: existing rows get NULL email; new rows require email.)
+//
+// NOTE: SQLite's ALTER TABLE ADD COLUMN does NOT support UNIQUE inline.
+// We add the column without UNIQUE, then create a unique index on it.
+// SQLite allows multiple NULLs in a unique index, so existing rows (with NULL
+// email) are fine. New rows must have a non-NULL email — enforced by the
+// application layer (createUser validates).
+{
+  const cols = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  const hasEmail = cols.some((c) => c.name === "email");
+  if (!hasEmail) {
+    db.exec(`ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE;`);
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;`
+    );
+    // eslint-disable-next-line no-console
+    console.log("[db] Added `email` column to users table (migration)");
+  }
+}
+
 // --- Types ------------------------------------------------------------------
 export interface UserRecord {
   id: number;
   username: string;
+  email: string | null;
   password_hash: string;
   display_name: string | null;
   created_at: string;
@@ -64,20 +89,23 @@ export interface UserRecord {
 export interface SafeUser {
   id: number;
   username: string;
+  email: string | null;
   displayName: string | null;
   createdAt: string;
 }
 
 // --- Prepared statements ----------------------------------------------------
-const stmtFindByUsername = db.prepare<
-  unknown[],
-  UserRecord
->("SELECT * FROM users WHERE username = ? LIMIT 1");
+const stmtFindByUsername = db.prepare<unknown[], UserRecord>(
+  "SELECT * FROM users WHERE username = ? LIMIT 1"
+);
+const stmtFindByEmail = db.prepare<unknown[], UserRecord>(
+  "SELECT * FROM users WHERE email = ? LIMIT 1"
+);
 const stmtFindById = db.prepare<unknown[], UserRecord>(
   "SELECT * FROM users WHERE id = ? LIMIT 1"
 );
 const stmtInsertUser = db.prepare(
-  "INSERT INTO users (username, password_hash, display_name) VALUES (?, ?, ?)"
+  "INSERT INTO users (username, email, password_hash, display_name) VALUES (?, ?, ?, ?)"
 );
 const stmtCountUsers = db.prepare<unknown[], { c: number }>(
   "SELECT COUNT(*) AS c FROM users"
@@ -90,10 +118,45 @@ function toSafe(u: UserRecord): SafeUser {
   return {
     id: u.id,
     username: u.username,
+    email: u.email,
     displayName: u.display_name,
     createdAt: u.created_at,
   };
 }
+
+/**
+ * Derive a unique username from an email prefix. If the prefix is already
+ * taken, append -2, -3, ... until we find a free slot.
+ *
+ * The username only needs to be URL-safe-ish — we use it for default routing
+ * and as a fallback login identifier. It's NOT shown to the user (display_name
+ * is).
+ */
+function deriveUniqueUsername(emailPrefix: string): string {
+  // Sanitize: keep ASCII letters/digits/_/- only, lowercase
+  let base = emailPrefix
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "")
+    .replace(/^[^a-z0-9]+/, "") // strip leading non-alphanumerics
+    .slice(0, 28) || "user";
+
+  let candidate = base;
+  let suffix = 2;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const existing = stmtFindByUsername.get(candidate) as UserRecord | undefined;
+    if (!existing) return candidate;
+    candidate = `${base}-${suffix++}`;
+    if (suffix > 9999) {
+      // Fallback — append a random-ish suffix
+      candidate = `${base}-${Date.now().toString(36)}`;
+      return candidate;
+    }
+  }
+}
+
+// Simple email validation regex — not RFC-perfect but good enough.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // --- Public API -------------------------------------------------------------
 
@@ -102,6 +165,14 @@ function toSafe(u: UserRecord): SafeUser {
  */
 export function findUserByUsername(username: string): UserRecord | null {
   const row = stmtFindByUsername.get(username) as UserRecord | undefined;
+  return row || null;
+}
+
+/**
+ * Find a user by email (case-insensitive). Returns null if not found.
+ */
+export function findUserByEmail(email: string): UserRecord | null {
+  const row = stmtFindByEmail.get(email) as UserRecord | undefined;
   return row || null;
 }
 
@@ -115,35 +186,40 @@ export function findUserById(id: number): UserRecord | null {
 
 /**
  * Create a new user.
- * Throws an Error with a code property on validation / uniqueness failures:
- *   - code "username_taken" — username already exists
- *   - code "invalid_username" — bad format
- *   - code "invalid_password" — too short
+ *
+ * Required: email + password
+ * Optional: displayName (any language — Arabic, English, etc.),
+ *           username (auto-derived from email if omitted)
+ *
+ * Throws an Error with a `code` property on validation / uniqueness failures:
+ *   - code "email_taken"     — email already registered
+ *   - code "invalid_email"   — bad email format
+ *   - code "invalid_password"— too short
+ *   - code "invalid_username"— bad format (only if you pass one explicitly)
  */
 export function createUser(opts: {
-  username: string;
+  email: string;
   password: string;
   displayName?: string;
+  username?: string; // optional override
 }): SafeUser {
-  const username = (opts.username || "").trim();
+  const email = (opts.email || "").trim().toLowerCase();
   const password = opts.password || "";
+  const displayName = (opts.displayName || "").trim() || null;
 
-  // Username rules: 3–32 chars, letters/digits/_/- only
-  if (username.length < 3 || username.length > 32) {
-    const e = new Error("Username must be 3–32 characters") as Error & {
-      code: string;
-    };
-    e.code = "invalid_username";
+  // --- Email validation -----------------------------------------------------
+  if (!email) {
+    const e = new Error("Email is required") as Error & { code: string };
+    e.code = "invalid_email";
     throw e;
   }
-  if (!/^[A-Za-z0-9_-]+$/.test(username)) {
-    const e = new Error(
-      "Username can only contain letters, numbers, _ and -"
-    ) as Error & { code: string };
-    e.code = "invalid_username";
+  if (!EMAIL_RE.test(email)) {
+    const e = new Error("Invalid email format") as Error & { code: string };
+    e.code = "invalid_email";
     throw e;
   }
-  // Password rules: min 6 chars
+
+  // --- Password validation --------------------------------------------------
   if (password.length < 6) {
     const e = new Error("Password must be at least 6 characters") as Error & {
       code: string;
@@ -152,19 +228,49 @@ export function createUser(opts: {
     throw e;
   }
 
-  // Check uniqueness
-  const existing = findUserByUsername(username);
-  if (existing) {
+  // --- Username resolution --------------------------------------------------
+  let username: string;
+  if (opts.username && opts.username.trim()) {
+    username = opts.username.trim();
+    // Validate format if user provided one explicitly
+    if (username.length < 3 || username.length > 32) {
+      const e = new Error("Username must be 3–32 characters") as Error & {
+        code: string;
+      };
+      e.code = "invalid_username";
+      throw e;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(username)) {
+      const e = new Error(
+        "Username can only contain letters, numbers, _ and -"
+      ) as Error & { code: string };
+      e.code = "invalid_username";
+      throw e;
+    }
+  } else {
+    // Auto-derive from email prefix (before the @)
+    const prefix = email.split("@")[0] || "user";
+    username = deriveUniqueUsername(prefix);
+  }
+
+  // --- Uniqueness checks ----------------------------------------------------
+  if (findUserByEmail(email)) {
+    const e = new Error("Email already registered") as Error & { code: string };
+    e.code = "email_taken";
+    throw e;
+  }
+  // (username uniqueness is already handled by deriveUniqueUsername, but if the
+  // user passed one explicitly we still need to check)
+  if (opts.username && findUserByUsername(username)) {
     const e = new Error("Username already taken") as Error & { code: string };
     e.code = "username_taken";
     throw e;
   }
 
-  // Hash password
+  // --- Insert ---------------------------------------------------------------
   const passwordHash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
-  const displayName = (opts.displayName || "").trim() || null;
 
-  const info = stmtInsertUser.run(username, passwordHash, displayName);
+  const info = stmtInsertUser.run(username, email, passwordHash, displayName);
   const id = Number(info.lastInsertRowid);
   const created = findUserById(id);
   if (!created) {
@@ -174,15 +280,24 @@ export function createUser(opts: {
 }
 
 /**
- * Verify a username/password combo. Returns the safe user record on success,
- * null otherwise. Constant-time-ish thanks to bcrypt.
+ * Verify credentials by email OR username + password.
+ * Returns the safe user record on success, null otherwise.
  */
 export function verifyUser(
-  username: string,
+  identifier: string,
   password: string
 ): SafeUser | null {
-  const user = findUserByUsername(username);
+  if (!identifier) return null;
+  const id = identifier.trim();
+
+  // Try email first (most common login flow)
+  let user = findUserByEmail(id.toLowerCase());
+  // Fallback: try as username
+  if (!user) {
+    user = findUserByUsername(id);
+  }
   if (!user) return null;
+
   const ok = bcrypt.compareSync(password, user.password_hash);
   return ok ? toSafe(user) : null;
 }
@@ -208,6 +323,14 @@ export function getSafeUserById(id: number): SafeUser | null {
  */
 export function getSafeUserByUsername(username: string): SafeUser | null {
   const u = findUserByUsername(username);
+  return u ? toSafe(u) : null;
+}
+
+/**
+ * Get safe user record by email.
+ */
+export function getSafeUserByEmail(email: string): SafeUser | null {
+  const u = findUserByEmail(email);
   return u ? toSafe(u) : null;
 }
 

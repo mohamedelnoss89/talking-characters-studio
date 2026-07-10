@@ -1,6 +1,12 @@
 /**
  * POST /api/register
- * Body: { username, password, displayName?, lang?: "ar" | "en" }
+ * Body: { name, email, password, lang?: "ar" | "en" }
+ *   - name:     display name (any language — Arabic, English, etc.)
+ *   - email:    primary login identifier (required, unique)
+ *   - password: min 6 chars
+ *
+ * Username is auto-derived from the email prefix — the user never types it.
+ *
  * Creates a new user account, then immediately issues a session cookie
  * (so the user is logged in after registering).
  *
@@ -21,9 +27,10 @@ interface ErrorWithCode extends Error {
 
 export async function POST(req: NextRequest) {
   let body: {
-    username?: string;
+    name?: string;
+    displayName?: string; // legacy alias
+    email?: string;
     password?: string;
-    displayName?: string;
     lang?: "ar" | "en";
   };
   try {
@@ -36,18 +43,19 @@ export async function POST(req: NextRequest) {
   }
 
   const lang: "ar" | "en" = body.lang === "en" ? "en" : "ar";
-  const username = (body.username || "").trim();
+  const email = (body.email || "").trim();
   const password = body.password || "";
-  const displayName = (body.displayName || "").trim();
+  // Accept both `name` and `displayName` for the display name field
+  const displayName = (body.name || body.displayName || "").trim();
 
-  if (!username || !password) {
+  if (!email || !password) {
     return NextResponse.json(
       {
         success: false,
         error:
           lang === "ar"
-            ? "اكتب اسم المستخدم وكلمة المرور"
-            : "Enter username and password",
+            ? "اكتب البريد الإلكتروني ورقم السر"
+            : "Enter email and password",
       },
       { status: 400 }
     );
@@ -55,7 +63,7 @@ export async function POST(req: NextRequest) {
 
   let user;
   try {
-    user = createUser({ username, password, displayName });
+    user = createUser({ email, password, displayName });
   } catch (e) {
     const err = e as ErrorWithCode;
     const code = err.code || "unknown";
@@ -64,18 +72,23 @@ export async function POST(req: NextRequest) {
     let msgEn = "Registration failed";
     let status = 400;
 
-    if (code === "username_taken") {
+    if (code === "email_taken") {
+      msgAr = "البريد الإلكتروني ده مسجّل قبل كده — استخدم بريد تاني أو سجّل دخول";
+      msgEn = "Email already registered — use another or sign in";
+      status = 409;
+    } else if (code === "invalid_email") {
+      msgAr = "البريد الإلكتروني مش صحيح — اتأكد من كتابته";
+      msgEn = "Invalid email format — please check it";
+    } else if (code === "invalid_password") {
+      msgAr = "رقم السر لازم 6 حروف على الأقل";
+      msgEn = "Password must be at least 6 characters";
+    } else if (code === "invalid_username") {
+      msgAr = "اسم المستخدم لازم 3–32 حرف، حروف وأرقام و _ و - بس";
+      msgEn = "Username must be 3–32 chars, only letters, digits, _ and -";
+    } else if (code === "username_taken") {
       msgAr = "اسم المستخدم مستخدم بالفعل — جرّب اسم تاني";
       msgEn = "Username already taken — try another";
       status = 409;
-    } else if (code === "invalid_username") {
-      msgAr =
-        "اسم المستخدم لازم 3–32 حرف، حروف وأرقام و _ و - بس";
-      msgEn =
-        "Username must be 3–32 chars, only letters, digits, _ and -";
-    } else if (code === "invalid_password") {
-      msgAr = "كلمة المرور لازم 6 حروف على الأقل";
-      msgEn = "Password must be at least 6 characters";
     }
 
     return NextResponse.json(
@@ -92,6 +105,7 @@ export async function POST(req: NextRequest) {
   const token = await createSessionToken({
     id: user.id,
     username: user.username,
+    email: user.email,
   });
 
   const isProduction = process.env.NODE_ENV === "production";

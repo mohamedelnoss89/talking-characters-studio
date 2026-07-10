@@ -1,10 +1,15 @@
 /**
  * POST /api/login
- * Body: { username, password, lang?: "ar" | "en" }
+ * Body: { email?, identifier?, password, lang?: "ar" | "en" }
+ *
+ * The login identifier can be either an email or a username — the server
+ * tries email first, then falls back to username. This is friendly to both
+ * new users (who only know their email) and any legacy users.
+ *
  * Verifies credentials against the user DB, sets an httpOnly cookie with a
  * signed JWT on success.
  *
- * Response: { success: true, username, displayName? } on success,
+ * Response: { success: true, username, displayName?, email? } on success,
  *           { success: false, error } with HTTP 401 on failure.
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -16,7 +21,13 @@ import {
 } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  let body: { username?: string; password?: string; lang?: "ar" | "en" };
+  let body: {
+    email?: string;
+    identifier?: string;
+    username?: string; // legacy fallback
+    password?: string;
+    lang?: "ar" | "en";
+  };
   try {
     body = await req.json();
   } catch {
@@ -27,31 +38,37 @@ export async function POST(req: NextRequest) {
   }
 
   const lang: "ar" | "en" = body.lang === "en" ? "en" : "ar";
-  const username = (body.username || "").trim();
+  // Accept email, identifier, or username (legacy) — in that order of preference
+  const identifier = (
+    body.email ||
+    body.identifier ||
+    body.username ||
+    ""
+  ).trim();
   const password = body.password || "";
 
-  if (!username || !password) {
+  if (!identifier || !password) {
     return NextResponse.json(
       {
         success: false,
         error:
           lang === "ar"
-            ? "اكتب اسم المستخدم وكلمة المرور"
-            : "Enter username and password",
+            ? "اكتب البريد الإلكتروني ورقم السر"
+            : "Enter email and password",
       },
       { status: 400 }
     );
   }
 
-  const user = await verifyCredentials(username, password);
+  const user = await verifyCredentials(identifier, password);
   if (!user) {
     return NextResponse.json(
       {
         success: false,
         error:
           lang === "ar"
-            ? "اسم المستخدم أو كلمة المرور غير صحيحة"
-            : "Invalid credentials",
+            ? "البريد الإلكتروني أو رقم السر غير صحيح"
+            : "Invalid email or password",
       },
       { status: 401 }
     );
@@ -61,16 +78,14 @@ export async function POST(req: NextRequest) {
   const token = await createSessionToken({
     id: user.id,
     username: user.username,
+    email: user.email,
   });
 
-  // Build the response and set the cookie.
-  // NOTE: httpOnly so client-side JS can't read it (XSS protection).
-  //       secure=true in production — in dev over http we still want it to work,
-  //       so we set secure based on NODE_ENV.
   const isProduction = process.env.NODE_ENV === "production";
   const res = NextResponse.json({
     success: true,
     username: user.username,
+    email: user.email,
     displayName: user.displayName,
     message: lang === "ar" ? "تم تسجيل الدخول" : "Logged in",
   });
@@ -98,6 +113,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     authenticated: true,
     username: session.username,
+    email: session.email,
     userId: session.userId,
   });
 }

@@ -11,6 +11,9 @@ import {
   EyeOff,
   Globe,
   LogIn,
+  Mail,
+  User as UserIcon,
+  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,15 +23,17 @@ import { useToast } from "@/hooks/use-toast";
 
 /**
  * Register page — multi-user signup.
+ * Fields: name (display name, any language) + email + password.
+ *
  * Bilingual (ar/en) — defaults to Arabic, RTL.
  */
 export default function RegisterPage() {
   const router = useRouter();
   const { toast } = useToast();
-  const [username, setUsername] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lang, setLang] = useState<"ar" | "en">("ar");
@@ -52,24 +57,27 @@ export default function RegisterPage() {
       lang === "ar"
         ? "اعمل حسابك الخاص على استوديو الشخصيات المتكلمة"
         : "Sign up for your own Talking Characters Studio account",
-    username: lang === "ar" ? "اسم المستخدم" : "Username",
-    usernamePlaceholder:
-      lang === "ar" ? "3–32 حرف، حروف وأرقام و _ و -" : "3–32 chars, letters/digits/_/-",
-    displayName: lang === "ar" ? "الاسم المعروض (اختياري)" : "Display name (optional)",
-    displayNamePlaceholder:
-      lang === "ar" ? "الاسم اللي هيظهر في الـ header" : "Name shown in the header",
-    password: lang === "ar" ? "كلمة المرور" : "Password",
+    name: lang === "ar" ? "الاسم" : "Name",
+    namePlaceholder:
+      lang === "ar"
+        ? "اسمك (بالعربي أو الإنجليزي)"
+        : "Your name (Arabic or English)",
+    email: lang === "ar" ? "البريد الإلكتروني" : "Email",
+    emailPlaceholder: lang === "ar" ? "you@example.com" : "you@example.com",
+    password: lang === "ar" ? "رقم السر" : "Password",
     passwordPlaceholder:
       lang === "ar" ? "6 حروف على الأقل" : "At least 6 characters",
-    confirmPassword: lang === "ar" ? "تأكيد كلمة المرور" : "Confirm password",
-    confirmPasswordPlaceholder: lang === "ar" ? "أعد كتابة كلمة المرور" : "Re-enter password",
+    confirmPassword: lang === "ar" ? "تأكيد رقم السر" : "Confirm password",
+    confirmPasswordPlaceholder:
+      lang === "ar" ? "أعد كتابة رقم السر" : "Re-enter password",
     submit: lang === "ar" ? "إنشاء الحساب" : "Create Account",
     submitting: lang === "ar" ? "جاري الإنشاء..." : "Creating...",
     haveAccount: lang === "ar" ? "عندك حساب بالفعل؟" : "Already have an account?",
     signIn: lang === "ar" ? "سجّل دخول" : "Sign in",
-    errEmpty: lang === "ar" ? "اكتب اسم المستخدم وكلمة المرور" : "Enter username and password",
-    errMatch: lang === "ar" ? "كلمتا المرور مش متطابقين" : "Passwords don't match",
-    errShort: lang === "ar" ? "كلمة المرور قصيرة جداً (6 على الأقل)" : "Password too short (min 6)",
+    errEmpty: lang === "ar" ? "اكتب البريد ورقم السر" : "Enter email and password",
+    errMatch: lang === "ar" ? "رقم السر مش متطابق" : "Passwords don't match",
+    errShort: lang === "ar" ? "رقم السر قصير جداً (6 على الأقل)" : "Password too short (min 6)",
+    errEmail: lang === "ar" ? "اكتب بريد إلكتروني صحيح" : "Enter a valid email",
     success: lang === "ar" ? "تم إنشاء الحساب" : "Account created",
     errServer: lang === "ar" ? "مشكلة في السيرفر — حاول تاني" : "Server error — try again",
   };
@@ -77,8 +85,13 @@ export default function RegisterPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
 
-    if (!username.trim() || !password) {
+    if (!email.trim() || !password) {
       toast({ title: t.errEmpty, variant: "destructive" });
+      return;
+    }
+    // Basic email check on client side too
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      toast({ title: t.errEmail, variant: "destructive" });
       return;
     }
     if (password.length < 6) {
@@ -96,9 +109,9 @@ export default function RegisterPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: username.trim(),
+          name: name.trim(),
+          email: email.trim(),
           password,
-          displayName: displayName.trim(),
           lang,
         }),
       });
@@ -118,8 +131,8 @@ export default function RegisterPage() {
         title: t.success,
         description:
           lang === "ar"
-            ? `أهلاً ${data.user?.username || username}!`
-            : `Welcome, ${data.user?.username || username}!`,
+            ? `أهلاً ${data.user?.displayName || name || email}!`
+            : `Welcome, ${data.user?.displayName || name || email}!`,
       });
       // Give the cookie a moment to settle, then redirect
       setTimeout(() => router.replace("/"), 350);
@@ -170,41 +183,47 @@ export default function RegisterPage() {
           onSubmit={handleSubmit}
           className="bg-black/30 backdrop-blur-md border border-purple-500/20 rounded-2xl p-6 space-y-5 shadow-2xl"
         >
-          {/* Username */}
+          {/* Name (display name — any language) */}
           <div className="space-y-1.5">
-            <Label htmlFor="username" className="text-gray-200">
-              {t.username}
+            <Label htmlFor="name" className="text-gray-200">
+              {t.name}
             </Label>
-            <Input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder={t.usernamePlaceholder}
-              autoComplete="username"
-              autoFocus
-              disabled={loading}
-              dir="ltr"
-              className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 text-left"
-            />
+            <div className="relative">
+              <UserIcon className="absolute top-1/2 -translate-y-1/2 start-3 w-4 h-4 text-gray-500" />
+              <Input
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={t.namePlaceholder}
+                autoComplete="name"
+                autoFocus
+                disabled={loading}
+                dir={isRTL ? "rtl" : "ltr"}
+                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 ps-10"
+              />
+            </div>
           </div>
 
-          {/* Display name (optional) */}
+          {/* Email */}
           <div className="space-y-1.5">
-            <Label htmlFor="displayName" className="text-gray-200">
-              {t.displayName}
+            <Label htmlFor="email" className="text-gray-200">
+              {t.email}
             </Label>
-            <Input
-              id="displayName"
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder={t.displayNamePlaceholder}
-              autoComplete="nickname"
-              disabled={loading}
-              dir={isRTL ? "rtl" : "ltr"}
-              className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400"
-            />
+            <div className="relative">
+              <Mail className="absolute top-1/2 -translate-y-1/2 start-3 w-4 h-4 text-gray-500" />
+              <Input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder={t.emailPlaceholder}
+                autoComplete="email"
+                disabled={loading}
+                dir="ltr"
+                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 ps-10 text-left"
+              />
+            </div>
           </div>
 
           {/* Password */}
@@ -213,6 +232,7 @@ export default function RegisterPage() {
               {t.password}
             </Label>
             <div className="relative">
+              <Lock className="absolute top-1/2 -translate-y-1/2 start-3 w-4 h-4 text-gray-500" />
               <Input
                 id="password"
                 type={showPassword ? "text" : "password"}
@@ -222,7 +242,7 @@ export default function RegisterPage() {
                 autoComplete="new-password"
                 disabled={loading}
                 dir="ltr"
-                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 pr-10 text-left"
+                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 ps-10 pe-10 text-left"
               />
               <button
                 type="button"
@@ -245,17 +265,20 @@ export default function RegisterPage() {
             <Label htmlFor="confirmPassword" className="text-gray-200">
               {t.confirmPassword}
             </Label>
-            <Input
-              id="confirmPassword"
-              type={showPassword ? "text" : "password"}
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder={t.confirmPasswordPlaceholder}
-              autoComplete="new-password"
-              disabled={loading}
-              dir="ltr"
-              className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 text-left"
-            />
+            <div className="relative">
+              <Lock className="absolute top-1/2 -translate-y-1/2 start-3 w-4 h-4 text-gray-500" />
+              <Input
+                id="confirmPassword"
+                type={showPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder={t.confirmPasswordPlaceholder}
+                autoComplete="new-password"
+                disabled={loading}
+                dir="ltr"
+                className="bg-black/40 border-purple-500/30 text-gray-100 placeholder-gray-500 focus:border-purple-400 ps-10 text-left"
+              />
+            </div>
           </div>
 
           {/* Submit */}

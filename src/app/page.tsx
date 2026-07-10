@@ -113,6 +113,7 @@ export default function Home() {
   const [backendStatus, setBackendStatus] = useState<"checking" | "ok" | "down" | "starting">("checking");
   const [backendInfo, setBackendInfo] = useState<{ device: string; model_loaded: boolean } | null>(null);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -158,8 +159,11 @@ export default function Home() {
     fetch("/api/login", { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {
-        if (data?.authenticated && data.username) {
-          setCurrentUser(data.username);
+        if (data?.authenticated) {
+          // Prefer displayName (the human-readable name); fall back to email
+          // then username for legacy accounts.
+          setCurrentUser(data.displayName || data.email || data.username || null);
+          if (data.email) setCurrentUserEmail(data.email);
         }
       })
       .catch(() => {});
@@ -172,6 +176,7 @@ export default function Home() {
       await fetch("/api/logout", { method: "POST" });
       // امسح الحالة وروّح لصفحة الدخول
       setCurrentUser(null);
+      setCurrentUserEmail(null);
       window.location.href = "/login";
     } catch (e) {
       // حتى لو الـ request فشل، روّح للـ login
@@ -793,7 +798,7 @@ export default function Home() {
                 <Badge
                   variant="outline"
                   className="border-purple-500/40 text-purple-200 hidden sm:inline-flex"
-                  title={lang === "ar" ? "المستخدم الحالي" : "Current user"}
+                  title={currentUserEmail || (lang === "ar" ? "المستخدم الحالي" : "Current user")}
                 >
                   <User className="w-3 h-3 mr-1" />
                   {currentUser}
