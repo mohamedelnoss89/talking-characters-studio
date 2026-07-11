@@ -42,16 +42,11 @@ import {
 import { translations, type Language } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/toaster";
 import {
-  startLipSync,
-  pollJobUntilDone,
-  downloadVideo,
-  cleanupJob,
   listVoices,
   previewTts,
   generateCharacter,
   getCharacterOptions,
   base64ImageToFile,
-  type LipSyncJobStatus,
   type TtsVoice,
   type CharacterStyle,
   type CharacterGender,
@@ -103,23 +98,16 @@ export default function Home() {
   const [previewingTts, setPreviewingTts] = useState(false);
   const [ttsPreviewUrl, setTtsPreviewUrl] = useState<string | null>(null);
 
-  // Generation state
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generateProgress, setGenerateProgress] = useState(0);
-  const [generateMessage, setGenerateMessage] = useState<string>("");
-  const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  // UI state
   const [activeTab, setActiveTab] = useState<string>("character");
   const [debugInfo, setDebugInfo] = useState<string>("");
   const [backendStatus, setBackendStatus] = useState<"checking" | "ok" | "down" | "starting">("checking");
-  const [backendInfo, setBackendInfo] = useState<{ device: string; model_loaded: boolean; wav2lip_available?: boolean } | null>(null);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const jobIdRef = useRef<string | null>(null);
   const { toast } = useToast();
 
   // === فحص الـ backend ===
@@ -133,7 +121,6 @@ export default function Home() {
         if (!mounted) return;
         if (health.status === "ok") {
           setBackendStatus("ok");
-          setBackendInfo({ device: health.device, model_loaded: health.model_loaded, wav2lip_available: health.wav2lip_available });
         } else if (health.status === "starting") {
           setBackendStatus("starting");
           retryCount++;
@@ -248,14 +235,14 @@ export default function Home() {
     ctx.fillRect(canvas.width - 80, 12, 68, 24);
     ctx.fillStyle = "white";
     ctx.font = "bold 13px sans-serif";
-    ctx.fillText("Wav2Lip", canvas.width - 73, 28);
+    ctx.fillText("AI", canvas.width - 55, 28);
   }, []);
 
   useEffect(() => {
-    if (imageReady && !videoUrl) {
+    if (imageReady) {
       drawPreview();
     }
-  }, [imageReady, videoUrl, drawPreview, generatedChar]);
+  }, [imageReady, drawPreview, generatedChar]);
 
   // رفع صورة من الجهاز
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -266,9 +253,6 @@ export default function Home() {
     setUploadedImage(url);
     setImageReady(false);
     setImageFile(file);
-    setVideoBlob(null);
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoUrl(null);
     setDebugInfo("");
 
     // امسح أي شخصية مولّدة سابقة
@@ -348,11 +332,6 @@ export default function Home() {
       const url = URL.createObjectURL(blob);
       setGeneratedImageUrl(url);
       setGeneratedChar(result);
-
-      // امسح أي فيديو سابق
-      setVideoBlob(null);
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      setVideoUrl(null);
       setDebugInfo("");
 
       // Auto-wire the generated image into the preview canvas + imageFile
@@ -382,8 +361,8 @@ export default function Home() {
       toast({
         title: t.charSuccess,
         description: lang === "ar"
-          ? "الشخصية جاهزة في المعاينة - تقدر تكمل للصوت والفيديو"
-          : "Character ready in preview - proceed to voice & video",
+          ? "الشخصية جاهزة في المعاينة - تقدر تكمّل للصوت والمعاينة"
+          : "Character ready in preview - proceed to voice & preview",
       });
     } catch (e: any) {
       const msg = e?.message || String(e);
@@ -423,7 +402,7 @@ export default function Home() {
     setActiveTab("voice");
     toast({
       title: lang === "ar" ? "تم اعتماد الشخصية" : "Character selected",
-      description: lang === "ar" ? "تقدر تكمل للصوت والفيديو دلوقتي" : "Proceed to voice & video",
+      description: lang === "ar" ? "تقدر تكمّل للصوت دلوقتي" : "Proceed to voice",
     });
   };
 
@@ -585,173 +564,9 @@ export default function Home() {
     }
   };
 
-  // === توليد الفيديو ===
-  const handleGenerateAI = async () => {
-    setDebugInfo("");
-    if (!imageFile) {
-      const msg = lang === "ar" ? "ارفع صورة الأول" : "Upload an image first";
-      setDebugInfo(msg);
-      toast({
-        variant: "destructive",
-        title: lang === "ar" ? "بيانات ناقصة" : "Missing Data",
-        description: msg,
-      });
-      setActiveTab("character");
-      return;
-    }
-
-    const hasAudio = !!audioFile;
-    const hasScript = !!scriptText.trim();
-    if (!hasAudio && !hasScript) {
-      const msg = lang === "ar"
-        ? "ارفع ملف صوتي أو اكتب سكربت الأول"
-        : "Upload audio or write a script first";
-      setDebugInfo(msg);
-      toast({
-        variant: "destructive",
-        title: lang === "ar" ? "بيانات ناقصة" : "Missing Data",
-        description: msg,
-      });
-      setActiveTab("voice");
-      return;
-    }
-
-    if (backendStatus !== "ok") {
-      const msg = lang === "ar"
-        ? backendStatus === "starting"
-          ? "السيرفر بيشتغل، استنى ثواني وحاول تاني."
-          : "الـ backend مش شغال. شغّل السيرفر الأول."
-        : backendStatus === "starting"
-        ? "Server is starting, wait a few seconds and retry."
-        : "Backend not running. Start the server first.";
-      setDebugInfo(msg);
-      toast({
-        variant: "destructive",
-        title: lang === "ar" ? "خطأ في الاتصال" : "Connection Error",
-        description: msg,
-      });
-      return;
-    }
-
-    // فحص مسبق: تأكد إن Wav2Lip متاح قبل ما نبدأ
-    if (backendInfo && backendInfo.wav2lip_available === false) {
-      const msg = lang === "ar"
-        ? "محرّك تحريك الشفاه (Wav2Lip) مش متوفر على السيرفر. الموديل محتاج تنزيل يدوي — تواصل مع المسؤول."
-        : "Wav2Lip engine is not available on this server. The model needs manual download — contact admin.";
-      setDebugInfo(msg);
-      toast({
-        variant: "destructive",
-        title: lang === "ar" ? "ميزة مش متاحة" : "Feature unavailable",
-        description: msg,
-      });
-      return;
-    }
-
-    setIsGenerating(true);
-    setGenerateProgress(0);
-    setGenerateMessage(lang === "ar" ? "بتجهيز الطلب..." : "Preparing request...");
-    setVideoBlob(null);
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoUrl(null);
-
-    requestAnimationFrame(() => setActiveTab("preview"));
-
-    try {
-      // 1. ابدأ الـ job
-      setGenerateMessage(
-        audioMode === "script"
-          ? (lang === "ar" ? "بتوليد الصوت من السكربت..." : "Generating audio from script...")
-          : (lang === "ar" ? "بتقديم الطلب للـ AI..." : "Submitting to AI...")
-      );
-      const { job_id } = await startLipSync(imageFile, {
-        audioFile: audioMode === "audio" ? audioFile : null,
-        scriptText: audioMode === "script" ? scriptText : undefined,
-        voice: selectedVoice,
-        rate: speechRate,
-        imageName: imageFile.name || "character.png",
-        audioName: audioFile?.name || "audio.wav",
-        pads: "0,10,0,0",
-        resizeFactor: 1,
-      });
-      jobIdRef.current = job_id;
-      console.log("Job started:", job_id);
-
-      // 2. راقب التقدم
-      setGenerateMessage(lang === "ar" ? "الذكاء الاصطناعي بيشتغل..." : "AI is working...");
-      const finalStatus: LipSyncJobStatus = await pollJobUntilDone(
-        job_id,
-        (status) => {
-          setGenerateProgress(status.progress);
-          setGenerateMessage(status.message || (lang === "ar" ? "جاري المعالجة..." : "Processing..."));
-        },
-        1500,
-        240
-      );
-      console.log("Job completed:", finalStatus);
-
-      // 3. حمّل الفيديو
-      setGenerateMessage(lang === "ar" ? "بتحميل الفيديو..." : "Downloading video...");
-      setGenerateProgress(100);
-      const blob = await downloadVideo(job_id);
-
-      const url = URL.createObjectURL(blob);
-      setVideoBlob(blob);
-      setVideoUrl(url);
-      setGenerateMessage("");
-
-      toast({
-        title: t.successGenerated,
-        description: `${(blob.size / 1024 / 1024).toFixed(1)} MB · MP4 · Wav2Lip AI`,
-      });
-
-      setTimeout(() => cleanupJob(job_id), 30000);
-    } catch (e: any) {
-      const errType = (e?.error_type as string) || "unknown";
-      // رسالة خطأ واضحة بالعربي بناءً على نوع الخطأ
-      let msg: string;
-      if (errType === "wav2lip_unavailable") {
-        msg = lang === "ar"
-          ? "محرّك تحريك الشفاه (Wav2Lip) مش متوفر على السيرفر. الموديل محتاج تنزيل يدوي — تواصل مع المسؤول."
-          : "Wav2Lip engine is not available on this server. The model needs manual download — contact admin.";
-      } else if (errType === "torch_missing") {
-        msg = lang === "ar"
-          ? "مكتبة PyTorch مش متثبتة على السيرفر — تواصل مع المسؤول."
-          : "PyTorch is not installed on the server — contact admin.";
-      } else if (errType === "tts_failed") {
-        msg = lang === "ar"
-          ? "فشل توليد الصوت من النص. جرّب صوت تاني أو ارفع ملف صوتي."
-          : "TTS failed. Try a different voice or upload an audio file.";
-      } else if (errType === "timeout") {
-        msg = lang === "ar"
-          ? "العملية أخدت وقت طويل أوي — جرّب ملف أصغر."
-          : "Operation timed out — try a smaller file.";
-      } else {
-        msg = e?.message || String(e);
-      }
-      setDebugInfo(msg);
-      setGenerateMessage("");
-      toast({
-        variant: "destructive",
-        title: t.errorProcessing,
-        description: msg,
-      });
-    } finally {
-      setIsGenerating(false);
-      jobIdRef.current = null;
-    }
-  };
-
-  const handleDownload = () => {
-    if (!videoBlob) return;
-    const url = URL.createObjectURL(videoBlob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `talking-character-ai-${Date.now()}.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
+  // === توليد الفيديو تم إلغاؤه ===
+  // محرّك Wav2Lip لتحريك الشفاه تم إزالته من التطبيق.
+  // الميزات المتبقية: توليد الشخصيات بالـ AI، تعديل الصور بالـ AI، ومعاينة TTS.
 
   // تنزيل صورة الشخصية المولّدة بالـ AI
   const handleDownloadCharacterImage = () => {
@@ -779,16 +594,13 @@ export default function Home() {
 
   useEffect(() => {
     return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (ttsPreviewUrl) URL.revokeObjectURL(ttsPreviewUrl);
       if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl);
       if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
-      if (jobIdRef.current) cleanupJob(jobIdRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const hasInput = imageFile && (audioFile || scriptText.trim());
   const status = !imageFile
     ? t.statusSelectCharacter
     : !audioFile && !scriptText.trim()
@@ -845,7 +657,7 @@ export default function Home() {
               {backendStatus === "ok" ? (
                 <>
                   <span className="w-2 h-2 rounded-full bg-green-500 mr-1 animate-pulse" />
-                  AI {backendInfo?.device === "cuda" ? "GPU" : "CPU"}
+                  {lang === "ar" ? "متصل" : "Online"}
                 </>
               ) : backendStatus === "starting" ? (
                 <>
@@ -1591,46 +1403,46 @@ export default function Home() {
                       <Zap className="w-5 h-5 text-yellow-400" />
                       {t.tabPreview}
                     </h3>
-                    {isGenerating && (
-                      <Badge className="bg-purple-500/20 text-purple-200">
-                        <span className="inline-flex items-center">
-                          <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                          <span>{generateProgress}%</span>
-                        </span>
-                      </Badge>
-                    )}
                   </div>
 
                   <div className="space-y-4">
-                    <Button
-                      onClick={handleGenerateAI}
-                      disabled={isGenerating || !hasInput || backendStatus !== "ok"}
-                      className="w-full bg-gradient-to-r from-yellow-500 via-purple-500 to-pink-500 hover:from-yellow-600 hover:via-purple-600 hover:to-pink-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                      size="lg"
-                    >
-                      <span className="inline-flex items-center justify-center">
-                        {isGenerating ? (
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        ) : (
-                          <Sparkles className="w-4 h-4 mr-2" />
-                        )}
-                        <span>{isGenerating ? `${t.generating} ${generateProgress}%` : t.generateVideo}</span>
-                      </span>
-                    </Button>
+                    {/* تنزيل صورة الشخصية المولّدة */}
+                    {generatedChar?.image_base64 && (
+                      <Button
+                        onClick={handleDownloadCharacterImage}
+                        className="w-full bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600"
+                        size="lg"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        {t.charDownload}
+                      </Button>
+                    )}
 
-                    {isGenerating && (
-                      <div className="space-y-2">
-                        <Progress value={generateProgress} className="h-2" />
-                        <p className="text-xs text-center text-purple-200">
-                          {generateMessage || t.generating}
+                    {/* مشغل معاينة الـ TTS */}
+                    {ttsPreviewUrl && (
+                      <div className="space-y-2 pt-4 border-t border-purple-500/20">
+                        <p className="text-sm text-purple-200 flex items-center gap-2">
+                          <Volume2 className="w-4 h-4" />
+                          {t.previewVoice}
                         </p>
-                        <p className="text-[10px] text-center text-gray-400">
-                          {lang === "ar"
-                            ? "الذكاء الاصطناعي بيتعلم بآلاف الأمثلة - استنى شوية"
-                            : "AI is trained on thousands of examples - please wait"}
-                        </p>
+                        <audio controls src={ttsPreviewUrl} className="w-full h-10" />
                       </div>
                     )}
+
+                    {/* إشعار: ميزة الفيديو مش متاحة */}
+                    <div className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-200 text-sm flex items-start gap-3">
+                      <Info className="w-5 h-5 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="font-semibold">
+                          {lang === "ar" ? "ميزة توليد الفيديو مش متاحة" : "Video generation is not available"}
+                        </p>
+                        <p className="text-xs mt-1">
+                          {lang === "ar"
+                            ? "محرك تحريك الشفاه (Wav2Lip) تم إزالته. التطبيق دلوقتي بيدعم توليد الشخصيات بالـ AI، تعديل الصور، وتحويل النص إلى صوت فقط."
+                            : "The lip-sync engine (Wav2Lip) has been removed. The app now supports AI character generation, image editing, and text-to-speech only."}
+                        </p>
+                      </div>
+                    </div>
 
                     {backendStatus === "down" && (
                       <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-200 text-sm flex items-start gap-2">
@@ -1641,20 +1453,10 @@ export default function Home() {
                           </p>
                           <p className="text-xs mt-1">
                             {lang === "ar"
-                              ? "شغّل الـ Wav2Lip backend على port 8000 بـ: cd backend && python3 server.py"
-                              : "Start the Wav2Lip backend on port 8000: cd backend && python3 server.py"}
+                              ? "شغّل الـ backend على port 8000 بـ: cd backend && python3 server.py"
+                              : "Start the backend on port 8000: cd backend && python3 server.py"}
                           </p>
                         </div>
-                      </div>
-                    )}
-
-                    {videoUrl && (
-                      <div className="space-y-3 pt-4 border-t border-purple-500/20">
-                        <video src={videoUrl} controls autoPlay loop className="w-full rounded-lg bg-black" />
-                        <Button onClick={handleDownload} className="w-full bg-green-600 hover:bg-green-700">
-                          <Download className="w-4 h-4 mr-2" />
-                          {t.downloadVideo}
-                        </Button>
                       </div>
                     )}
                   </div>
@@ -1674,35 +1476,29 @@ export default function Home() {
                 <Badge
                   variant="outline"
                   className={`${
-                    videoUrl
+                    imageReady
                       ? "border-green-500/50 text-green-300"
                       : "border-purple-500/30 text-purple-300"
                   }`}
                 >
-                  {videoUrl ? "● AI VIDEO" : "○ IMAGE"}
+                  {imageReady ? "● IMAGE" : "○ EMPTY"}
                 </Badge>
               </div>
 
               <div className="aspect-square rounded-lg overflow-hidden bg-black relative">
-                {videoUrl ? (
-                  <video src={videoUrl} controls autoPlay loop className="w-full h-full" />
-                ) : (
-                  <>
-                    <canvas
-                      ref={canvasRef}
-                      width={720}
-                      height={720}
-                      className="w-full h-full"
-                    />
-                    {!imageReady && (
-                      <div className="absolute inset-0 flex items-center justify-center text-center p-4">
-                        <div>
-                          <Sparkles className="w-12 h-12 mx-auto mb-3 text-purple-400/40" />
-                          <p className="text-sm text-purple-200/60">{t.statusSelectCharacter}</p>
-                        </div>
-                      </div>
-                    )}
-                  </>
+                <canvas
+                  ref={canvasRef}
+                  width={720}
+                  height={720}
+                  className="w-full h-full"
+                />
+                {!imageReady && (
+                  <div className="absolute inset-0 flex items-center justify-center text-center p-4">
+                    <div>
+                      <Sparkles className="w-12 h-12 mx-auto mb-3 text-purple-400/40" />
+                      <p className="text-sm text-purple-200/60">{t.statusSelectCharacter}</p>
+                    </div>
+                  </div>
                 )}
               </div>
 
@@ -1711,7 +1507,7 @@ export default function Home() {
                 <div className="flex items-center gap-2 mb-1">
                   <div
                     className={`w-2 h-2 rounded-full ${
-                      hasInput && backendStatus === "ok"
+                      imageFile && backendStatus === "ok"
                         ? "bg-green-500"
                         : "bg-yellow-500"
                     } animate-pulse`}
