@@ -1317,22 +1317,24 @@ export default function Home() {
     >
       {/* Header */}
       <header className="border-b border-purple-500/20 backdrop-blur-md bg-black/20">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/30">
-              <Sparkles className="w-6 h-6 text-white" />
+        <div className="container mx-auto px-2 sm:px-4 py-3 sm:py-4 flex items-center justify-between gap-2">
+          {/* Logo + Title */}
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-shrink">
+            <div className="w-9 h-9 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/30 shrink-0">
+              <Sparkles className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
             </div>
-            <div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-purple-300 to-pink-300 bg-clip-text text-transparent">
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-xl font-bold bg-gradient-to-r from-purple-300 to-pink-300 bg-clip-text text-transparent truncate">
                 {t.appTitle}
               </h1>
-              <p className="text-xs text-gray-300 flex items-center gap-1">
-                <Cpu className="w-3 h-3" />
-                {t.aiPoweredBy}
+              <p className="text-[10px] sm:text-xs text-gray-300 flex items-center gap-1 truncate">
+                <Cpu className="w-2.5 h-2.5 sm:w-3 sm:h-3 shrink-0" />
+                <span className="truncate">{t.aiPoweredBy}</span>
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          {/* Right controls */}
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
             <Badge
               variant="outline"
               className={`${
@@ -1345,23 +1347,27 @@ export default function Home() {
             >
               {backendStatus === "ok" ? (
                 <>
-                  <span className="w-2 h-2 rounded-full bg-green-500 mr-1 animate-pulse" />
-                  AI {backendInfo?.device === "cuda" ? "GPU" : "CPU"}
+                  <span className="w-2 h-2 rounded-full bg-green-500 mr-1 animate-pulse shrink-0" />
+                  <span className="hidden sm:inline">AI {backendInfo?.device === "cuda" ? "GPU" : "CPU"}</span>
+                  <span className="sm:hidden">AI</span>
                 </>
               ) : backendStatus === "starting" ? (
                 <>
-                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                  {lang === "ar" ? "تشغيل السيرفر..." : "Starting..."}
+                  <Loader2 className="w-3 h-3 mr-1 animate-spin shrink-0" />
+                  <span className="hidden sm:inline">{lang === "ar" ? "تشغيل السيرفر..." : "Starting..."}</span>
+                  <span className="sm:hidden">…</span>
                 </>
               ) : backendStatus === "down" ? (
                 <>
-                  <AlertCircle className="w-3 h-3 mr-1" />
-                  {lang === "ar" ? "السيرفر مطفي" : "Backend down"}
+                  <AlertCircle className="w-3 h-3 mr-1 shrink-0" />
+                  <span className="hidden sm:inline">{lang === "ar" ? "السيرفر مطفي" : "Backend down"}</span>
+                  <span className="sm:hidden">!</span>
                 </>
               ) : (
                 <>
-                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                  {lang === "ar" ? "فحص..." : "Checking..."}
+                  <Loader2 className="w-3 h-3 mr-1 animate-spin shrink-0" />
+                  <span className="hidden sm:inline">{lang === "ar" ? "فحص..." : "Checking..."}</span>
+                  <span className="sm:hidden">…</span>
                 </>
               )}
             </Badge>
@@ -1369,10 +1375,10 @@ export default function Home() {
               variant="outline"
               size="sm"
               onClick={toggleLang}
-              className="border-purple-500/30 hover:bg-purple-500/10"
+              className="border-purple-500/30 hover:bg-purple-500/10 px-2 sm:px-3"
             >
-              <Globe className="w-4 h-4 mr-2" />
-              {lang === "ar" ? "English" : "عربي"}
+              <Globe className="w-4 h-4 sm:mr-2 shrink-0" />
+              <span className="hidden sm:inline">{lang === "ar" ? "English" : "عربي"}</span>
             </Button>
             {/* User dropdown menu — shows only the name, opens a menu on click */}
             {currentUser && (
@@ -1380,18 +1386,18 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setUserMenuOpen((v) => !v)}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-white/5 border border-purple-500/30 text-gray-200 hover:bg-white/10 hover:border-purple-500/50 transition-colors text-sm"
+                  className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 rounded-md bg-white/5 border border-purple-500/30 text-gray-200 hover:bg-white/10 hover:border-purple-500/50 transition-colors text-sm"
                   aria-haspopup="menu"
                   aria-expanded={userMenuOpen}
                 >
                   <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 text-white text-xs font-bold shrink-0">
                     {currentUser.charAt(0).toUpperCase()}
                   </span>
-                  <span className="hidden sm:inline max-w-[140px] truncate">
+                  <span className="hidden md:inline max-w-[120px] truncate">
                     {currentUser}
                   </span>
                   <ChevronDown
-                    className={`w-3.5 h-3.5 text-gray-400 transition-transform ${userMenuOpen ? "rotate-180" : ""}`}
+                    className={`w-3.5 h-3.5 text-gray-400 transition-transform ${userMenuOpen ? "rotate-180" : ""} shrink-0`}
                   />
                 </button>
 
@@ -1399,7 +1405,7 @@ export default function Home() {
                 {userMenuOpen && (
                   <div
                     role="menu"
-                    className="absolute end-0 mt-2 w-48 bg-[#161820] border border-purple-500/30 rounded-lg shadow-xl py-1 z-50"
+                    className="absolute end-0 mt-2 w-44 max-w-[calc(100vw-1rem)] bg-[#161820] border border-purple-500/30 rounded-lg shadow-xl py-1 z-50"
                     style={{ direction: lang === "ar" ? "rtl" : "ltr" }}
                   >
                     {/* User info header (name only — NO email) */}
