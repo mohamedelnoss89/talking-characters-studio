@@ -158,28 +158,97 @@ export async function startLipSync(
   formData.append("resize_factor", String(resizeFactor));
   formData.append("face_index", String(faceIndex));
 
-  const res = await fetch(`/api/lip-sync`, {
-    method: "POST",
-    body: formData,
-  });
+  // retry logic عشان لو الباك-إند وقع (OOM) واتـrestart، نديله فرصة يرجع
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 4000;
+  let lastErr: Error | null = null;
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Lip sync start failed: ${res.status} ${text}`);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`/api/lip-sync`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        return res.json();
+      }
+
+      // 503/502 = السيرفر بيسترجع، حاول تاني
+      if (res.status === 503 || res.status === 502) {
+        const text = await res.text();
+        lastErr = new Error(`Lip sync start failed: ${res.status} ${text}`) as Error & { error_type?: string };
+        (lastErr as any).error_type = "backend_unavailable";
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+        throw lastErr;
+      }
+
+      // أي خطأ تاني: ارميه على طول
+      const text = await res.text();
+      throw new Error(`Lip sync start failed: ${res.status} ${text}`);
+    } catch (e: any) {
+      // network error (fetch threw) = السيرفر وقع بالكامل، حاول تاني
+      if (e?.error_type === "backend_unavailable") {
+        throw e; // ده من الـ 503 retry loop فوق، ارميه
+      }
+      lastErr = e instanceof Error ? e : new Error(String(e));
+      (lastErr as any).error_type = "backend_unavailable";
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw lastErr;
+    }
   }
-
-  return res.json();
+  throw lastErr || new Error("Lip sync start failed after retries");
 }
 
 /**
  * يستعلم عن حالة الـ job
+ *
+ * فيه retry logic عشان لو الباك-إند وقع (OOM مثلاً) واتـrestart:
+ * - 503/502: السيرفر بيسترجع، استنى 3 ثواني وحاول تاني (حتى 5 محاولات)
+ * - network error: نفس السلوك
+ * ده بيدّي فرصة للـ backend إنه يرجع شغال من غير ما الـ user يشوف خطأ كاذب.
  */
 export async function getJobStatus(jobId: string): Promise<LipSyncJobStatus> {
-  const res = await fetch(`/api/status/${jobId}`);
-  if (!res.ok) {
-    throw new Error(`Status check failed: ${res.status}`);
+  const MAX_RETRIES = 5;
+  const RETRY_DELAY_MS = 3000;
+  let lastErr: Error | null = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`/api/status/${jobId}`);
+      if (res.ok) {
+        return res.json();
+      }
+      // 503/502 = السيرفر بيسترجع (OOM crash + auto-restart)، حاول تاني
+      if (res.status === 503 || res.status === 502) {
+        lastErr = new Error(`Backend temporarily unavailable (${res.status})`);
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+      }
+      // أي خطأ تاني: ارميه على طول (404 = job مش موجود، 500 = خطأ حقيقي)
+      const text = await res.text();
+      throw new Error(`Status check failed: ${res.status} ${text}`);
+    } catch (e: any) {
+      // network error (fetch threw) = السيرفر وقع بالكامل، حاول تاني
+      if (e?.message?.includes("Status check failed")) {
+        throw e; // خطأ HTTP واضح، ارميه
+      }
+      lastErr = e instanceof Error ? e : new Error(String(e));
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+    }
   }
-  return res.json();
+  throw lastErr || new Error("Status check failed after retries");
 }
 
 /**
@@ -206,6 +275,11 @@ export async function cleanupJob(jobId: string): Promise<void> {
 
 /**
  * يراقب حالة الـ job حتى تخلص (أو تطفي)
+ *
+ * فيه resilience ضد انقطاع الباك-إند:
+ * - لو getJobStatus فشلت بشبكة/503، نعدّ المحاولات المتتالية
+ * - لو وصلنا لـ 10 أخطاء متتالية (~15 ثانية مع retry)، نرمي خطأ واضح
+ * - لو الـ status رجع "error" من السيرفر، نرمي الـ error_type الصحيح
  */
 export async function pollJobUntilDone(
   jobId: string,
@@ -213,22 +287,46 @@ export async function pollJobUntilDone(
   intervalMs = 1500,
   maxAttempts = 200
 ): Promise<LipSyncJobStatus> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const status = await getJobStatus(jobId);
-    onProgress(status);
+  let consecutiveErrors = 0;
+  const MAX_CONSECUTIVE_ERRORS = 10;
 
-    if (status.status === "completed") {
-      return status;
-    }
-    if (status.status === "error") {
-      const err = new Error(status.error || status.message || "Job failed") as Error & { error_type?: string };
-      err.error_type = status.error_type || "unknown";
-      throw err;
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const status = await getJobStatus(jobId);
+      consecutiveErrors = 0; // نجاح، صفّر العدّاد
+      onProgress(status);
+
+      if (status.status === "completed") {
+        return status;
+      }
+      if (status.status === "error") {
+        const err = new Error(status.error || status.message || "Job failed") as Error & { error_type?: string };
+        err.error_type = status.error_type || "unknown";
+        throw err;
+      }
+    } catch (e: any) {
+      // لو الخطأ من نوع "error status" من السيرفر (مش network)، ارميه على طول
+      if (e?.error_type) {
+        throw e;
+      }
+      // network/503 error — ممكن الباك-إند بيسترجع، كمّل المحاولات
+      consecutiveErrors++;
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        const err = new Error(
+          "السيرفر وقع أثناء المعالجة. حاول تاني بصورة أصغر أو نص أقصر — " +
+          "الذاكرة مش كافية على السيرفر."
+        ) as Error & { error_type?: string };
+        err.error_type = "backend_crashed";
+        throw err;
+      }
+      // استنى شوية قبل المحاولة الجاية (مش هنستنى intervalMs كمان عشان getJobStatus فيه retry بتاعه)
     }
 
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error("Job timed out");
+  const err = new Error("Job timed out") as Error & { error_type?: string };
+  err.error_type = "timeout";
+  throw err;
 }
 
 /**

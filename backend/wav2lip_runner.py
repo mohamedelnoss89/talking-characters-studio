@@ -359,7 +359,58 @@ def face_detect(images, pads=(0, 10, 0, 0), batch_size=16, face_index=None):
         batch_size: حجم batch
         face_index: لو الصورة فيها أكتر من وجه، حدد index الوجه اللي هيتكلم
                    (None = أول وجه يتم كشفه، السلوك الأصلي)
+
+    ملاحظة مهمة عن الذاكرة:
+        لو face_index >= 0، بنستخدم detect_all_faces مباشرة (detector واحد بس)
+        بدل ما نعمل detector إضافي. ده بيوفّر ~200MB رام، وبيمنع OOM على السيرفرات
+        اللي عندها رام قليلة (< 4GB).
     """
+    # =========================================================
+    # فرع face_index: استخدم detector واحد بس (detect_all_faces)
+    # بن_skip كشف الـ batch الأصلي تماماً عشان نوفر ذاكرة ووقت.
+    # =========================================================
+    if face_index is not None and face_index >= 0 and len(images) > 0:
+        print(f"[Wav2Lip] face_index={face_index} requested, detecting all faces with single detector...")
+        all_faces = detect_all_faces(images[0])
+        print(f"[Wav2Lip] Found {len(all_faces)} faces in image")
+        if len(all_faces) == 0:
+            raise ValueError('Face not detected! Ensure the image contains a clear face.')
+        if face_index >= len(all_faces):
+            raise ValueError(
+                f'face_index {face_index} out of range. Only {len(all_faces)} faces detected (0..{len(all_faces)-1}).'
+            )
+        selected = all_faces[face_index]
+        # ابنِ predictions للوجه المحدد لكل صورة
+        predictions = [selected["bbox"] for _ in images]
+        # طبّق padding
+        results = []
+        pady1, pady2, padx1, padx2 = pads
+        for rect, image in zip(predictions, images):
+            y1 = max(0, int(rect[1]) - pady1)
+            y2 = min(image.shape[0], int(rect[3]) + pady2)
+            x1 = max(0, int(rect[0]) - padx1)
+            x2 = min(image.shape[1], int(rect[2]) + padx2)
+            # تأكد إن الـ bbox صالح (مش معكوس أو صغير جداً)
+            if x2 - x1 < 10 or y2 - y1 < 10:
+                raise ValueError(
+                    f'Detected face box too small after padding: {x2-x1}x{y2-y1}. '
+                    f'Try a clearer image or different face_index.'
+                )
+            results.append([x1, y1, x2, y2])
+        boxes = np.array(results)
+        boxes = get_smoothened_boxes(boxes, T=5)
+        results = [
+            [image[int(y1): int(y2), int(x1): int(x2)], (int(y1), int(y2), int(x1), int(x2))]
+            for image, (x1, y1, x2, y2) in zip(images, boxes)
+        ]
+        # حرّر الذاكرة قبل ما نرجع (عشان model loading اللي بعده)
+        import gc
+        gc.collect()
+        return results
+
+    # =========================================================
+    # السلوك الأصلي: كشف أول وجه في كل صورة (لـ face_index = None)
+    # =========================================================
     face_detection = _face_detection()
     tqdm = _tqdm()
     detector = face_detection.FaceAlignment(
@@ -379,54 +430,26 @@ def face_detect(images, pads=(0, 10, 0, 0), batch_size=16, face_index=None):
         for i in tqdm(range(0, len(images), batch_size), desc="Face detection (batch=1)"):
             predictions.extend(detector.get_detections_for_batch(np.array(images[i:i + batch_size])))
 
-    # لو face_index محدد، نكشف كل الوجوه في الصورة الأولى ونختار الوجه المطلوب
-    if face_index is not None and face_index >= 0 and len(images) > 0:
-        print(f"[Wav2Lip] face_index={face_index} requested, re-detecting all faces...")
-        all_faces = detect_all_faces(images[0])
-        print(f"[Wav2Lip] Found {len(all_faces)} faces in image")
-        if len(all_faces) == 0:
-            raise ValueError('Face not detected in one of the frames! Ensure the image contains a clear face.')
-        if face_index >= len(all_faces):
-            raise ValueError(
-                f'face_index {face_index} out of range. Only {len(all_faces)} faces detected (0..{len(all_faces)-1}).'
-            )
-        selected = all_faces[face_index]
-        # استبدل predictions كلها بالوجه المحدد
-        predictions = [selected["bbox"] for _ in images]
-        # تخطي كشف الوجه الأصلي وروح لـ padding مباشرة
-        results = []
-        pady1, pady2, padx1, padx2 = pads
-        for rect, image in zip(predictions, images):
-            y1 = max(0, rect[1] - pady1)
-            y2 = min(image.shape[0], rect[3] + pady2)
-            x1 = max(0, rect[0] - padx1)
-            x2 = min(image.shape[1], rect[2] + padx2)
-            results.append([x1, y1, x2, y2])
-        boxes = np.array(results)
-        boxes = get_smoothened_boxes(boxes, T=5)
-        results = [[image[y1: y2, x1:x2], (y1, y2, x1, x2)] for image, (x1, y1, x2, y2) in zip(images, boxes)]
-        del detector
-        return results
-
-    # السلوك الأصلي: كشف أول وجه في كل صورة
     results = []
     pady1, pady2, padx1, padx2 = pads
     for rect, image in zip(predictions, images):
         if rect is None:
             raise ValueError('Face not detected in one of the frames! Ensure the image contains a clear face.')
 
-        y1 = max(0, rect[1] - pady1)
-        y2 = min(image.shape[0], rect[3] + pady2)
-        x1 = max(0, rect[0] - padx1)
-        x2 = min(image.shape[1], rect[2] + padx2)
+        y1 = max(0, int(rect[1]) - pady1)
+        y2 = min(image.shape[0], int(rect[3]) + pady2)
+        x1 = max(0, int(rect[0]) - padx1)
+        x2 = min(image.shape[1], int(rect[2]) + padx2)
 
         results.append([x1, y1, x2, y2])
 
     boxes = np.array(results)
     boxes = get_smoothened_boxes(boxes, T=5)
-    results = [[image[y1: y2, x1:x2], (y1, y2, x1, x2)] for image, (x1, y1, x2, y2) in zip(images, boxes)]
+    results = [[image[int(y1): int(y2), int(x1): int(x2)], (int(y1), int(y2), int(x1), int(x2))] for image, (x1, y1, x2, y2) in zip(images, boxes)]
 
     del detector
+    import gc
+    gc.collect()
     return results
 
 
@@ -487,6 +510,21 @@ def run_lip_sync(
         full_frames[0] = cv2.resize(full_frames[0], (new_w, new_h),
                                     interpolation=cv2.INTER_LANCZOS4)
         print(f"[Wav2Lip] Upscaled to {new_w}x{new_h} (scale={scale:.2f}) for blink quality")
+
+    # 1.5b. Downscale large images to save memory.
+    # Wav2Lip بيشتغل على face crops 96×96، فمش محتاجين صورة full-res كـ canvas.
+    # صورة 1024×1024 بتيجي ~3MB لكل إطار × 289 إطار = 867MB في generated_frames.
+    # بتصغير لـ 640×640 بنوفّر ~63% من الذاكرة (من 867MB لـ ~320MB).
+    # ده بيدّي وضاحة كافية للـ face animation + بيمنع OOM على السيرفرات اللي رامها قليلة.
+    MAX_SIDE = 640
+    h0b, w0b = full_frames[0].shape[:2]
+    if max(h0b, w0b) > MAX_SIDE:
+        scale = MAX_SIDE / max(h0b, w0b)
+        new_w = int(w0b * scale)
+        new_h = int(h0b * scale)
+        full_frames[0] = cv2.resize(full_frames[0], (new_w, new_h),
+                                    interpolation=cv2.INTER_AREA)
+        print(f"[Wav2Lip] Downscaled to {new_w}x{new_h} (scale={scale:.2f}) to save memory")
 
     # =====================================================================
     # 1.6. PRE-ENHANCE: GFPGAN على الصورة الأصلية مرة واحدة فقط
@@ -787,6 +825,15 @@ def run_lip_sync(
         out.write(f)
     out.release()
     print(f"[Wav2Lip] Frames written to {temp_avi}")
+
+    # حرّر generated_frames فوراً بعد ما كتبناهم لـ AVI.
+    # ده بيوفر ~300MB رام (لـ 640×640×3×289) قبل ما نبدأ خطوة ffmpeg.
+    # ffmpeg بنفسه محتاج رام عشان libx264 encoding، فتحرير الذاكرة هنا ضروري
+    # عشان نمنع OOM على السيرفرات اللي رامها قليلة (< 4GB).
+    del generated_frames
+    import gc
+    gc.collect()
+    print("[Wav2Lip] Memory freed after AVI write")
 
     # 10. Merge audio + video
     if progress_callback:

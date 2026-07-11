@@ -318,6 +318,8 @@ export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const jobIdRef = useRef<string | null>(null);
+  // ref عشان نتجنّب إعادة كشف الوجوه لنفس الصورة — كان بيتعمل كل ما backendStatus يتغير
+  const lastDetectedFileKeyRef = useRef<string | null>(null);
   const { toast } = useToast();
 
   // === فحص الـ backend ===
@@ -633,10 +635,22 @@ export default function Home() {
   // بيتنادي تلقائياً بعد ما imageFile يتحدد (upload أو generate أو edit).
   // لو الصورة فيها وجه واحد بس، بنتعامل معاها تلقائياً (face_index = -1).
   // لو فيها أكتر من وجه، المستخدم بيدوس على الوجه اللي عاوزه.
+  //
+  // مهم: بنستخدم lastDetectedFileKeyRef عشان نتجنّب إعادة كشف الوجوه لنفس الصورة.
+  // من غير ده، كان كل ما backendStatus يتغير (كل 5 ثواني) بيتعمل detect-faces جديد،
+  // وده بيستهلك 12-28 ثانية لكل call على CPU ويحمّل السيرفر بلا داعي.
   const runFaceDetection = useCallback(async (file: File | null) => {
     if (!file) return;
     // لو الـ backend مش شغال أو Wav2Lip مش متاح، نتخطى كشف الوجوه بهدوء
     if (backendStatus !== "ok" || backendInfo?.wav2lip_available === false) return;
+
+    // تجنّب إعادة كشف الوجوه لنفس الملف (بناءً على name + size + lastModified)
+    const fileKey = `${file.name}_${file.size}_${file.lastModified}`;
+    if (lastDetectedFileKeyRef.current === fileKey) {
+      // نفس الصورة اتكشفت قبل كده — نتخطى
+      return;
+    }
+    lastDetectedFileKeyRef.current = fileKey;
 
     setDetectingFaces(true);
     setFaceDetectError("");
@@ -660,17 +674,22 @@ export default function Home() {
       // فشل كشف الوجوه - مش خطأ قاتل، هنكمل بالوضع التلقائي
       console.warn("[runFaceDetection] failed:", e?.message);
       setFaceDetectError(t.faceDetectionFailed);
+      // صفّر الـ ref عشان لو المستخدم حاول تاني يقدر
+      lastDetectedFileKeyRef.current = null;
     } finally {
       setDetectingFaces(false);
     }
   }, [backendStatus, backendInfo, t.faceNoFaces, t.faceDetectionFailed]);
 
-  // لما imageFile يتغير، شغّل كشف الوجوه تلقائياً
+  // لما imageFile يتغير (فقط)، شغّل كشف الوجوه تلقائياً
+  // ملحوظة: runFaceDetection بيتعملها reference جديد كل ما backendStatus يتغير،
+  // بس بفضل الـ lastDetectedFileKeyRef، الـ call الفعلي بيـskip لو نفس الصورة.
   useEffect(() => {
     if (imageFile && imageReady) {
       runFaceDetection(imageFile);
     }
-  }, [imageFile, imageReady, runFaceDetection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageFile, imageReady]);
 
   // تعديل الصورة المولّدة بالـ AI (image-to-image)
   const handleEditCharacter = async () => {
@@ -971,6 +990,14 @@ export default function Home() {
         msg = lang === "ar"
           ? "العملية أخدت وقت طويل أوي — جرّب ملف أصغر."
           : "Operation timed out — try a smaller file.";
+      } else if (errType === "backend_crashed") {
+        msg = lang === "ar"
+          ? "السيرفر وقع أثناء المعالجة (نفذت الذاكرة). جرّب تاني — لو الصورة فيها أكتر من وجه، الصورة اتتصغّرت تلقائياً. لو الفيديو طويل، جرّب نص أقصر."
+          : "The server crashed during processing (out of memory). Try again — the image is auto-downsized. If the video is long, try a shorter script.";
+      } else if (errType === "backend_unavailable" || (e?.message || "").includes("fetch failed")) {
+        msg = lang === "ar"
+          ? "السيرفر مش متاح حالياً. استنى ثواني وحاول تاني."
+          : "The server is temporarily unavailable. Wait a few seconds and try again.";
       } else {
         msg = e?.message || String(e);
       }

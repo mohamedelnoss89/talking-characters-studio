@@ -337,7 +337,7 @@ async def lip_sync(
                     pads_tuple,
                     resize_factor,
                     4,    # face_det_batch_size
-                    16,   # wav2lip_batch_size
+                    8,    # wav2lip_batch_size — 8 بدل 16 عشان نقلل ذروة الذاكرة
                     progress_callback,
                     face_idx_arg,
                 ),
