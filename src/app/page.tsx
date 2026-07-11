@@ -112,7 +112,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<string>("character");
   const [debugInfo, setDebugInfo] = useState<string>("");
   const [backendStatus, setBackendStatus] = useState<"checking" | "ok" | "down" | "starting">("checking");
-  const [backendInfo, setBackendInfo] = useState<{ device: string; model_loaded: boolean } | null>(null);
+  const [backendInfo, setBackendInfo] = useState<{ device: string; model_loaded: boolean; wav2lip_available?: boolean } | null>(null);
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -133,7 +133,7 @@ export default function Home() {
         if (!mounted) return;
         if (health.status === "ok") {
           setBackendStatus("ok");
-          setBackendInfo({ device: health.device, model_loaded: health.model_loaded });
+          setBackendInfo({ device: health.device, model_loaded: health.model_loaded, wav2lip_available: health.wav2lip_available });
         } else if (health.status === "starting") {
           setBackendStatus("starting");
           retryCount++;
@@ -633,6 +633,20 @@ export default function Home() {
       return;
     }
 
+    // فحص مسبق: تأكد إن Wav2Lip متاح قبل ما نبدأ
+    if (backendInfo && backendInfo.wav2lip_available === false) {
+      const msg = lang === "ar"
+        ? "محرّك تحريك الشفاه (Wav2Lip) مش متوفر على السيرفر. الموديل محتاج تنزيل يدوي — تواصل مع المسؤول."
+        : "Wav2Lip engine is not available on this server. The model needs manual download — contact admin.";
+      setDebugInfo(msg);
+      toast({
+        variant: "destructive",
+        title: lang === "ar" ? "ميزة مش متاحة" : "Feature unavailable",
+        description: msg,
+      });
+      return;
+    }
+
     setIsGenerating(true);
     setGenerateProgress(0);
     setGenerateMessage(lang === "ar" ? "بتجهيز الطلب..." : "Preparing request...");
@@ -692,7 +706,28 @@ export default function Home() {
 
       setTimeout(() => cleanupJob(job_id), 30000);
     } catch (e: any) {
-      const msg = e?.message || String(e);
+      const errType = (e?.error_type as string) || "unknown";
+      // رسالة خطأ واضحة بالعربي بناءً على نوع الخطأ
+      let msg: string;
+      if (errType === "wav2lip_unavailable") {
+        msg = lang === "ar"
+          ? "محرّك تحريك الشفاه (Wav2Lip) مش متوفر على السيرفر. الموديل محتاج تنزيل يدوي — تواصل مع المسؤول."
+          : "Wav2Lip engine is not available on this server. The model needs manual download — contact admin.";
+      } else if (errType === "torch_missing") {
+        msg = lang === "ar"
+          ? "مكتبة PyTorch مش متثبتة على السيرفر — تواصل مع المسؤول."
+          : "PyTorch is not installed on the server — contact admin.";
+      } else if (errType === "tts_failed") {
+        msg = lang === "ar"
+          ? "فشل توليد الصوت من النص. جرّب صوت تاني أو ارفع ملف صوتي."
+          : "TTS failed. Try a different voice or upload an audio file.";
+      } else if (errType === "timeout") {
+        msg = lang === "ar"
+          ? "العملية أخدت وقت طويل أوي — جرّب ملف أصغر."
+          : "Operation timed out — try a smaller file.";
+      } else {
+        msg = e?.message || String(e);
+      }
       setDebugInfo(msg);
       setGenerateMessage("");
       toast({

@@ -13,6 +13,7 @@ export interface LipSyncJobStatus {
   progress: number;
   message: string;
   error: string | null;
+  error_type?: string | null;
   has_video: boolean;
 }
 
@@ -182,7 +183,9 @@ export async function pollJobUntilDone(
       return status;
     }
     if (status.status === "error") {
-      throw new Error(status.error || status.message || "Job failed");
+      const err = new Error(status.error || status.message || "Job failed") as Error & { error_type?: string };
+      err.error_type = status.error_type || "unknown";
+      throw err;
     }
 
     await new Promise((r) => setTimeout(r, intervalMs));
@@ -197,6 +200,8 @@ export async function checkBackendHealth(): Promise<{
   status: string;
   device: string;
   model_loaded: boolean;
+  wav2lip_available?: boolean;
+  tts_available?: boolean;
 }> {
   const res = await fetch(`/api/health`);
   if (!res.ok) throw new Error("Backend not reachable");

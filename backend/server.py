@@ -33,7 +33,13 @@ except Exception as e:
 WAV2LIP_AVAILABLE = False
 try:
     import wav2lip_runner
-    WAV2LIP_AVAILABLE = True
+    # Verify that the actual model files are present too, not just the import
+    try:
+        wav2lip_runner._check_wav2lip_available()
+        WAV2LIP_AVAILABLE = True
+    except Exception as e:
+        print(f"[Server] WARNING: wav2lip_runner imported but model files missing ({e}). /lip-sync will return 503.")
+        WAV2LIP_AVAILABLE = False
 except Exception as e:
     print(f"[Server] WARNING: wav2lip_runner not available ({e}). Running in degraded mode — /lip-sync disabled.")
     WAV2LIP_AVAILABLE = False
@@ -265,9 +271,20 @@ async def lip_sync(
             print(f"[Job {job_id}] Completed: {output_path}")
         except Exception as e:
             jobs[job_id]["status"] = "error"
-            jobs[job_id]["error"] = str(e)
-            jobs[job_id]["message"] = f"Error: {e}"
-            print(f"[Job {job_id}] Error: {e}")
+            err_str = str(e)
+            jobs[job_id]["error"] = err_str
+            jobs[job_id]["message"] = f"Error: {err_str}"
+            # Classify the error so the frontend can show a clean localized message
+            err_lower = err_str.lower()
+            if "wav2lip directory not found" in err_lower or "checkpoint not found" in err_lower or "wav2lip" in err_lower and "not found" in err_lower:
+                jobs[job_id]["error_type"] = "wav2lip_unavailable"
+            elif "torch" in err_lower or "no module named 'torch'" in err_lower:
+                jobs[job_id]["error_type"] = "torch_missing"
+            elif "tts" in err_lower or "edge_tts" in err_lower:
+                jobs[job_id]["error_type"] = "tts_failed"
+            else:
+                jobs[job_id]["error_type"] = "unknown"
+            print(f"[Job {job_id}] Error ({jobs[job_id]['error_type']}): {e}")
             import traceback
             traceback.print_exc()
 
@@ -292,6 +309,7 @@ async def get_status(job_id: str):
         "progress": job["progress"],
         "message": job["message"],
         "error": job["error"],
+        "error_type": job.get("error_type", "unknown") if job["status"] == "error" else None,
         "has_video": job["video_path"] is not None and os.path.isfile(job["video_path"]),
     }
 
