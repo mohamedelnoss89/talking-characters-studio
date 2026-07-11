@@ -1967,13 +1967,16 @@ export default function Home() {
                                   {detectedFaces.map((face) => {
                                     const v = voices.find((vv) => vv.id === seg.voice);
                                     const isFemale = v?.gender === "Female";
+                                    const isChild = v?.category === "child";
                                     return (
                                       <SelectItem key={face.index} value={String(face.index)}>
                                         <span className="flex items-center gap-2">
                                           <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                            isFemale ? "bg-pink-500/20 text-pink-300" : "bg-blue-500/20 text-blue-300"
+                                            isChild
+                                              ? (isFemale ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/20 text-emerald-300")
+                                              : (isFemale ? "bg-pink-500/20 text-pink-300" : "bg-blue-500/20 text-blue-300")
                                           }`}>
-                                            {isFemale ? "♀" : "♂"}
+                                            {isChild ? "🧒" : (isFemale ? "♀" : "♂")}
                                           </span>
                                           {t.faceNumber} {face.index + 1}
                                         </span>
@@ -2018,9 +2021,11 @@ export default function Home() {
                                     <SelectItem key={v.id} value={v.id}>
                                       <span className="flex items-center gap-2">
                                         <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                          v.gender === "Female" ? "bg-pink-500/20 text-pink-300" : "bg-blue-500/20 text-blue-300"
+                                          v.category === "child"
+                                            ? (v.gender === "Female" ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/20 text-emerald-300")
+                                            : (v.gender === "Female" ? "bg-pink-500/20 text-pink-300" : "bg-blue-500/20 text-blue-300")
                                         }`}>
-                                          {v.gender === "Female" ? "♀" : "♂"}
+                                          {v.category === "child" ? "🧒" : (v.gender === "Female" ? "♀" : "♂")}
                                         </span>
                                         {lang === "ar" ? v.label_ar : v.label_en}
                                       </span>
@@ -2120,11 +2125,11 @@ export default function Home() {
                                 <SelectItem key={v.id} value={v.id}>
                                   <span className="flex items-center gap-2">
                                     <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                      v.gender === "Female"
-                                        ? "bg-pink-500/20 text-pink-300"
-                                        : "bg-blue-500/20 text-blue-300"
+                                      v.category === "child"
+                                        ? (v.gender === "Female" ? "bg-amber-500/20 text-amber-300" : "bg-emerald-500/20 text-emerald-300")
+                                        : (v.gender === "Female" ? "bg-pink-500/20 text-pink-300" : "bg-blue-500/20 text-blue-300")
                                     }`}>
-                                      {v.gender === "Female" ? "♀" : "♂"}
+                                      {v.category === "child" ? "🧒" : (v.gender === "Female" ? "♀" : "♂")}
                                     </span>
                                     {lang === "ar" ? v.label_ar : v.label_en}
                                   </span>

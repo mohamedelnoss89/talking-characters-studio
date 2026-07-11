@@ -37,6 +37,8 @@ export interface TtsVoice {
   lang: string;
   label_ar: string;
   label_en: string;
+  category?: "adult" | "child";  // بالغ أو طفل
+  pitch?: string;                 // طبقة الصوت (لأصوات الأطفال)
 }
 
 export interface VoicesResponse {
