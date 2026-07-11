@@ -32,6 +32,9 @@ import {
   Type,
   Volume2,
   User,
+  Users,
+  Plus,
+  Trash2,
   Wand2,
   Image as ImageIcon,
   RefreshCw,
@@ -43,6 +46,7 @@ import { translations, type Language } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/toaster";
 import {
   startLipSync,
+  startMultiLipSync,
   pollJobUntilDone,
   downloadVideo,
   cleanupJob,
@@ -53,6 +57,7 @@ import {
   base64ImageToFile,
   detectFaces,
   type LipSyncJobStatus,
+  type MultiScriptEntry,
   type TtsVoice,
   type CharacterStyle,
   type CharacterGender,
@@ -293,6 +298,15 @@ export default function Home() {
   const [speechRate, setSpeechRate] = useState<string>("+0%");
   const [previewingTts, setPreviewingTts] = useState(false);
   const [ttsPreviewUrl, setTtsPreviewUrl] = useState<string | null>(null);
+
+  // === Multi-speaker state ===
+  // speakerMode: "single" = المتحدث الواحد (السلوك الأصلي)
+  //               "multi"   = حوار بين الشخصيات (كل وجه يقول سيناريو مختلف)
+  const [speakerMode, setSpeakerMode] = useState<"single" | "multi">("single");
+  // كل entry: { face_index, text, voice, rate }
+  // بنستخدم default voice/rate من selectedVoice و speechRate
+  type MultiSegment = { face_index: number; text: string; voice: string; rate: string };
+  const [multiSegments, setMultiSegments] = useState<MultiSegment[]>([]);
 
   // Generation state
   const [isGenerating, setIsGenerating] = useState(false);
@@ -691,6 +705,53 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageFile, imageReady]);
 
+  // === Multi-speaker helpers ===
+  // لما الوجوه تتكشف، لو أكتر من وجه، نضيف segment لكل وجه افتراضياً.
+  // المستخدم يقدر يعدّل/يزود/يشيل بعد كده.
+  useEffect(() => {
+    if (detectedFaces.length > 1 && multiSegments.length === 0) {
+      // ابدأ بـ segment واحد لكل وجه، فاضي (المستخدم يكتبه)
+      setMultiSegments(
+        detectedFaces.map((face) => ({
+          face_index: face.index,
+          text: "",
+          voice: selectedVoice,
+          rate: speechRate,
+        }))
+      );
+    }
+    // لو الوجوه اتغيرت (مثلاً صورة جديدة)، صفّر الـ segments
+    if (detectedFaces.length === 0 && multiSegments.length > 0) {
+      setMultiSegments([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detectedFaces]);
+
+  const updateMultiSegment = (idx: number, patch: Partial<MultiSegment>) => {
+    setMultiSegments((prev) =>
+      prev.map((seg, i) => (i === idx ? { ...seg, ...patch } : seg))
+    );
+  };
+
+  const addMultiSegment = () => {
+    if (multiSegments.length >= 6) return; // حد أقصى 6
+    // لو في وجوه، استخدم أول وجه افتراضياً
+    const defaultFace = detectedFaces.length > 0 ? detectedFaces[0].index : 0;
+    setMultiSegments((prev) => [
+      ...prev,
+      {
+        face_index: defaultFace,
+        text: "",
+        voice: selectedVoice,
+        rate: speechRate,
+      },
+    ]);
+  };
+
+  const removeMultiSegment = (idx: number) => {
+    setMultiSegments((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   // تعديل الصورة المولّدة بالـ AI (image-to-image)
   const handleEditCharacter = async () => {
     if (!generatedChar || !generatedChar.image_base64) return;
@@ -994,6 +1055,173 @@ export default function Home() {
         msg = lang === "ar"
           ? "السيرفر وقع أثناء المعالجة (نفذت الذاكرة). جرّب تاني — لو الصورة فيها أكتر من وجه، الصورة اتتصغّرت تلقائياً. لو الفيديو طويل، جرّب نص أقصر."
           : "The server crashed during processing (out of memory). Try again — the image is auto-downsized. If the video is long, try a shorter script.";
+      } else if (errType === "backend_unavailable" || (e?.message || "").includes("fetch failed")) {
+        msg = lang === "ar"
+          ? "السيرفر مش متاح حالياً. استنى ثواني وحاول تاني."
+          : "The server is temporarily unavailable. Wait a few seconds and try again.";
+      } else {
+        msg = e?.message || String(e);
+      }
+      setDebugInfo(msg);
+      setGenerateMessage("");
+      toast({
+        variant: "destructive",
+        title: t.errorProcessing,
+        description: msg,
+      });
+    } finally {
+      setIsGenerating(false);
+      jobIdRef.current = null;
+    }
+  };
+
+  // === توليد فيديو الحوار المتعدد ===
+  // بيولّد فيديو واحد فيه كل الشخصيات بتقول سكربتها بالترتيب.
+  // كل segment = face + text + voice → Wav2Lip → concat كلهم.
+  const handleGenerateMulti = async () => {
+    setDebugInfo("");
+
+    if (!imageFile) {
+      const msg = lang === "ar" ? "ارفع صورة الأول" : "Upload an image first";
+      setDebugInfo(msg);
+      toast({ variant: "destructive", title: lang === "ar" ? "بيانات ناقصة" : "Missing Data", description: msg });
+      setActiveTab("character");
+      return;
+    }
+
+    if (detectedFaces.length < 2) {
+      const msg = lang === "ar"
+        ? "الحوار المتعدد محتاج صورة فيها أكتر من شخص. ولّد أو ارفع صورة فيها أكتر من وجه."
+        : "Multi-speaker dialogue needs an image with more than one person. Generate or upload an image with multiple faces.";
+      setDebugInfo(msg);
+      toast({ variant: "destructive", title: lang === "ar" ? "صورة مش مناسبة" : "Image not suitable", description: msg });
+      return;
+    }
+
+    // شيل الفقرات الفاضية واتأكد إن كل فقرة ليها face_index صالح
+    const validSegments = multiSegments.filter((s) => s.text.trim().length > 0);
+    if (validSegments.length === 0) {
+      const msg = lang === "ar"
+        ? "اكتب سكربت لفقرة واحدة على الأقل"
+        : "Write a script for at least one line";
+      setDebugInfo(msg);
+      toast({ variant: "destructive", title: lang === "ar" ? "بيانات ناقصة" : "Missing Data", description: msg });
+      return;
+    }
+
+    // تأكد إن face_index صالح (ضمن نطاق الوجوه المكتشفة)
+    for (let i = 0; i < validSegments.length; i++) {
+      const faceIdx = validSegments[i].face_index;
+      const faceExists = detectedFaces.some((f) => f.index === faceIdx);
+      if (!faceExists) {
+        const msg = lang === "ar"
+          ? `الفقرة ${i + 1}: الوجه رقم ${faceIdx + 1} مش موجود في الصورة. اختار وجه صحيح.`
+          : `Line ${i + 1}: Face #${faceIdx + 1} doesn't exist in the image. Pick a valid face.`;
+        setDebugInfo(msg);
+        toast({ variant: "destructive", title: lang === "ar" ? "وجه مش صالح" : "Invalid face", description: msg });
+        return;
+      }
+    }
+
+    if (backendStatus !== "ok") {
+      const msg = lang === "ar"
+        ? "الـ backend مش شغال. شغّل السيرفر الأول."
+        : "Backend not running. Start the server first.";
+      setDebugInfo(msg);
+      toast({ variant: "destructive", title: lang === "ar" ? "خطأ في الاتصال" : "Connection Error", description: msg });
+      return;
+    }
+
+    if (backendInfo && backendInfo.wav2lip_available === false) {
+      const msg = lang === "ar"
+        ? "محرّك تحريك الشفاه (Wav2Lip) مش متوفر على السيرفر."
+        : "Wav2Lip engine is not available on this server.";
+      setDebugInfo(msg);
+      toast({ variant: "destructive", title: lang === "ar" ? "ميزة مش متاحة" : "Feature unavailable", description: msg });
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerateProgress(0);
+    setGenerateMessage(lang === "ar" ? "بتجهيز الحوار..." : "Preparing dialogue...");
+    setVideoBlob(null);
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    setVideoUrl(null);
+
+    requestAnimationFrame(() => setActiveTab("preview"));
+
+    try {
+      // 1. ابدأ الـ job
+      setGenerateMessage(lang === "ar" ? "بإرسال الحوار للـ AI..." : "Submitting dialogue to AI...");
+
+      // بنّشئ scripts array للـ API
+      const scripts: MultiScriptEntry[] = validSegments.map((s) => ({
+        face_index: s.face_index,
+        text: s.text.trim(),
+        voice: s.voice,
+        rate: s.rate,
+      }));
+
+      const { job_id } = await startMultiLipSync(imageFile, scripts, imageFile.name || "character.png");
+      jobIdRef.current = job_id;
+      console.log("Multi-speaker job started:", job_id);
+
+      // 2. راقب التقدم
+      setGenerateMessage(lang === "ar" ? "الذكاء الاصطناعي بيشتغل على الحوار..." : "AI is processing dialogue...");
+      const finalStatus: LipSyncJobStatus = await pollJobUntilDone(
+        job_id,
+        (status) => {
+          setGenerateProgress(status.progress);
+          setGenerateMessage(status.message || (lang === "ar" ? "جاري المعالجة..." : "Processing..."));
+        },
+        1500,
+        300 // 7.5 دقيقة max — الحوار بياخد وقت أطول
+      );
+      console.log("Multi job completed:", finalStatus);
+
+      // 3. حمّل الفيديو
+      setGenerateMessage(lang === "ar" ? "بتحميل فيديو الحوار..." : "Downloading dialogue video...");
+      setGenerateProgress(100);
+      const blob = await downloadVideo(job_id);
+
+      const url = URL.createObjectURL(blob);
+      setVideoBlob(blob);
+      setVideoUrl(url);
+      setGenerateMessage("");
+
+      toast({
+        title: t.multiVideoReady,
+        description: `${(blob.size / 1024 / 1024).toFixed(1)} MB · ${scripts.length} ${lang === "ar" ? "فقرة" : "lines"} · MP4`,
+      });
+
+      setTimeout(() => cleanupJob(job_id), 30000);
+    } catch (e: any) {
+      const errType = (e?.error_type as string) || "unknown";
+      let msg: string;
+      if (errType === "wav2lip_unavailable") {
+        msg = lang === "ar"
+          ? "محرّك تحريك الشفاه (Wav2Lip) مش متوفر على السيرفر."
+          : "Wav2Lip engine is not available on this server.";
+      } else if (errType === "torch_missing") {
+        msg = lang === "ar"
+          ? "مكتبة PyTorch مش متثبتة على السيرفر — تواصل مع المسؤول."
+          : "PyTorch is not installed on the server — contact admin.";
+      } else if (errType === "tts_failed") {
+        msg = lang === "ar"
+          ? "فشل توليد الصوت لواحدة من الفقرات. جرّب صوت تاني أو نص أقصر."
+          : "TTS failed for one of the lines. Try a different voice or shorter text.";
+      } else if (errType === "face_index_out_of_range") {
+        msg = lang === "ar"
+          ? "واحدة من الفقرات بتشير لوجه مش موجود في الصورة. تأكد من اختيار الوجه الصحيح."
+          : "One of the lines references a face that doesn't exist. Make sure the selected face is valid.";
+      } else if (errType === "timeout") {
+        msg = lang === "ar"
+          ? "الحوار أخد وقت طويل أوي — جرّب فقرات أقصر أو فقرات أقل."
+          : "Dialogue took too long — try shorter or fewer lines.";
+      } else if (errType === "backend_crashed") {
+        msg = lang === "ar"
+          ? "السيرفر وقع أثناء معالجة الحوار (نفذت الذاكرة). جرّب فقرات أقصر أو أقل."
+          : "The server crashed during dialogue processing (out of memory). Try shorter or fewer lines.";
       } else if (errType === "backend_unavailable" || (e?.message || "").includes("fetch failed")) {
         msg = lang === "ar"
           ? "السيرفر مش متاح حالياً. استنى ثواني وحاول تاني."
@@ -1670,36 +1898,205 @@ export default function Home() {
                     <p className="text-sm text-gray-300">{t.voiceSelectHint}</p>
                   </div>
 
-                  {/* Mode switch */}
-                  <div className="mb-6">
-                    <Label className="text-xs text-gray-300 mb-2 block">{t.audioScriptTabs}</Label>
-                    <div className="grid grid-cols-2 gap-2 p-1 bg-black/30 rounded-lg border border-purple-500/20">
-                      <button
-                        type="button"
-                        onClick={() => setAudioMode("script")}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-                          audioMode === "script"
-                            ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
-                            : "text-gray-200 hover:text-purple-100"
-                        }`}
-                      >
-                        <Type className="w-4 h-4" />
-                        {t.scriptMode}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAudioMode("audio")}
-                        className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-                          audioMode === "audio"
-                            ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
-                            : "text-gray-200 hover:text-purple-100"
-                        }`}
-                      >
-                        <AudioLines className="w-4 h-4" />
-                        {t.audioMode}
-                      </button>
+                  {/* === Speaker mode toggle (single vs multi) === */}
+                  {/* الـ toggle ده بيظهر بس لو الصورة فيها أكتر من وجه */}
+                  {detectedFaces.length > 1 ? (
+                    <div className="mb-6">
+                      <Label className="text-xs text-gray-300 mb-2 block flex items-center gap-2">
+                        <Users className="w-4 h-4" />
+                        {t.multiSpeakerTitle}
+                      </Label>
+                      <div className="grid grid-cols-2 gap-2 p-1 bg-black/30 rounded-lg border border-purple-500/20">
+                        <button
+                          type="button"
+                          onClick={() => setSpeakerMode("single")}
+                          className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                            speakerMode === "single"
+                              ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                              : "text-gray-200 hover:text-purple-100"
+                          }`}
+                        >
+                          <User className="w-4 h-4" />
+                          {t.singleSpeakerMode}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSpeakerMode("multi")}
+                          className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                            speakerMode === "multi"
+                              ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                              : "text-gray-200 hover:text-purple-100"
+                          }`}
+                        >
+                          <Users className="w-4 h-4" />
+                          {t.multiSpeakerMode}
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-2">{t.multiSpeakerHint}</p>
                     </div>
-                  </div>
+                  ) : (
+                    /* لو الصورة فيها وجه واحد بس، اعرض رسالة إن الميزة مش متاحة */
+                    <div className="mb-6 p-3 rounded-lg bg-black/20 border border-purple-500/10 text-xs text-gray-400 flex items-start gap-2">
+                      <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-purple-400" />
+                      <span>{t.multiSpeakerAvailable}</span>
+                    </div>
+                  )}
+
+                  {/* === Multi-speaker editor === */}
+                  {speakerMode === "multi" && detectedFaces.length > 1 ? (
+                    <div className="space-y-4">
+                      {multiSegments.map((seg, idx) => (
+                        <div
+                          key={idx}
+                          className="p-4 rounded-lg bg-black/40 border border-purple-500/30 space-y-3"
+                        >
+                          {/* Header: face selector + remove button */}
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-1">
+                              <Badge variant="outline" className="text-xs px-2 py-1">
+                                {t.segmentLabel} {idx + 1}
+                              </Badge>
+                              <Select
+                                value={String(seg.face_index)}
+                                onValueChange={(v) => updateMultiSegment(idx, { face_index: parseInt(v, 10) })}
+                              >
+                                <SelectTrigger className="bg-black/40 border-purple-500/30 text-purple-100 h-8 text-xs flex-1">
+                                  <SelectValue placeholder={t.multiSelectFace} />
+                                </SelectTrigger>
+                                <SelectContent className="bg-slate-900 border-purple-500/30">
+                                  {detectedFaces.map((face) => {
+                                    const v = voices.find((vv) => vv.id === seg.voice);
+                                    const isFemale = v?.gender === "Female";
+                                    return (
+                                      <SelectItem key={face.index} value={String(face.index)}>
+                                        <span className="flex items-center gap-2">
+                                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                            isFemale ? "bg-pink-500/20 text-pink-300" : "bg-blue-500/20 text-blue-300"
+                                          }`}>
+                                            {isFemale ? "♀" : "♂"}
+                                          </span>
+                                          {t.faceNumber} {face.index + 1}
+                                        </span>
+                                      </SelectItem>
+                                    );
+                                  })}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            {multiSegments.length > 1 && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => removeMultiSegment(idx)}
+                                className="h-8 w-8 p-0 text-red-300 hover:text-red-200 hover:bg-red-500/10"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </Button>
+                            )}
+                          </div>
+
+                          {/* Voice selector */}
+                          <div>
+                            <Label className="text-xs text-gray-300 mb-1 block">
+                              {t.voiceForFace} {seg.face_index + 1}
+                            </Label>
+                            <Select
+                              value={seg.voice}
+                              onValueChange={(v) => updateMultiSegment(idx, { voice: v })}
+                            >
+                              <SelectTrigger className="bg-black/40 border-purple-500/30 text-purple-100 h-9 text-sm">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="bg-slate-900 border-purple-500/30 max-h-72">
+                                {voices.length === 0 ? (
+                                  <SelectItem value="ar-EG-SalmaNeural">
+                                    {lang === "ar" ? "سلمى (مصر - أنثى)" : "Salma (Egypt - Female)"}
+                                  </SelectItem>
+                                ) : (
+                                  voices.map((v) => (
+                                    <SelectItem key={v.id} value={v.id}>
+                                      <span className="flex items-center gap-2">
+                                        <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                          v.gender === "Female" ? "bg-pink-500/20 text-pink-300" : "bg-blue-500/20 text-blue-300"
+                                        }`}>
+                                          {v.gender === "Female" ? "♀" : "♂"}
+                                        </span>
+                                        {lang === "ar" ? v.label_ar : v.label_en}
+                                      </span>
+                                    </SelectItem>
+                                  ))
+                                )}
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          {/* Script textarea */}
+                          <div>
+                            <Label className="text-xs text-gray-300 mb-1 block">
+                              {t.scriptForFace} {seg.face_index + 1}
+                            </Label>
+                            <textarea
+                              value={seg.text}
+                              onChange={(e) => updateMultiSegment(idx, { text: e.target.value.slice(0, 2000) })}
+                              placeholder={t.scriptPlaceholder}
+                              rows={3}
+                              className="w-full px-3 py-2 rounded-lg bg-black/40 border border-purple-500/30 text-purple-100 placeholder-gray-400 focus:outline-none focus:border-purple-500/60 resize-y text-sm leading-relaxed"
+                              dir={isRTL ? "rtl" : "ltr"}
+                            />
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* Add segment button */}
+                      {multiSegments.length < 6 && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={addMultiSegment}
+                          className="w-full border-dashed border-purple-500/30 hover:bg-purple-500/10"
+                        >
+                          <Plus className="w-4 h-4 mr-2" />
+                          {t.addSegment}
+                        </Button>
+                      )}
+                      {multiSegments.length >= 6 && (
+                        <p className="text-xs text-center text-gray-400">{t.multiMaxSegments}</p>
+                      )}
+                    </div>
+                  ) : (
+                    /* === Single speaker mode (السلوك الأصلي) === */
+                    <>
+                      {/* Mode switch */}
+                      <div className="mb-6">
+                        <Label className="text-xs text-gray-300 mb-2 block">{t.audioScriptTabs}</Label>
+                        <div className="grid grid-cols-2 gap-2 p-1 bg-black/30 rounded-lg border border-purple-500/20">
+                          <button
+                            type="button"
+                            onClick={() => setAudioMode("script")}
+                            className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                              audioMode === "script"
+                                ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                                : "text-gray-200 hover:text-purple-100"
+                            }`}
+                          >
+                            <Type className="w-4 h-4" />
+                            {t.scriptMode}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAudioMode("audio")}
+                            className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                              audioMode === "audio"
+                                ? "bg-purple-500/30 text-purple-100 border border-purple-500/50"
+                                : "text-gray-200 hover:text-purple-100"
+                            }`}
+                          >
+                            <AudioLines className="w-4 h-4" />
+                            {t.audioMode}
+                          </button>
+                        </div>
+                      </div>
 
                   {/* Voice selector - visible in script mode */}
                   {audioMode === "script" && (
@@ -1853,6 +2250,8 @@ export default function Home() {
                       )}
                     </>
                   )}
+                    </>
+                  )}
                 </Card>
               </TabsContent>
 
@@ -1891,18 +2290,32 @@ export default function Home() {
                     )}
 
                     <Button
-                      onClick={handleGenerateAI}
-                      disabled={isGenerating || !hasInput || backendStatus !== "ok"}
+                      onClick={speakerMode === "multi" && detectedFaces.length > 1 ? handleGenerateMulti : handleGenerateAI}
+                      disabled={
+                        isGenerating ||
+                        backendStatus !== "ok" ||
+                        (speakerMode === "multi" && detectedFaces.length > 1
+                          ? multiSegments.filter((s) => s.text.trim()).length === 0
+                          : !hasInput)
+                      }
                       className="w-full bg-gradient-to-r from-yellow-500 via-purple-500 to-pink-500 hover:from-yellow-600 hover:via-purple-600 hover:to-pink-600 disabled:opacity-50 disabled:cursor-not-allowed"
                       size="lg"
                     >
                       <span className="inline-flex items-center justify-center">
                         {isGenerating ? (
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : speakerMode === "multi" && detectedFaces.length > 1 ? (
+                          <Users className="w-4 h-4 mr-2" />
                         ) : (
                           <Sparkles className="w-4 h-4 mr-2" />
                         )}
-                        <span>{isGenerating ? `${t.generating} ${generateProgress}%` : t.generateVideo}</span>
+                        <span>
+                          {isGenerating
+                            ? `${t.generating} ${generateProgress}%`
+                            : speakerMode === "multi" && detectedFaces.length > 1
+                            ? t.generateMultiVideo
+                            : t.generateVideo}
+                        </span>
                       </span>
                     </Button>
 

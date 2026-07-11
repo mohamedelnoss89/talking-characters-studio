@@ -8,6 +8,8 @@ import sys
 import uuid
 import shutil
 import asyncio
+import subprocess
+import json
 from pathlib import Path
 
 # Add backend dir to path
@@ -373,6 +375,250 @@ async def lip_sync(
         "status": "processing",
         "message": "Lip sync started. Poll /status/{job_id} for progress.",
         "poll_interval_ms": 1500,
+    })
+
+
+# ============================================================
+# Multi-speaker lip-sync endpoint
+# ============================================================
+# بينشئ فيديو واحد فيه حوار بين أكتر من شخصية في نفس الصورة.
+# كل شخصية (face_index) بتقول سكربت مختلف بالصوت اللي المستخدم يحدده.
+# العملية:
+#   1. لكل script entry: ولّد TTS → شغّل Wav2Lip بـ face_index ده → segment.mp4
+#   2. ادمج كل الـ segments بـ ffmpeg concat → final.mp4
+# الـ progress بيتحدّث بـ: (segment_index / total_segments) * 100 + intra_segment_progress
+@app.post("/lip-sync-multi")
+async def lip_sync_multi(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    scripts: str = Form(...),  # JSON array of {face_index, text, voice, rate}
+):
+    """
+    Multi-speaker lip sync.
+
+    - file: image (jpg/png) - فيها أكتر من شخصية
+    - scripts: JSON array, كل عنصر فيه:
+        {
+            "face_index": int,    # index الوجه اللي هيتكلم (من detect-faces)
+            "text": str,          # السكربت اللي هيتقال
+            "voice": str,         # voice id لـ TTS
+            "rate": str           # سرعة الكلام "+0%"
+        }
+    """
+    if not WAV2LIP_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="عذرًا، نموذج Wav2Lip غير مثبت على السيرفر. ميزة lip-sync معطّلة مؤقتًا."
+        )
+
+    if not TTS_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="عذرًا، محرك TTS غير متاح — ميزة الحوار متعدد المتحدثين محتاجة TTS."
+        )
+
+    # Parse scripts JSON
+    try:
+        scripts_list = json.loads(scripts)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid scripts JSON: {e}")
+
+    if not isinstance(scripts_list, list) or len(scripts_list) == 0:
+        raise HTTPException(status_code=400, detail="scripts لازم يكون array غير فاضي")
+
+    # Validate each entry
+    for i, s in enumerate(scripts_list):
+        if not isinstance(s, dict):
+            raise HTTPException(status_code=400, detail=f"Entry {i} مش object")
+        if "face_index" not in s or "text" not in s:
+            raise HTTPException(status_code=400, detail=f"Entry {i} محتاج face_index و text")
+        if not str(s["text"]).strip():
+            raise HTTPException(status_code=400, detail=f"Entry {i} النص فاضي")
+        if not isinstance(s["face_index"], int) or s["face_index"] < 0:
+            raise HTTPException(status_code=400, detail=f"Entry {i} face_index لازم يكون رقم >= 0")
+        # set defaults
+        s.setdefault("voice", "ar-EG-SalmaNeural")
+        s.setdefault("rate", "+0%")
+
+    # Limit max entries to prevent abuse
+    if len(scripts_list) > 6:
+        raise HTTPException(
+            status_code=400,
+            detail="حد أقصى 6 فقرات حوار للفيديو الواحد (عشان الذاكرة والوقت)"
+        )
+
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = os.path.join(UPLOAD_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    # Save image
+    image_ext = os.path.splitext(file.filename or "image.png")[1] or ".png"
+    image_path = os.path.join(job_dir, f"input_image{image_ext}")
+    try:
+        with open(image_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save image: {e}")
+
+    output_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
+
+    # Update job status
+    jobs[job_id] = {
+        "status": "processing",
+        "progress": 0,
+        "message": "بدء الحوار المتعدد...",
+        "video_path": None,
+        "error": None,
+        "total_segments": len(scripts_list),
+        "current_segment": 0,
+    }
+
+    def multi_progress_callback(seg_idx: int, total: int, p: int):
+        """يحسب الـ progress الكلي بناءً على segment index + intra-segment progress."""
+        # seg_idx 0-based, p من 0-100 داخل الـ segment
+        # الكلي = (seg_idx / total) * 100 + (p / total)
+        overall = int((seg_idx / total) * 100 + (p / total))
+        jobs[job_id]["progress"] = overall
+        jobs[job_id]["current_segment"] = seg_idx + 1
+        if p < 80:
+            jobs[job_id]["message"] = f"فقرة {seg_idx+1}/{total}: بتوليد الإطارات... {p}%"
+        elif p < 100:
+            jobs[job_id]["message"] = f"فقرة {seg_idx+1}/{total}: بدمج الصوت..."
+        else:
+            jobs[job_id]["message"] = f"فقرة {seg_idx+1}/{total} خلصت"
+
+    async def run_multi_job():
+        try:
+            loop = asyncio.get_event_loop()
+
+            # إنشاء دالة sync بتشغّل كل segments بالترتيب
+            def process_all():
+                segment_paths = []
+                total = len(scripts_list)
+                for idx, script_entry in enumerate(scripts_list):
+                    seg_output = os.path.join(job_dir, f"segment_{idx}.mp4")
+                    face_idx = script_entry["face_index"]
+                    text = script_entry["text"]
+                    voice = script_entry["voice"]
+                    rate = script_entry["rate"]
+
+                    print(f"[Multi {job_id}] Segment {idx+1}/{total}: face={face_idx}, voice={voice}, text_len={len(text)}")
+
+                    # 1. TTS لهذا الـ segment
+                    seg_audio = os.path.join(job_dir, f"tts_{idx}.mp3")
+                    tts_engine.synthesize_speech(text, voice, seg_audio, rate, "+0%", "+0Hz")
+
+                    # 2. Wav2Lip بـ face_index
+                    def _seg_cb(p, _idx=idx, _total=total):
+                        multi_progress_callback(_idx, _total, p)
+
+                    wav2lip_runner.run_lip_sync(
+                        image_path,
+                        seg_audio,
+                        seg_output,
+                        (0, 10, 0, 0),    # pads
+                        1,                # resize_factor
+                        4,                # face_det_batch_size
+                        8,                # wav2lip_batch_size
+                        _seg_cb,
+                        face_idx,         # face_index
+                    )
+                    segment_paths.append(seg_output)
+                    print(f"[Multi {job_id}] Segment {idx+1} done: {seg_output}")
+
+                # 3. ادمج كل الـ segments
+                if len(segment_paths) == 1:
+                    # لو في segment واحد بس، انسخه للـ output مباشرة
+                    import shutil as _sh
+                    _sh.copy2(segment_paths[0], output_path)
+                else:
+                    # ffmpeg concat: استخدم concat demuxer (الأسرع والأفضل)
+                    concat_list_path = os.path.join(job_dir, "concat_list.txt")
+                    with open(concat_list_path, "w") as f:
+                        for sp in segment_paths:
+                            # ffmpeg concat بيتطلب file paths بـ escaping لو فيها مسافات
+                            abs_path = os.path.abspath(sp)
+                            f.write(f"file '{abs_path}'\n")
+
+                    merge_cmd = [
+                        'ffmpeg', '-y',
+                        '-f', 'concat',
+                        '-safe', '0',
+                        '-i', concat_list_path,
+                        '-c', 'copy',  # copy بدون re-encode (كل segments بنفس الـ codec)
+                        output_path
+                    ]
+                    try:
+                        r = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=180)
+                        if r.returncode != 0 or not os.path.isfile(output_path):
+                            # fallback: re-encode لو copy فشل (ممكن لو الـ segments ليهم نفس الـ codec)
+                            print(f"[Multi {job_id}] concat copy failed, trying re-encode: {r.stderr[-500:]}")
+                            merge_cmd2 = [
+                                'ffmpeg', '-y',
+                                '-f', 'concat',
+                                '-safe', '0',
+                                '-i', concat_list_path,
+                                '-c:v', 'libx264',
+                                '-crf', '18',
+                                '-preset', 'fast',
+                                '-pix_fmt', 'yuv420p',
+                                '-c:a', 'aac',
+                                '-b:a', '128k',
+                                '-movflags', '+faststart',
+                                output_path
+                            ]
+                            r2 = subprocess.run(merge_cmd2, capture_output=True, text=True, timeout=300)
+                            if r2.returncode != 0 or not os.path.isfile(output_path):
+                                raise RuntimeError(
+                                    f"FFmpeg concat failed (code {r2.returncode}):\n{r2.stderr[-1500:]}"
+                                )
+                    except subprocess.TimeoutExpired:
+                        raise RuntimeError("FFmpeg concat timed out (180s)")
+
+                # 4. نظّف الـ segments المؤقتة (الـ output النهائي محفوظ)
+                for sp in segment_paths:
+                    try:
+                        os.remove(sp)
+                    except:
+                        pass
+
+                return output_path
+
+            await loop.run_in_executor(None, process_all)
+
+            jobs[job_id]["status"] = "completed"
+            jobs[job_id]["progress"] = 100
+            jobs[job_id]["message"] = "Done"
+            jobs[job_id]["video_path"] = output_path
+            print(f"[Multi Job {job_id}] Completed: {output_path}")
+        except Exception as e:
+            jobs[job_id]["status"] = "error"
+            err_str = str(e)
+            jobs[job_id]["error"] = err_str
+            jobs[job_id]["message"] = f"Error: {err_str}"
+            err_lower = err_str.lower()
+            if "wav2lip" in err_lower and "not found" in err_lower:
+                jobs[job_id]["error_type"] = "wav2lip_unavailable"
+            elif "torch" in err_lower:
+                jobs[job_id]["error_type"] = "torch_missing"
+            elif "tts" in err_lower or "edge_tts" in err_lower:
+                jobs[job_id]["error_type"] = "tts_failed"
+            elif "face_index" in err_lower and "out of range" in err_lower:
+                jobs[job_id]["error_type"] = "face_index_out_of_range"
+            else:
+                jobs[job_id]["error_type"] = "unknown"
+            print(f"[Multi Job {job_id}] Error ({jobs[job_id]['error_type']}): {e}")
+            import traceback
+            traceback.print_exc()
+
+    background_tasks.add_task(run_multi_job)
+
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "processing",
+        "message": f"Multi-speaker lip sync started ({len(scripts_list)} segments). Poll /status/{job_id}",
+        "poll_interval_ms": 1500,
+        "total_segments": len(scripts_list),
     })
 
 

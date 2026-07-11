@@ -206,6 +206,114 @@ export async function startLipSync(
   throw lastErr || new Error("Lip sync start failed after retries");
 }
 
+// ============================================================
+// Multi-speaker lip-sync (حوار بين أكتر من شخصية)
+// ============================================================
+
+/**
+ * Script entry واحد في حوار متعدد المتحدثين.
+ * - face_index: index الوجه اللي هيتكلم (من detect-faces)
+ * - text: السكربت اللي هيتقال
+ * - voice: voice id لـ TTS (اختياري، default ar-EG-SalmaNeural)
+ * - rate: سرعة الكلام (اختياري، default +0%)
+ */
+export interface MultiScriptEntry {
+  face_index: number;
+  text: string;
+  voice?: string;
+  rate?: string;
+}
+
+/**
+ * يبدأ عملية lip-sync متعددة المتحدثين.
+ *
+ * كل entry في scripts بيمثل فقرة حوار — الشخصية اللي في face_index
+ * بتقول الـ text بالـ voice المحدد.
+ * الباك-إند بيعالج كل فقرة بالترتيب ويدمجهم في فيديو واحد.
+ *
+ * الاستخدام:
+ *   const { job_id } = await startMultiLipSync(imageFile, [
+ *     { face_index: 0, text: "مرحبا، أنا الشخص الأول", voice: "ar-EG-SalmaNeural" },
+ *     { face_index: 1, text: "وأنا الشخص الثاني", voice: "ar-EG-HamedNeural" },
+ *   ]);
+ *   const finalStatus = await pollJobUntilDone(job_id, onProgress);
+ *   const blob = await downloadVideo(job_id);
+ */
+export async function startMultiLipSync(
+  imageBlob: Blob,
+  scripts: MultiScriptEntry[],
+  imageName = "character.png"
+): Promise<{ job_id: string; total_segments: number }> {
+  if (!scripts || scripts.length === 0) {
+    throw new Error("scripts لازم يكون array غير فاضي");
+  }
+
+  // Validate entries
+  for (let i = 0; i < scripts.length; i++) {
+    const s = scripts[i];
+    if (typeof s.face_index !== "number" || s.face_index < 0) {
+      throw new Error(`Entry ${i}: face_index لازم يكون رقم >= 0`);
+    }
+    if (!s.text || !s.text.trim()) {
+      throw new Error(`Entry ${i}: النص فاضي`);
+    }
+  }
+
+  if (scripts.length > 6) {
+    throw new Error("حد أقصى 6 فقرات حوار للفيديو الواحد");
+  }
+
+  const formData = new FormData();
+  formData.append("file", imageBlob, imageName);
+  formData.append("scripts", JSON.stringify(scripts));
+
+  // retry logic عشان لو الباك-إند وقع (OOM) واتـrestart
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 4000;
+  let lastErr: Error | null = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`/api/lip-sync-multi`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        return res.json();
+      }
+
+      // 503/502 = السيرفر بيسترجع، حاول تاني
+      if (res.status === 503 || res.status === 502) {
+        const text = await res.text();
+        lastErr = new Error(`Multi lip-sync start failed: ${res.status} ${text}`) as Error & { error_type?: string };
+        (lastErr as any).error_type = "backend_unavailable";
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+        throw lastErr;
+      }
+
+      // أي خطأ تاني: ارميه على طول
+      const text = await res.text();
+      throw new Error(`Multi lip-sync start failed: ${res.status} ${text}`);
+    } catch (e: any) {
+      if (e?.error_type === "backend_unavailable") {
+        throw e;
+      }
+      lastErr = e instanceof Error ? e : new Error(String(e));
+      (lastErr as any).error_type = "backend_unavailable";
+      if (attempt < MAX_RETRIES - 1) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw lastErr;
+    }
+  }
+  throw lastErr || new Error("Multi lip-sync start failed after retries");
+}
+
 /**
  * يستعلم عن حالة الـ job
  *
