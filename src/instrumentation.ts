@@ -1,11 +1,11 @@
 /**
  * Next.js Instrumentation - runs once on server startup
- * Starts the Python backend (TTS + AI character generation) automatically
+ * Starts the Python Wav2Lip backend automatically
  */
 
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    console.log('[Instrumentation] Starting backend...');
+    console.log('[Instrumentation] Starting Wav2Lip backend...');
     try {
       const { spawn } = await import('child_process');
       const path = await import('path');
