@@ -41,6 +41,7 @@ function isPublicPath(pathname: string): boolean {
     pathname.startsWith("/static/") ||
     pathname.startsWith("/fonts/") ||
     pathname === "/favicon.ico" ||
+    pathname === "/icon.svg" ||
     pathname === "/robots.txt"
   );
 }

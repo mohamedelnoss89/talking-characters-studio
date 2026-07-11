@@ -15,7 +15,7 @@ export async function register() {
       const libsPath = path.join(process.cwd(), '.libs');
       
       // Build environment with LD_LIBRARY_PATH for mediapipe (libGLESv2.so.2)
-      const env = { ...process.env, PYTHONUNBUFFERED: '1' };
+      const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUNBUFFERED: '1' };
       const existingLd = (env.LD_LIBRARY_PATH || '').trim();
       const extraLd = `${libsPath}/usr/lib/x86_64-linux-gnu:${libsPath}`;
       env.LD_LIBRARY_PATH = existingLd

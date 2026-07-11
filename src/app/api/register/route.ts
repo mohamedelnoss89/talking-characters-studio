@@ -109,9 +109,15 @@ export async function POST(req: NextRequest) {
   });
 
   const isProduction = process.env.NODE_ENV === "production";
+  // NOTE: email is intentionally NOT returned to the client (privacy — match login behavior)
   const res = NextResponse.json({
     success: true,
-    user,
+    user: {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      createdAt: user.createdAt,
+    },
     message: lang === "ar" ? "تم إنشاء الحساب" : "Account created",
   });
   res.cookies.set(AUTH_COOKIE_NAME, token, {

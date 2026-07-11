@@ -9,8 +9,12 @@
  * Verifies credentials against the user DB, sets an httpOnly cookie with a
  * signed JWT on success.
  *
- * Response: { success: true, username, displayName?, email? } on success,
+ * Response: { success: true, username, displayName } on success,
  *           { success: false, error } with HTTP 401 on failure.
+ *
+ * NOTE: email is intentionally NOT returned to the client — the UI only needs
+ * the display name, and we don't want to leak the email to client-side JS
+ * unnecessarily. (The JWT still contains it, but it's not exposed via API.)
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -85,7 +89,6 @@ export async function POST(req: NextRequest) {
   const res = NextResponse.json({
     success: true,
     username: user.username,
-    email: user.email,
     displayName: user.displayName,
     message: lang === "ar" ? "تم تسجيل الدخول" : "Logged in",
   });

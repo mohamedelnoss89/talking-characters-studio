@@ -1,11 +1,13 @@
 "use client";
 
 import * as React from "react";
+import { type ToastActionElement } from "@/components/ui/toast";
 
 export type Toast = {
   id: string;
   title?: React.ReactNode;
   description?: React.ReactNode;
+  action?: ToastActionElement;
   variant?: "default" | "destructive";
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
