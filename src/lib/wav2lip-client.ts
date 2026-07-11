@@ -17,6 +17,19 @@ export interface LipSyncJobStatus {
   has_video: boolean;
 }
 
+export interface DetectedFace {
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2] بالـ pixels بالنسبة للصورة الأصلية
+  confidence: number;
+  index: number;
+}
+
+export interface DetectFacesResponse {
+  faces: DetectedFace[];
+  image_width: number;
+  image_height: number;
+  count: number;
+}
+
 export interface TtsVoice {
   id: string;
   name: string;
@@ -74,10 +87,32 @@ export async function previewTts(
 }
 
 /**
+ * يكشف كل الوجوه في صورة (لو الصورة فيها أكتر من وجه).
+ * بيرجع list من الوجوه مع bbox و index عشان المستخدم يختار اللي هيتكلم.
+ */
+export async function detectFaces(imageBlob: Blob, imageName = "image.png"): Promise<DetectFacesResponse> {
+  const formData = new FormData();
+  formData.append("file", imageBlob, imageName);
+
+  const res = await fetch(`/api/detect-faces`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Face detection failed: ${res.status} ${text}`);
+  }
+
+  return res.json();
+}
+
+/**
  * يبدأ عملية الـ lip sync
  * - لو script موجود، الباك هاند هيولّد الصوت بـ TTS
  * - لو audioFile موجود، الباك هاند هيستخدمه مباشرة
  * لازم واحد منهم على الأقل
+ * - لو faceIndex >= 0، السيرفر هيستخدم الوجه المحدد بس (للصور اللي فيها أكتر من وجه)
  */
 export async function startLipSync(
   imageBlob: Blob,
@@ -90,6 +125,7 @@ export async function startLipSync(
     audioName?: string;
     pads?: string;
     resizeFactor?: number;
+    faceIndex?: number;       // index الوجه اللي هيتكلم (-1 أو undefined = تلقائي)
   }
 ): Promise<{ job_id: string }> {
   const {
@@ -101,6 +137,7 @@ export async function startLipSync(
     audioName = "audio.wav",
     pads = "0,10,0,0",
     resizeFactor = 1,
+    faceIndex = -1,
   } = options;
 
   if (!audioFile && !scriptText?.trim()) {
@@ -119,6 +156,7 @@ export async function startLipSync(
   formData.append("rate", rate);
   formData.append("pads", pads);
   formData.append("resize_factor", String(resizeFactor));
+  formData.append("face_index", String(faceIndex));
 
   const res = await fetch(`/api/lip-sync`, {
     method: "POST",

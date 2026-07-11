@@ -51,13 +51,204 @@ import {
   generateCharacter,
   getCharacterOptions,
   base64ImageToFile,
+  detectFaces,
   type LipSyncJobStatus,
   type TtsVoice,
   type CharacterStyle,
   type CharacterGender,
   type GeneratedCharacter,
+  type DetectedFace,
   editCharacter,
 } from "@/lib/wav2lip-client";
+
+// ============================================================
+// FaceSelector — Component لاختيار الوجه اللي هيتكلم
+// بيعرض الصورة مع boxes حول كل وجه، والمستخدم بيدوس على الوجه اللي عاوزه.
+// ============================================================
+type FaceSelectorProps = {
+  imageSrc: string | null;
+  imageNaturalSize: { w: number; h: number } | null;
+  detectedFaces: DetectedFace[];
+  selectedFaceIndex: number;
+  detecting: boolean;
+  error: string;
+  onSelect: (idx: number) => void;
+  lang: Language;
+  t: (typeof translations)[Language];
+};
+
+function FaceSelector({
+  imageSrc,
+  imageNaturalSize,
+  detectedFaces,
+  selectedFaceIndex,
+  detecting,
+  error,
+  onSelect,
+  lang,
+  t,
+}: FaceSelectorProps) {
+  // لو مفيش صورة، ما نظهرش حاجة
+  if (!imageSrc) return null;
+
+  // لو لسه بيكتشف الوجوه، اعرض spinner
+  if (detecting) {
+    return (
+      <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center gap-2 text-sm text-purple-100">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        <span>{t.faceDetecting}</span>
+      </div>
+    );
+  }
+
+  // لو فيه خطأ في الكشف (مفيش وجوه أو فشل)، اعرض رسالة صغيرة بس ميمنعش التوليد
+  if (error || detectedFaces.length === 0) {
+    // اعرض رسالة بس لو فيه error حقيقي (مفيش وجوه)
+    if (error) {
+      return (
+        <div className="p-2 rounded-md bg-yellow-500/5 border border-yellow-500/20 text-xs text-yellow-200/70">
+          {error}
+        </div>
+      );
+    }
+    return null;
+  }
+
+  // لو فيه وجه واحد بس، اعرض رسالة صغيرة إنه اتحكش تلقائياً (ما نطلبش من المستخدم يعمل حاجة)
+  if (detectedFaces.length === 1) {
+    return (
+      <div className="p-2 rounded-md bg-green-500/5 border border-green-500/20 text-xs text-green-200/70 flex items-center gap-1.5">
+        <CheckCircle2 className="w-3.5 h-3.5" />
+        <span>{t.faceSingleDetected}</span>
+      </div>
+    );
+  }
+
+  // لو فيه أكتر من وجه، اعرض الصورة بـ boxes قابلة للضغط
+  return (
+    <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/30 space-y-2">
+      <div className="flex items-center gap-2">
+        <User className="w-4 h-4 text-purple-300" />
+        <span className="text-sm font-semibold text-purple-100">{t.faceSelectTitle}</span>
+      </div>
+      <p className="text-xs text-purple-200/70">{t.faceSelectHint}</p>
+
+      {/* الصورة مع boxes */}
+      <div className="relative rounded-md overflow-hidden bg-black border border-purple-500/20">
+        {/* نعرض الصورة بـ max-width ونخليها قابلة للضغط */}
+        <div style={{ position: "relative", maxWidth: "400px", margin: "0 auto" }}>
+          <img
+            src={imageSrc}
+            alt="Face selection"
+            style={{ display: "block", width: "100%", height: "auto" }}
+          />
+          {/* boxes الوجوه */}
+          {detectedFaces.map((face) => {
+            // bbox = [x1, y1, x2, y2] بالـ pixels بالنسبة للصورة الأصلية
+            // نحولها لنسب مئوية عشان تتعامل مع أي حجم عرض
+            const natW = imageNaturalSize?.w || 1;
+            const natH = imageNaturalSize?.h || 1;
+            const left = (face.bbox[0] / natW) * 100;
+            const top = (face.bbox[1] / natH) * 100;
+            const width = ((face.bbox[2] - face.bbox[0]) / natW) * 100;
+            const height = ((face.bbox[3] - face.bbox[1]) / natH) * 100;
+            const isSelected = selectedFaceIndex === face.index;
+
+            return (
+              <button
+                key={face.index}
+                type="button"
+                onClick={() => onSelect(face.index)}
+                title={`${t.faceNumber} ${face.index + 1}`}
+                style={{
+                  position: "absolute",
+                  left: `${left}%`,
+                  top: `${top}%`,
+                  width: `${width}%`,
+                  height: `${height}%`,
+                  border: isSelected
+                    ? "3px solid #22c55e"
+                    : "2px dashed rgba(236, 72, 153, 0.8)",
+                  background: isSelected
+                    ? "rgba(34, 197, 94, 0.15)"
+                    : "rgba(236, 72, 153, 0.05)",
+                  cursor: "pointer",
+                  borderRadius: "4px",
+                  transition: "all 0.15s ease",
+                  padding: 0,
+                }}
+                onMouseEnter={(e) => {
+                  if (!isSelected) {
+                    e.currentTarget.style.background = "rgba(236, 72, 153, 0.15)";
+                    e.currentTarget.style.border = "2px solid rgba(236, 72, 153, 1)";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isSelected) {
+                    e.currentTarget.style.background = "rgba(236, 72, 153, 0.05)";
+                    e.currentTarget.style.border = "2px dashed rgba(236, 72, 153, 0.8)";
+                  }
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    top: "-20px",
+                    left: "0",
+                    background: isSelected ? "#22c55e" : "rgba(236, 72, 153, 0.9)",
+                    color: "white",
+                    fontSize: "10px",
+                    fontWeight: "bold",
+                    padding: "1px 5px",
+                    borderRadius: "3px",
+                    whiteSpace: "nowrap",
+                    pointerEvents: "none",
+                  }}
+                >
+                  {t.faceNumber} {face.index + 1}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* زرار "تلقائي" */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => onSelect(-1)}
+          className={`px-3 py-1 rounded-md text-xs border transition-all ${
+            selectedFaceIndex === -1
+              ? "bg-purple-500/30 border-purple-400 text-purple-100"
+              : "bg-black/40 border-purple-500/20 text-purple-200 hover:border-purple-400"
+          }`}
+        >
+          {t.faceAutoLabel}
+        </button>
+        {detectedFaces.map((face) => (
+          <button
+            key={face.index}
+            type="button"
+            onClick={() => onSelect(face.index)}
+            className={`px-3 py-1 rounded-md text-xs border transition-all ${
+              selectedFaceIndex === face.index
+                ? "bg-green-600/30 border-green-400 text-green-100"
+                : "bg-black/40 border-purple-500/20 text-purple-200 hover:border-green-400"
+            }`}
+          >
+            {t.faceNumber} {face.index + 1}
+          </button>
+        ))}
+        {selectedFaceIndex >= 0 && (
+          <span className="text-xs text-green-200/70 ms-auto">
+            ✓ {t.faceSelectedLabel}: {t.faceNumber} {selectedFaceIndex + 1}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const [lang, setLang] = useState<Language>("ar");
@@ -116,6 +307,13 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+
+  // Face detection state (for multi-face images)
+  const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
+  const [selectedFaceIndex, setSelectedFaceIndex] = useState<number>(-1); // -1 = تلقائي
+  const [detectingFaces, setDetectingFaces] = useState(false);
+  const [faceDetectError, setFaceDetectError] = useState<string>("");
+  const [imageNaturalSize, setImageNaturalSize] = useState<{w: number; h: number} | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -271,14 +469,18 @@ export default function Home() {
     setVideoUrl(null);
     setDebugInfo("");
 
-    // امسح أي شخصية مولّدة سابقة
+    // امسح أي شخصية مولّدة سابقة + أي كشف وجوه سابق
     setGeneratedChar(null);
     if (generatedImageUrl) URL.revokeObjectURL(generatedImageUrl);
     setGeneratedImageUrl(null);
+    setDetectedFaces([]);
+    setSelectedFaceIndex(-1);
+    setFaceDetectError("");
 
     try {
       const img = await loadImage(url);
       imageRef.current = img;
+      setImageNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
       setImageReady(true);
       toast({
         title: lang === "ar" ? "تم رفع الصورة" : "Image Uploaded",
@@ -426,6 +628,49 @@ export default function Home() {
       description: lang === "ar" ? "تقدر تكمل للصوت والفيديو دلوقتي" : "Proceed to voice & video",
     });
   };
+
+  // === كشف الوجوه في الصورة الحالية ===
+  // بيتنادي تلقائياً بعد ما imageFile يتحدد (upload أو generate أو edit).
+  // لو الصورة فيها وجه واحد بس، بنتعامل معاها تلقائياً (face_index = -1).
+  // لو فيها أكتر من وجه، المستخدم بيدوس على الوجه اللي عاوزه.
+  const runFaceDetection = useCallback(async (file: File | null) => {
+    if (!file) return;
+    // لو الـ backend مش شغال أو Wav2Lip مش متاح، نتخطى كشف الوجوه بهدوء
+    if (backendStatus !== "ok" || backendInfo?.wav2lip_available === false) return;
+
+    setDetectingFaces(true);
+    setFaceDetectError("");
+    setDetectedFaces([]);
+    setSelectedFaceIndex(-1);
+
+    try {
+      const result = await detectFaces(file, file.name || "character.png");
+      setDetectedFaces(result.faces);
+      setImageNaturalSize({ w: result.image_width, h: result.image_height });
+
+      if (result.count === 0) {
+        // مفيش وجوه - خليها تلقائي وخزّن رسالة
+        setFaceDetectError(t.faceNoFaces);
+      } else if (result.count === 1) {
+        // وجه واحد - نستخدمه تلقائياً
+        setSelectedFaceIndex(0);
+      }
+      // لو أكتر من وجه، المستخدم لازم يختار بنفسه (selectedFaceIndex يفضل -1 = تلقائي = أول وجه)
+    } catch (e: any) {
+      // فشل كشف الوجوه - مش خطأ قاتل، هنكمل بالوضع التلقائي
+      console.warn("[runFaceDetection] failed:", e?.message);
+      setFaceDetectError(t.faceDetectionFailed);
+    } finally {
+      setDetectingFaces(false);
+    }
+  }, [backendStatus, backendInfo, t.faceNoFaces, t.faceDetectionFailed]);
+
+  // لما imageFile يتغير، شغّل كشف الوجوه تلقائياً
+  useEffect(() => {
+    if (imageFile && imageReady) {
+      runFaceDetection(imageFile);
+    }
+  }, [imageFile, imageReady, runFaceDetection]);
 
   // تعديل الصورة المولّدة بالـ AI (image-to-image)
   const handleEditCharacter = async () => {
@@ -672,6 +917,7 @@ export default function Home() {
         audioName: audioFile?.name || "audio.wav",
         pads: "0,10,0,0",
         resizeFactor: 1,
+        faceIndex: selectedFaceIndex, // -1 = تلقائي، أو index الوجه المحدد
       });
       jobIdRef.current = job_id;
       console.log("Job started:", job_id);
@@ -1602,6 +1848,21 @@ export default function Home() {
                   </div>
 
                   <div className="space-y-4">
+                    {/* === اختيار الوجه للصور متعددة الوجوه === */}
+                    {imageFile && imageReady && !videoUrl && (
+                      <FaceSelector
+                        imageSrc={uploadedImage || generatedImageUrl}
+                        imageNaturalSize={imageNaturalSize}
+                        detectedFaces={detectedFaces}
+                        selectedFaceIndex={selectedFaceIndex}
+                        detecting={detectingFaces}
+                        error={faceDetectError}
+                        onSelect={(idx) => setSelectedFaceIndex(idx)}
+                        lang={lang}
+                        t={t}
+                      />
+                    )}
+
                     <Button
                       onClick={handleGenerateAI}
                       disabled={isGenerating || !hasInput || backendStatus !== "ok"}

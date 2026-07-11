@@ -101,6 +101,16 @@ export const translations = {
     charGenderMale: "ذكر",
     charGenderFemale: "أنثى",
     presetPromptsTitle: "أفكار جاهزة",
+    // === اختيار الوجه للصور متعددة الوجوه ===
+    faceSelectTitle: "اختار الوجه اللي هيتكلم",
+    faceSelectHint: "الصورة دي فيها أكتر من شخص. دوس على الوجه اللي عاوزه يتكلم.",
+    faceDetecting: "بكشف الوجوه...",
+    faceDetectionFailed: "مقدرتش أكشف وجوه في الصورة",
+    faceNoFaces: "مفيش وجوه اتحكشت في الصورة",
+    faceSingleDetected: "اتحكش وجه واحد - هيتم استخدامه تلقائياً",
+    faceAutoLabel: "تلقائي (أول وجه)",
+    faceSelectedLabel: "الوجه المختار",
+    faceNumber: "وجه",
   },
   en: {
     appTitle: "Talking Characters Studio",
@@ -202,5 +212,15 @@ export const translations = {
     charGenderMale: "Male",
     charGenderFemale: "Female",
     presetPromptsTitle: "Quick ideas",
+    // === Face selection for multi-face images ===
+    faceSelectTitle: "Pick the face that will talk",
+    faceSelectHint: "This image has more than one person. Click on the face you want to speak.",
+    faceDetecting: "Detecting faces...",
+    faceDetectionFailed: "Could not detect faces in the image",
+    faceNoFaces: "No faces detected in the image",
+    faceSingleDetected: "One face detected - will be used automatically",
+    faceAutoLabel: "Auto (first face)",
+    faceSelectedLabel: "Selected face",
+    faceNumber: "Face",
   },
 };

@@ -274,7 +274,92 @@ def get_smoothened_boxes(boxes, T):
     return boxes
 
 
-def face_detect(images, pads=(0, 10, 0, 0), batch_size=16):
+def _create_face_detector():
+    """Create a fresh FaceAlignment detector instance."""
+    face_detection = _face_detection()
+    return face_detection.FaceAlignment(
+        face_detection.LandmarksType._2D,
+        flip_input=False,
+        device=DEVICE
+    )
+
+
+def detect_all_faces(image):
+    """
+    كشف كل الوجوه الموجودة في صورة واحدة.
+
+    Returns:
+        list of dicts: [{"bbox": [x1, y1, x2, y2], "confidence": float, "index": int}, ...]
+        مرتبة من اليسار لليمين (ومن فوق لتحت لو نفس x).
+    بيرجع list فاضية لو مفيش وجوه.
+    """
+    if isinstance(image, str):
+        image = cv2.imread(image)
+        if image is None:
+            raise ValueError(f"Could not read image: {image}")
+
+    detector = _create_face_detector()
+    try:
+        # get_detections_for_batch بترجع list of rects (كل rect = [x1,y1,x2,y2] أو None)
+        # لكن هي بترجع أكبر face بس لكل صورة. عشان نكشف كل الوجوه، نستخدم detect_faces
+        try:
+            # الواجهة الجديدة في face_detection package
+            detections = detector.face_detector.detect_from_image(image.copy())
+        except Exception:
+            # fallback للواجهة القديمة
+            detections = detector.get_detections_for_batch(np.array([image]))
+            detections = detections[0] if detections else None
+            if detections is not None:
+                detections = [detections]
+            else:
+                detections = []
+
+        results = []
+        for i, det in enumerate(detections):
+            if det is None:
+                continue
+            # det ممكن يكون array [x1,y1,x2,y2] أو dict فيه 'bbox' و 'score'
+            if isinstance(det, dict):
+                bbox = det.get('bbox') or det.get('box')
+                score = det.get('score', det.get('confidence', 0.0))
+            else:
+                bbox = det
+                score = 1.0
+            if bbox is None:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+            # تأكد إن القيم موجبة وضمن حدود الصورة
+            x1 = max(0, min(image.shape[1] - 1, x1))
+            y1 = max(0, min(image.shape[0] - 1, y1))
+            x2 = max(0, min(image.shape[1], x2))
+            y2 = max(0, min(image.shape[0], y2))
+            if x2 - x1 < 10 or y2 - y1 < 10:
+                continue  #太小，跳过
+            results.append({
+                "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                "confidence": float(score) if isinstance(score, (int, float)) else 1.0,
+            })
+
+        # ترتيب من اليسار لليمين
+        results.sort(key=lambda r: (r["bbox"][0], r["bbox"][1]))
+        for i, r in enumerate(results):
+            r["index"] = i
+        return results
+    finally:
+        del detector
+
+
+def face_detect(images, pads=(0, 10, 0, 0), batch_size=16, face_index=None):
+    """
+    كشف الوجه في كل صورة.
+
+    Args:
+        images: list of numpy images (عادة صورة واحدة مكررة)
+        pads: (top, bottom, left, right) padding
+        batch_size: حجم batch
+        face_index: لو الصورة فيها أكتر من وجه، حدد index الوجه اللي هيتكلم
+                   (None = أول وجه يتم كشفه، السلوك الأصلي)
+    """
     face_detection = _face_detection()
     tqdm = _tqdm()
     detector = face_detection.FaceAlignment(
@@ -294,6 +379,36 @@ def face_detect(images, pads=(0, 10, 0, 0), batch_size=16):
         for i in tqdm(range(0, len(images), batch_size), desc="Face detection (batch=1)"):
             predictions.extend(detector.get_detections_for_batch(np.array(images[i:i + batch_size])))
 
+    # لو face_index محدد، نكشف كل الوجوه في الصورة الأولى ونختار الوجه المطلوب
+    if face_index is not None and face_index >= 0 and len(images) > 0:
+        print(f"[Wav2Lip] face_index={face_index} requested, re-detecting all faces...")
+        all_faces = detect_all_faces(images[0])
+        print(f"[Wav2Lip] Found {len(all_faces)} faces in image")
+        if len(all_faces) == 0:
+            raise ValueError('Face not detected in one of the frames! Ensure the image contains a clear face.')
+        if face_index >= len(all_faces):
+            raise ValueError(
+                f'face_index {face_index} out of range. Only {len(all_faces)} faces detected (0..{len(all_faces)-1}).'
+            )
+        selected = all_faces[face_index]
+        # استبدل predictions كلها بالوجه المحدد
+        predictions = [selected["bbox"] for _ in images]
+        # تخطي كشف الوجه الأصلي وروح لـ padding مباشرة
+        results = []
+        pady1, pady2, padx1, padx2 = pads
+        for rect, image in zip(predictions, images):
+            y1 = max(0, rect[1] - pady1)
+            y2 = min(image.shape[0], rect[3] + pady2)
+            x1 = max(0, rect[0] - padx1)
+            x2 = min(image.shape[1], rect[2] + padx2)
+            results.append([x1, y1, x2, y2])
+        boxes = np.array(results)
+        boxes = get_smoothened_boxes(boxes, T=5)
+        results = [[image[y1: y2, x1:x2], (y1, y2, x1, x2)] for image, (x1, y1, x2, y2) in zip(images, boxes)]
+        del detector
+        return results
+
+    # السلوك الأصلي: كشف أول وجه في كل صورة
     results = []
     pady1, pady2, padx1, padx2 = pads
     for rect, image in zip(predictions, images):
@@ -324,6 +439,7 @@ def run_lip_sync(
     face_det_batch_size: int = 4,
     wav2lip_batch_size: int = 16,
     progress_callback=None,
+    face_index: int = None,
 ) -> str:
     """
     يحول صورة + ملف صوتي لفيديو lip sync حقيقي
@@ -337,10 +453,15 @@ def run_lip_sync(
         face_det_batch_size: حجم batch لكشف الوجه
         wav2lip_batch_size: حجم batch لنموذج Wav2Lip
         progress_callback: callable(percent: int)
+        face_index: index الوجه اللي هيتكلم (لو الصورة فيها أكتر من وجه).
+                    None = السلوك الأصلي (أول وجه يتم كشفه)
     Returns:
         output_path
     """
-    print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}")
+    if face_index is not None:
+        print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}, face_index={face_index}")
+    else:
+        print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}")
 
     # Fail fast with a clear error if Wav2Lip is not set up
     _check_wav2lip_available()
@@ -450,7 +571,7 @@ def run_lip_sync(
 
     # 7. Face detection (on first frame, applied to all)
     print("[Wav2Lip] Running face detection...")
-    face_det_results = face_detect([full_frames[0]], pads=pads, batch_size=1)
+    face_det_results = face_detect([full_frames[0]], pads=pads, batch_size=1, face_index=face_index)
     face_det_results = face_det_results * len(full_frames)  # replicate
 
     # 8. Load model

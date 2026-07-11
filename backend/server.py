@@ -145,6 +145,78 @@ async def text_to_speech(
     )
 
 
+# ============================================================
+# Face Detection endpoint (for multi-face images)
+# ============================================================
+@app.post("/detect-faces")
+async def detect_faces(file: UploadFile = File(...)):
+    """
+    كشف كل الوجوه في صورة. بيرجع list من الوجوه مع bbox و confidence و index.
+
+    الاستخدام: قبل ما المستخدم يبدأ lip-sync على صورة فيها أكتر من وجه،
+    الـ frontend بينادي على الـ endpoint ده ويعرض boxes عشان المستخدم يختار
+    الوجه اللي هيتكلم.
+
+    Returns:
+        {
+            "faces": [
+                {"bbox": [x1, y1, x2, y2], "confidence": float, "index": int},
+                ...
+            ],
+            "image_width": int,
+            "image_height": int,
+        }
+    """
+    if not WAV2LIP_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="عذرًا، نموذج Wav2Lip غير مثبت على السيرفر، لا يمكن كشف الوجوه."
+        )
+
+    # احفظ الصورة مؤقتاً
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = os.path.join(UPLOAD_DIR, "faces_" + job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    image_ext = os.path.splitext(file.filename or "image.png")[1] or ".png"
+    image_path = os.path.join(job_dir, f"input_image{image_ext}")
+    try:
+        with open(image_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save image: {e}")
+
+    # كشف الوجوه
+    try:
+        loop = asyncio.get_event_loop()
+        faces = await loop.run_in_executor(
+            None,
+            wav2lip_runner.detect_all_faces,
+            image_path,
+        )
+    except Exception as e:
+        # نظّف الملف المؤقت
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Face detection failed: {e}")
+
+    # اقرأ أبعاد الصورة
+    try:
+        import cv2 as _cv2
+        img = _cv2.imread(image_path)
+        h, w = img.shape[:2] if img is not None else (0, 0)
+    except Exception:
+        h, w = 0, 0
+
+    # نظّف الملف المؤقت
+    shutil.rmtree(job_dir, ignore_errors=True)
+
+    return {
+        "faces": faces,
+        "image_width": w,
+        "image_height": h,
+        "count": len(faces),
+    }
+
+
 @app.post("/lip-sync")
 async def lip_sync(
     background_tasks: BackgroundTasks,
@@ -155,6 +227,7 @@ async def lip_sync(
     rate: str = Form("+0%"),            # سرعة الكلام
     pads: str = Form("0,10,0,0"),
     resize_factor: int = Form(1),
+    face_index: int = Form(-1),         # index الوجه اللي هيتكلم (-1 = تلقائي/أول وجه)
 ):
     """
     Accept image + (script OR audio), run Wav2Lip, return the result video.
@@ -251,18 +324,23 @@ async def lip_sync(
     async def run_job():
         try:
             # Run sync function in thread pool to not block event loop
+            # لو face_index = -1 (default)، نمرر None عشان run_lip_sync يستخدم السلوك الأصلي
+            face_idx_arg = face_index if face_index is not None and face_index >= 0 else None
             loop = asyncio.get_event_loop()
+            # نستخدم lambda عشان نمرر face_index كـ keyword argument
             await loop.run_in_executor(
                 None,
-                wav2lip_runner.run_lip_sync,
-                image_path,
-                audio_path,
-                output_path,
-                pads_tuple,
-                resize_factor,
-                4,    # face_det_batch_size
-                16,   # wav2lip_batch_size
-                progress_callback,
+                lambda: wav2lip_runner.run_lip_sync(
+                    image_path,
+                    audio_path,
+                    output_path,
+                    pads_tuple,
+                    resize_factor,
+                    4,    # face_det_batch_size
+                    16,   # wav2lip_batch_size
+                    progress_callback,
+                    face_idx_arg,
+                ),
             )
             jobs[job_id]["status"] = "completed"
             jobs[job_id]["progress"] = 100
