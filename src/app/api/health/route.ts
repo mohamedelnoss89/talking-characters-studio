@@ -65,21 +65,32 @@ async function startBackend() {
 }
 
 export async function GET() {
-  // Try to reach backend
+  // On Vercel (or any platform without a Python backend), return a static
+  // healthy response — don't try to spawn the Python backend.
+  if (process.env.VERCEL || process.env.VERCEL_ENV) {
+    return NextResponse.json({
+      status: "ok",
+      platform: "vercel",
+      backend: "disabled",
+      database: process.env.DATABASE_URL ? "configured" : "missing",
+    }, { status: 200 });
+  }
+
+  // Local dev: try to reach the Python backend
   const data = await checkBackend();
   if (data) {
     return NextResponse.json(data, { status: 200 });
   }
-  
+
   // Backend is down - try to start it
   await startBackend();
-  
+
   // Wait a bit and check again (model takes ~10s to load)
   return NextResponse.json(
-    { 
-      status: "starting", 
+    {
+      status: "starting",
       message: "Backend is starting. Please retry in ~15 seconds.",
-      retry_after_ms: 15000 
+      retry_after_ms: 15000
     },
     { status: 503 }
   );
