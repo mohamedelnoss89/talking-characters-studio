@@ -1,60 +1,35 @@
 /**
- * PostgreSQL-backed user store for multi-user auth (Neon / Supabase / etc.).
+ * PostgreSQL-backed user store for multi-user auth (Neon).
  *
- * Stores users in a `users` table with bcrypt-hashed passwords.
- * Connection string is read from DATABASE_URL env var.
- *
- * Schema:
- *   - id            SERIAL PRIMARY KEY
- *   - username      TEXT UNIQUE (case-insensitive via LOWER index)
- *   - email         TEXT UNIQUE (case-insensitive via LOWER index)
- *   - password_hash TEXT                        (bcrypt)
- *   - display_name  TEXT                        (human-readable name, allows any language)
- *   - created_at, updated_at  TIMESTAMPTZ
- *
- * This module is server-only — never import from client components.
+ * Uses @neondatabase/serverless (HTTP-based, perfect for Vercel serverless).
  *
  * API is identical to the previous SQLite version so that auth.ts and the
  * /api/login + /api/register routes do not need to change.
  */
 import bcrypt from "bcryptjs";
-import { Pool, type PoolClient } from "pg";
+import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
-// --- Connection pool (lazy) -------------------------------------------------
-// Lazy initialization so DATABASE_URL can be set after imports (useful for tests
-// and so the module doesn't crash on import if DATABASE_URL is missing).
-let _pool: Pool | null = null;
-function getPool(): Pool {
-  if (!_pool) {
+// --- SQL query function (lazy) ---------------------------------------------
+let _sql: NeonQueryFunction<false, false> | null = null;
+function sql(): NeonQueryFunction<false, false> {
+  if (!_sql) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
       throw new Error("DATABASE_URL environment variable is not set");
     }
-    _pool = new Pool({
-      connectionString,
-      // Neon requires SSL
-      ssl: connectionString.includes("sslmode=require")
-        ? { rejectUnauthorized: false }
-        : undefined,
-      // Small pool — serverless functions don't need many concurrent connections
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
-    });
-    // eslint-disable-next-line no-console
-    console.log("[db] PostgreSQL pool created");
+    _sql = neon(connectionString);
+    console.log("[db] Neon serverless SQL client created");
   }
-  return _pool;
+  return _sql;
 }
 
 // --- Schema initialization (runs once per cold start) ----------------------
 let schemaInitialized = false;
 async function ensureSchema(): Promise<void> {
   if (schemaInitialized) return;
-  let client: PoolClient | null = null;
+  const s = sql();
   try {
-    client = await getPool().connect();
-    await client.query(`
+    await s`
       CREATE TABLE IF NOT EXISTS users (
         id            SERIAL PRIMARY KEY,
         username      TEXT NOT NULL,
@@ -63,31 +38,25 @@ async function ensureSchema(): Promise<void> {
         email         TEXT,
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-    // Case-insensitive unique indexes (emulates SQLite's COLLATE NOCASE)
-    await client.query(`
+      )
+    `;
+    await s`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower
-      ON users (LOWER(username));
-    `);
-    await client.query(`
+      ON users (LOWER(username))
+    `;
+    await s`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower
       ON users (LOWER(email))
-      WHERE email IS NOT NULL;
-    `);
-    // Helpful non-unique index for lookups (the unique ones cover this too)
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
-    `);
+      WHERE email IS NOT NULL
+    `;
+    await s`
+      CREATE INDEX IF NOT EXISTS idx_users_username ON users (username)
+    `;
     schemaInitialized = true;
-    // eslint-disable-next-line no-console
     console.log("[db] Schema ensured (PostgreSQL)");
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("[db] Failed to ensure schema:", e);
     throw e;
-  } finally {
-    if (client) client.release();
   }
 }
 
@@ -98,8 +67,8 @@ export interface UserRecord {
   email: string | null;
   password_hash: string;
   display_name: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at: string | Date;
+  updated_at: string | Date;
 }
 
 export interface SafeUser {
@@ -114,7 +83,7 @@ export interface SafeUser {
 const BCRYPT_ROUNDS = 10;
 
 function toSafe(u: UserRecord): SafeUser {
-  // pg returns TIMESTAMPTZ as Date objects; convert to ISO string for JSON
+  // pg/Neon returns TIMESTAMPTZ as Date objects or ISO strings depending on driver
   const createdAt: any = u.created_at;
   const createdAtStr =
     createdAt && typeof createdAt === "object" && typeof createdAt.toISOString === "function"
@@ -129,106 +98,68 @@ function toSafe(u: UserRecord): SafeUser {
   };
 }
 
-/**
- * Derive a unique username from an email prefix. If the prefix is already
- * taken, append -2, -3, ... until we find a free slot.
- *
- * The username only needs to be URL-safe-ish — we use it for default routing
- * and as a fallback login identifier. It's NOT shown to the user (display_name
- * is).
- */
 async function deriveUniqueUsername(emailPrefix: string): Promise<string> {
-  // Sanitize: keep ASCII letters/digits/_/- only, lowercase
   let base = emailPrefix
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, "")
-    .replace(/^[^a-z0-9]+/, "") // strip leading non-alphanumerics
+    .replace(/^[^a-z0-9]+/, "")
     .slice(0, 28) || "user";
 
   let candidate = base;
   let suffix = 2;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const existing = await findUserByUsername(candidate);
     if (!existing) return candidate;
     candidate = `${base}-${suffix++}`;
     if (suffix > 9999) {
-      // Fallback — append a random-ish suffix
       candidate = `${base}-${Date.now().toString(36)}`;
       return candidate;
     }
   }
 }
 
-// Simple email validation regex — not RFC-perfect but good enough.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // --- Public API -------------------------------------------------------------
 
-/**
- * Find a user by username (case-insensitive). Returns null if not found.
- */
 export async function findUserByUsername(username: string): Promise<UserRecord | null> {
   await ensureSchema();
-  const res = await getPool().query<UserRecord>(
-    `SELECT id, username, email, password_hash, display_name, created_at, updated_at
-     FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1`,
-    [username]
-  );
-  return res.rows[0] || null;
+  const rows = await sql()`
+    SELECT id, username, email, password_hash, display_name, created_at, updated_at
+    FROM users WHERE LOWER(username) = LOWER(${username}) LIMIT 1
+  `;
+  return (rows[0] as UserRecord) || null;
 }
 
-/**
- * Find a user by email (case-insensitive). Returns null if not found.
- */
 export async function findUserByEmail(email: string): Promise<UserRecord | null> {
   await ensureSchema();
-  const res = await getPool().query<UserRecord>(
-    `SELECT id, username, email, password_hash, display_name, created_at, updated_at
-     FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
-    [email]
-  );
-  return res.rows[0] || null;
+  const rows = await sql()`
+    SELECT id, username, email, password_hash, display_name, created_at, updated_at
+    FROM users WHERE LOWER(email) = LOWER(${email}) LIMIT 1
+  `;
+  return (rows[0] as UserRecord) || null;
 }
 
-/**
- * Find a user by id. Returns null if not found.
- */
 export async function findUserById(id: number): Promise<UserRecord | null> {
   await ensureSchema();
-  const res = await getPool().query<UserRecord>(
-    `SELECT id, username, email, password_hash, display_name, created_at, updated_at
-     FROM users WHERE id = $1 LIMIT 1`,
-    [id]
-  );
-  return res.rows[0] || null;
+  const rows = await sql()`
+    SELECT id, username, email, password_hash, display_name, created_at, updated_at
+    FROM users WHERE id = ${id} LIMIT 1
+  `;
+  return (rows[0] as UserRecord) || null;
 }
 
-/**
- * Create a new user.
- *
- * Required: email + password
- * Optional: displayName (any language — Arabic, English, etc.),
- *           username (auto-derived from email if omitted)
- *
- * Throws an Error with a `code` property on validation / uniqueness failures:
- *   - code "email_taken"     — email already registered
- *   - code "invalid_email"   — bad email format
- *   - code "invalid_password"— too short
- *   - code "invalid_username"— bad format (only if you pass one explicitly)
- */
 export async function createUser(opts: {
   email: string;
   password: string;
   displayName?: string;
-  username?: string; // optional override
+  username?: string;
 }): Promise<SafeUser> {
   await ensureSchema();
   const email = (opts.email || "").trim().toLowerCase();
   const password = opts.password || "";
   const displayName = (opts.displayName || "").trim() || null;
 
-  // --- Email validation -----------------------------------------------------
   if (!email) {
     const e = new Error("Email is required") as Error & { code: string };
     e.code = "invalid_email";
@@ -239,42 +170,30 @@ export async function createUser(opts: {
     e.code = "invalid_email";
     throw e;
   }
-
-  // --- Password validation --------------------------------------------------
   if (password.length < 6) {
-    const e = new Error("Password must be at least 6 characters") as Error & {
-      code: string;
-    };
+    const e = new Error("Password must be at least 6 characters") as Error & { code: string };
     e.code = "invalid_password";
     throw e;
   }
 
-  // --- Username resolution --------------------------------------------------
   let username: string;
   if (opts.username && opts.username.trim()) {
     username = opts.username.trim();
-    // Validate format if user provided one explicitly
     if (username.length < 3 || username.length > 32) {
-      const e = new Error("Username must be 3–32 characters") as Error & {
-        code: string;
-      };
+      const e = new Error("Username must be 3–32 characters") as Error & { code: string };
       e.code = "invalid_username";
       throw e;
     }
     if (!/^[A-Za-z0-9_-]+$/.test(username)) {
-      const e = new Error(
-        "Username can only contain letters, numbers, _ and -"
-      ) as Error & { code: string };
+      const e = new Error("Username can only contain letters, numbers, _ and -") as Error & { code: string };
       e.code = "invalid_username";
       throw e;
     }
   } else {
-    // Auto-derive from email prefix (before the @)
     const prefix = email.split("@")[0] || "user";
     username = await deriveUniqueUsername(prefix);
   }
 
-  // --- Uniqueness checks ----------------------------------------------------
   if (await findUserByEmail(email)) {
     const e = new Error("Email already registered") as Error & { code: string };
     e.code = "email_taken";
@@ -286,26 +205,20 @@ export async function createUser(opts: {
     throw e;
   }
 
-  // --- Insert ---------------------------------------------------------------
   const passwordHash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
 
-  const res = await getPool().query<UserRecord>(
-    `INSERT INTO users (username, email, password_hash, display_name)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, username, email, password_hash, display_name, created_at, updated_at`,
-    [username, email, passwordHash, displayName]
-  );
-  const created = res.rows[0];
+  const rows = await sql()`
+    INSERT INTO users (username, email, password_hash, display_name)
+    VALUES (${username}, ${email}, ${passwordHash}, ${displayName})
+    RETURNING id, username, email, password_hash, display_name, created_at, updated_at
+  `;
+  const created = rows[0] as UserRecord | undefined;
   if (!created) {
     throw new Error("Failed to create user (insert returned no row)");
   }
   return toSafe(created);
 }
 
-/**
- * Verify credentials by email OR username + password.
- * Returns the safe user record on success, null otherwise.
- */
 export async function verifyUser(
   identifier: string,
   password: string
@@ -313,9 +226,7 @@ export async function verifyUser(
   if (!identifier) return null;
   const id = identifier.trim();
 
-  // Try email first (most common login flow)
   let user = await findUserByEmail(id.toLowerCase());
-  // Fallback: try as username
   if (!user) {
     user = await findUserByUsername(id);
   }
@@ -325,38 +236,25 @@ export async function verifyUser(
   return ok ? toSafe(user) : null;
 }
 
-/**
- * Total user count. Useful for stats / first-run setup.
- */
 export async function countUsers(): Promise<number> {
   await ensureSchema();
-  const res = await getPool().query<{ c: number }>("SELECT COUNT(*)::int AS c FROM users");
-  return res.rows[0]?.c ?? 0;
+  const rows = await sql()`SELECT COUNT(*)::int AS c FROM users`;
+  return (rows[0] as { c: number })?.c ?? 0;
 }
 
-/**
- * Get safe (no password hash) user record by id.
- */
 export async function getSafeUserById(id: number): Promise<SafeUser | null> {
   const u = await findUserById(id);
   return u ? toSafe(u) : null;
 }
 
-/**
- * Get safe user record by username.
- */
 export async function getSafeUserByUsername(username: string): Promise<SafeUser | null> {
   const u = await findUserByUsername(username);
   return u ? toSafe(u) : null;
 }
 
-/**
- * Get safe user record by email.
- */
 export async function getSafeUserByEmail(email: string): Promise<SafeUser | null> {
   const u = await findUserByEmail(email);
   return u ? toSafe(u) : null;
 }
 
-// Expose the resolved connection string for diagnostics
 export const AUTH_DB_PATH_RESOLVED = process.env.DATABASE_URL || "(DATABASE_URL not set)";
