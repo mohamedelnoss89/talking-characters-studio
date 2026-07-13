@@ -1,77 +1,93 @@
 /**
- * SQLite-backed user store for multi-user auth.
+ * PostgreSQL-backed user store for multi-user auth (Neon / Supabase / etc.).
  *
- * Stores users in a single table with bcrypt-hashed passwords.
- * The DB file lives at <project_root>/data/auth.db (configurable via AUTH_DB_PATH env).
+ * Stores users in a `users` table with bcrypt-hashed passwords.
+ * Connection string is read from DATABASE_URL env var.
  *
  * Schema:
- *   - id            INTEGER PRIMARY KEY
- *   - username      TEXT UNIQUE COLLATE NOCASE  (auto-generated from email prefix)
- *   - email         TEXT UNIQUE COLLATE NOCASE  (primary login identifier)
+ *   - id            SERIAL PRIMARY KEY
+ *   - username      TEXT UNIQUE (case-insensitive via LOWER index)
+ *   - email         TEXT UNIQUE (case-insensitive via LOWER index)
  *   - password_hash TEXT                        (bcrypt)
  *   - display_name  TEXT                        (human-readable name, allows any language)
- *   - created_at, updated_at  TEXT
+ *   - created_at, updated_at  TIMESTAMPTZ
  *
  * This module is server-only — never import from client components.
+ *
+ * API is identical to the previous SQLite version so that auth.ts and the
+ * /api/login + /api/register routes do not need to change.
  */
-import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
-import path from "path";
-import fs from "fs";
+import { Pool, type PoolClient } from "pg";
 
-// --- DB path resolution -----------------------------------------------------
-const DB_DIR = process.env.AUTH_DB_PATH
-  ? path.dirname(process.env.AUTH_DB_PATH)
-  : path.join(process.cwd(), "data");
-const DB_PATH =
-  process.env.AUTH_DB_PATH || path.join(DB_DIR, "auth.db");
-
-// Ensure the directory exists (idempotent)
-try {
-  if (!fs.existsSync(DB_DIR)) {
-    fs.mkdirSync(DB_DIR, { recursive: true });
+// --- Connection pool (lazy) -------------------------------------------------
+// Lazy initialization so DATABASE_URL can be set after imports (useful for tests
+// and so the module doesn't crash on import if DATABASE_URL is missing).
+let _pool: Pool | null = null;
+function getPool(): Pool {
+  if (!_pool) {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error("DATABASE_URL environment variable is not set");
+    }
+    _pool = new Pool({
+      connectionString,
+      // Neon requires SSL
+      ssl: connectionString.includes("sslmode=require")
+        ? { rejectUnauthorized: false }
+        : undefined,
+      // Small pool — serverless functions don't need many concurrent connections
+      max: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
+    // eslint-disable-next-line no-console
+    console.log("[db] PostgreSQL pool created");
   }
-} catch (e) {
-  // eslint-disable-next-line no-console
-  console.error("[db] Failed to create auth DB dir:", DB_DIR, e);
+  return _pool;
 }
 
-// --- DB connection ----------------------------------------------------------
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
-
-// --- Schema -----------------------------------------------------------------
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    password_hash TEXT NOT NULL,
-    display_name  TEXT,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-`);
-
-// --- Migration: add email column if missing --------------------------------
-// (Backward-compatible: existing rows get NULL email; new rows require email.)
-//
-// NOTE: SQLite's ALTER TABLE ADD COLUMN does NOT support UNIQUE inline.
-// We add the column without UNIQUE, then create a unique index on it.
-// SQLite allows multiple NULLs in a unique index, so existing rows (with NULL
-// email) are fine. New rows must have a non-NULL email — enforced by the
-// application layer (createUser validates).
-{
-  const cols = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
-  const hasEmail = cols.some((c) => c.name === "email");
-  if (!hasEmail) {
-    db.exec(`ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE;`);
-    db.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;`
-    );
+// --- Schema initialization (runs once per cold start) ----------------------
+let schemaInitialized = false;
+async function ensureSchema(): Promise<void> {
+  if (schemaInitialized) return;
+  let client: PoolClient | null = null;
+  try {
+    client = await getPool().connect();
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id            SERIAL PRIMARY KEY,
+        username      TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        display_name  TEXT,
+        email         TEXT,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    // Case-insensitive unique indexes (emulates SQLite's COLLATE NOCASE)
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower
+      ON users (LOWER(username));
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower
+      ON users (LOWER(email))
+      WHERE email IS NOT NULL;
+    `);
+    // Helpful non-unique index for lookups (the unique ones cover this too)
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
+    `);
+    schemaInitialized = true;
     // eslint-disable-next-line no-console
-    console.log("[db] Added `email` column to users table (migration)");
+    console.log("[db] Schema ensured (PostgreSQL)");
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("[db] Failed to ensure schema:", e);
+    throw e;
+  } finally {
+    if (client) client.release();
   }
 }
 
@@ -94,33 +110,22 @@ export interface SafeUser {
   createdAt: string;
 }
 
-// --- Prepared statements ----------------------------------------------------
-const stmtFindByUsername = db.prepare<unknown[], UserRecord>(
-  "SELECT * FROM users WHERE username = ? LIMIT 1"
-);
-const stmtFindByEmail = db.prepare<unknown[], UserRecord>(
-  "SELECT * FROM users WHERE email = ? LIMIT 1"
-);
-const stmtFindById = db.prepare<unknown[], UserRecord>(
-  "SELECT * FROM users WHERE id = ? LIMIT 1"
-);
-const stmtInsertUser = db.prepare(
-  "INSERT INTO users (username, email, password_hash, display_name) VALUES (?, ?, ?, ?)"
-);
-const stmtCountUsers = db.prepare<unknown[], { c: number }>(
-  "SELECT COUNT(*) AS c FROM users"
-);
-
 // --- Helpers ----------------------------------------------------------------
 const BCRYPT_ROUNDS = 10;
 
 function toSafe(u: UserRecord): SafeUser {
+  // pg returns TIMESTAMPTZ as Date objects; convert to ISO string for JSON
+  const createdAt: any = u.created_at;
+  const createdAtStr =
+    createdAt && typeof createdAt === "object" && typeof createdAt.toISOString === "function"
+      ? createdAt.toISOString()
+      : String(createdAt);
   return {
     id: u.id,
     username: u.username,
     email: u.email,
     displayName: u.display_name,
-    createdAt: u.created_at,
+    createdAt: createdAtStr,
   };
 }
 
@@ -132,7 +137,7 @@ function toSafe(u: UserRecord): SafeUser {
  * and as a fallback login identifier. It's NOT shown to the user (display_name
  * is).
  */
-function deriveUniqueUsername(emailPrefix: string): string {
+async function deriveUniqueUsername(emailPrefix: string): Promise<string> {
   // Sanitize: keep ASCII letters/digits/_/- only, lowercase
   let base = emailPrefix
     .toLowerCase()
@@ -144,7 +149,7 @@ function deriveUniqueUsername(emailPrefix: string): string {
   let suffix = 2;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const existing = stmtFindByUsername.get(candidate) as UserRecord | undefined;
+    const existing = await findUserByUsername(candidate);
     if (!existing) return candidate;
     candidate = `${base}-${suffix++}`;
     if (suffix > 9999) {
@@ -163,25 +168,40 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /**
  * Find a user by username (case-insensitive). Returns null if not found.
  */
-export function findUserByUsername(username: string): UserRecord | null {
-  const row = stmtFindByUsername.get(username) as UserRecord | undefined;
-  return row || null;
+export async function findUserByUsername(username: string): Promise<UserRecord | null> {
+  await ensureSchema();
+  const res = await getPool().query<UserRecord>(
+    `SELECT id, username, email, password_hash, display_name, created_at, updated_at
+     FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1`,
+    [username]
+  );
+  return res.rows[0] || null;
 }
 
 /**
  * Find a user by email (case-insensitive). Returns null if not found.
  */
-export function findUserByEmail(email: string): UserRecord | null {
-  const row = stmtFindByEmail.get(email) as UserRecord | undefined;
-  return row || null;
+export async function findUserByEmail(email: string): Promise<UserRecord | null> {
+  await ensureSchema();
+  const res = await getPool().query<UserRecord>(
+    `SELECT id, username, email, password_hash, display_name, created_at, updated_at
+     FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+    [email]
+  );
+  return res.rows[0] || null;
 }
 
 /**
  * Find a user by id. Returns null if not found.
  */
-export function findUserById(id: number): UserRecord | null {
-  const row = stmtFindById.get(id) as UserRecord | undefined;
-  return row || null;
+export async function findUserById(id: number): Promise<UserRecord | null> {
+  await ensureSchema();
+  const res = await getPool().query<UserRecord>(
+    `SELECT id, username, email, password_hash, display_name, created_at, updated_at
+     FROM users WHERE id = $1 LIMIT 1`,
+    [id]
+  );
+  return res.rows[0] || null;
 }
 
 /**
@@ -197,12 +217,13 @@ export function findUserById(id: number): UserRecord | null {
  *   - code "invalid_password"— too short
  *   - code "invalid_username"— bad format (only if you pass one explicitly)
  */
-export function createUser(opts: {
+export async function createUser(opts: {
   email: string;
   password: string;
   displayName?: string;
   username?: string; // optional override
-}): SafeUser {
+}): Promise<SafeUser> {
+  await ensureSchema();
   const email = (opts.email || "").trim().toLowerCase();
   const password = opts.password || "";
   const displayName = (opts.displayName || "").trim() || null;
@@ -250,18 +271,16 @@ export function createUser(opts: {
   } else {
     // Auto-derive from email prefix (before the @)
     const prefix = email.split("@")[0] || "user";
-    username = deriveUniqueUsername(prefix);
+    username = await deriveUniqueUsername(prefix);
   }
 
   // --- Uniqueness checks ----------------------------------------------------
-  if (findUserByEmail(email)) {
+  if (await findUserByEmail(email)) {
     const e = new Error("Email already registered") as Error & { code: string };
     e.code = "email_taken";
     throw e;
   }
-  // (username uniqueness is already handled by deriveUniqueUsername, but if the
-  // user passed one explicitly we still need to check)
-  if (opts.username && findUserByUsername(username)) {
+  if (opts.username && (await findUserByUsername(username))) {
     const e = new Error("Username already taken") as Error & { code: string };
     e.code = "username_taken";
     throw e;
@@ -270,9 +289,13 @@ export function createUser(opts: {
   // --- Insert ---------------------------------------------------------------
   const passwordHash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
 
-  const info = stmtInsertUser.run(username, email, passwordHash, displayName);
-  const id = Number(info.lastInsertRowid);
-  const created = findUserById(id);
+  const res = await getPool().query<UserRecord>(
+    `INSERT INTO users (username, email, password_hash, display_name)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, username, email, password_hash, display_name, created_at, updated_at`,
+    [username, email, passwordHash, displayName]
+  );
+  const created = res.rows[0];
   if (!created) {
     throw new Error("Failed to create user (insert returned no row)");
   }
@@ -283,18 +306,18 @@ export function createUser(opts: {
  * Verify credentials by email OR username + password.
  * Returns the safe user record on success, null otherwise.
  */
-export function verifyUser(
+export async function verifyUser(
   identifier: string,
   password: string
-): SafeUser | null {
+): Promise<SafeUser | null> {
   if (!identifier) return null;
   const id = identifier.trim();
 
   // Try email first (most common login flow)
-  let user = findUserByEmail(id.toLowerCase());
+  let user = await findUserByEmail(id.toLowerCase());
   // Fallback: try as username
   if (!user) {
-    user = findUserByUsername(id);
+    user = await findUserByUsername(id);
   }
   if (!user) return null;
 
@@ -305,34 +328,35 @@ export function verifyUser(
 /**
  * Total user count. Useful for stats / first-run setup.
  */
-export function countUsers(): number {
-  const row = stmtCountUsers.get() as { c: number } | undefined;
-  return row?.c ?? 0;
+export async function countUsers(): Promise<number> {
+  await ensureSchema();
+  const res = await getPool().query<{ c: number }>("SELECT COUNT(*)::int AS c FROM users");
+  return res.rows[0]?.c ?? 0;
 }
 
 /**
  * Get safe (no password hash) user record by id.
  */
-export function getSafeUserById(id: number): SafeUser | null {
-  const u = findUserById(id);
+export async function getSafeUserById(id: number): Promise<SafeUser | null> {
+  const u = await findUserById(id);
   return u ? toSafe(u) : null;
 }
 
 /**
  * Get safe user record by username.
  */
-export function getSafeUserByUsername(username: string): SafeUser | null {
-  const u = findUserByUsername(username);
+export async function getSafeUserByUsername(username: string): Promise<SafeUser | null> {
+  const u = await findUserByUsername(username);
   return u ? toSafe(u) : null;
 }
 
 /**
  * Get safe user record by email.
  */
-export function getSafeUserByEmail(email: string): SafeUser | null {
-  const u = findUserByEmail(email);
+export async function getSafeUserByEmail(email: string): Promise<SafeUser | null> {
+  const u = await findUserByEmail(email);
   return u ? toSafe(u) : null;
 }
 
-// Expose the DB path for diagnostics / health endpoints
-export const AUTH_DB_PATH_RESOLVED = DB_PATH;
+// Expose the resolved connection string for diagnostics
+export const AUTH_DB_PATH_RESOLVED = process.env.DATABASE_URL || "(DATABASE_URL not set)";
