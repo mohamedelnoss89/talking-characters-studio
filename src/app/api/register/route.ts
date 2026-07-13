@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
 
   let user;
   try {
-    user = createUser({ email, password, displayName });
+    user = await createUser({ email, password, displayName });
   } catch (e) {
     const err = e as ErrorWithCode;
     const code = err.code || "unknown";
