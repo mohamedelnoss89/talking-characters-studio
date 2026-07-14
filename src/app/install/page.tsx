@@ -37,20 +37,32 @@ function isElectron() {
   );
 }
 
-// GitHub releases URLs (will be filled in after first release is published)
+// GitHub Releases URLs — installers are hosted as release assets on GitHub
+// (avoids Vercel's 100MB static file limit, and works for any file size).
+// Release: https://github.com/mohamedelnoss89/talking-characters-studio/releases/tag/v1.0.0
+const GITHUB_RELEASE_BASE =
+  "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download";
+
 const DOWNLOADS = {
   windows: {
-    // electron-builder produces: TalkingCharactersStudio-Setup-1.0.0.exe
-    url: "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download/TalkingCharactersStudio-Setup-1.0.0.exe",
+    // Windows portable .exe (NSIS self-extracting) — no admin required
+    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-Portable-1.0.0.exe`,
     label: "Windows",
-    size: "~200MB",
+    size: "~67MB",
+    icon: Monitor,
+  },
+  linux: {
+    // Linux AppImage — single file, no install required
+    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.0.AppImage`,
+    label: "Linux",
+    size: "~100MB",
     icon: Monitor,
   },
   mac: {
-    // electron-builder produces: TalkingCharactersStudio-1.0.0.dmg
-    url: "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download/TalkingCharactersStudio-1.0.0.dmg",
+    // macOS .dmg not built yet (requires macOS for code signing)
+    url: "",
     label: "macOS",
-    size: "~200MB",
+    size: "قريبًا",
     icon: Apple,
   },
 };
@@ -59,7 +71,7 @@ export default function InstallPage() {
   const router = useRouter();
   const { toast } = useToast();
   const [lang, setLang] = useState<"ar" | "en">("ar");
-  const [downloading, setDownloading] = useState<null | "windows" | "mac">(null);
+  const [downloading, setDownloading] = useState<null | "windows" | "mac" | "linux">(null);
   const [ready, setReady] = useState(false);
 
   const isRTL = lang === "ar";
@@ -70,7 +82,9 @@ export default function InstallPage() {
         ? "لازم تنزّل التطبيق على كمبيوترك الأول علشان تقدر تستخدمه. التطبيق بيحمّل Python وكل مكتبات الـ AI أوتوماتيك."
         : "You need to download the app to your computer first. The installer will automatically download Python and all AI libraries.",
     downloadWindows: lang === "ar" ? "تحميل لـ Windows" : "Download for Windows",
+    downloadLinux: lang === "ar" ? "تحميل لـ Linux" : "Download for Linux",
     downloadMac: lang === "ar" ? "تحميل لـ macOS" : "Download for macOS",
+    macComingSoon: lang === "ar" ? "قريبًا" : "Coming soon",
     apkComingSoon:
       lang === "ar"
         ? "نسخة أندرويد مش متاحة حاليًا."
@@ -123,12 +137,29 @@ export default function InstallPage() {
     setReady(true);
   }, [router]);
 
-  const handleDownload = (platform: "windows" | "mac") => {
+  const handleDownload = (platform: "windows" | "mac" | "linux") => {
     const info = DOWNLOADS[platform];
+    if (!info.url) {
+      toast({
+        title: lang === "ar" ? "قريبًا" : "Coming soon",
+        description:
+          lang === "ar"
+            ? "نسخة macOS لسه بتجهّز. استخدم Windows أو Linux حاليًا."
+            : "macOS version is coming. Please use Windows or Linux for now.",
+      });
+      return;
+    }
     setDownloading(platform);
-    // Open in new tab so the browser handles the download
-    window.open(info.url, "_blank");
-    setTimeout(() => setDownloading(null), 1500);
+    // Use a hidden <a download> so the browser treats it as a file download,
+    // not a navigation. This avoids the GitHub 404 problem entirely.
+    const a = document.createElement("a");
+    a.href = info.url;
+    a.download = info.url.split("/").pop() || "installer";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => setDownloading(null), 2000);
     toast({
       title: lang === "ar" ? "بدأ التحميل" : "Download started",
       description: `${info.label} • ${info.size}`,
@@ -177,7 +208,7 @@ export default function InstallPage() {
           </div>
 
           {/* Main download buttons */}
-          <div className="grid sm:grid-cols-2 gap-4 mb-6">
+          <div className="grid sm:grid-cols-3 gap-4 mb-6">
             {/* Windows */}
             <button
               type="button"
@@ -202,25 +233,45 @@ export default function InstallPage() {
               </div>
             </button>
 
-            {/* macOS */}
+            {/* Linux */}
             <button
               type="button"
-              onClick={() => handleDownload("mac")}
+              onClick={() => handleDownload("linux")}
               disabled={downloading !== null}
-              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 p-6 text-white shadow-xl shadow-emerald-500/30 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center"
+              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 p-6 text-white shadow-xl shadow-amber-500/30 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center"
             >
               <div className="flex flex-col items-center gap-3">
                 <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center">
-                  {downloading === "mac" ? (
+                  {downloading === "linux" ? (
                     <Loader2 className="w-7 h-7 animate-spin" />
                   ) : (
-                    <Apple className="w-7 h-7" />
+                    <Monitor className="w-7 h-7" />
                   )}
                 </div>
                 <div>
-                  <p className="font-bold text-lg">{t.downloadMac}</p>
+                  <p className="font-bold text-lg">{t.downloadLinux}</p>
                   <p className="text-xs text-white/70 mt-1">
-                    {DOWNLOADS.mac.size} · .dmg
+                    {DOWNLOADS.linux.size} · AppImage
+                  </p>
+                </div>
+              </div>
+            </button>
+
+            {/* macOS — disabled, coming soon */}
+            <button
+              type="button"
+              onClick={() => handleDownload("mac")}
+              disabled={true}
+              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-700/50 to-teal-700/50 hover:from-emerald-700 hover:to-teal-700 p-6 text-white/70 shadow-xl shadow-emerald-500/10 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed text-center"
+            >
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center">
+                  <Apple className="w-7 h-7" />
+                </div>
+                <div>
+                  <p className="font-bold text-lg">{t.downloadMac}</p>
+                  <p className="text-xs text-white/40 mt-1">
+                    {t.macComingSoon}
                   </p>
                 </div>
               </div>
@@ -279,11 +330,11 @@ export default function InstallPage() {
                 </p>
               </div>
               <div>
-                <p className="font-medium text-purple-300 mb-1">{t.steps.mac}</p>
+                <p className="font-medium text-purple-300 mb-1">{lang === "ar" ? "على Linux" : "On Linux"}</p>
                 <p className="text-gray-400">
                   {lang === "ar"
-                    ? "1. حمّل ملف .dmg وافتحه. 2. اسحب التطبيق لـ Applications. 3. أول تشغيل: اضغط كليك يمين → Open (مرة واحدة بس). 4. شاشة التثبيت هتفتح أوتوماتيك."
-                    : "1. Download the .dmg and open it. 2. Drag the app to Applications. 3. First launch: right-click → Open (just once). 4. The installer screen opens automatically."}
+                    ? "1. حمّل ملف .AppImage. 2. اضغط عليه كليك يمين → Properties → Permissions → فعّل «السماح بالتنفيذ كبرنامج». 3. افتحه — شاشة التثبيت هتفتح أوتوماتيك."
+                    : "1. Download the .AppImage. 2. Right-click → Properties → Permissions → enable 'Allow executing as program'. 3. Open it — the installer screen starts automatically."}
                 </p>
               </div>
             </div>

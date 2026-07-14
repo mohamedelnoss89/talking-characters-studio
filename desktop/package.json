@@ -15,6 +15,7 @@
     "build": "electron-builder --win nsis",
     "build:portable": "electron-builder --win portable",
     "build:mac": "electron-builder --mac dmg",
+    "build:linux": "electron-builder --linux AppImage",
     "build:all": "electron-builder --win nsis --mac dmg"
   },
   "build": {
@@ -98,6 +99,17 @@
       "icon": "build/icon.png",
       "artifactName": "TalkingCharactersStudio-${version}.${ext}",
       "category": "public.app-category.video"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "TalkingCharactersStudio-${version}.${ext}",
+      "category": "Video"
     }
   },
   "dependencies": {
