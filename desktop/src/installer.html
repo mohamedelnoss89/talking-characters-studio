@@ -336,20 +336,28 @@
     });
 
     async function checkInitial() {
-      const state = await installer.getInstallState();
-      appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip}`);
+      try {
+        const state = await installer.getInstallState();
+        appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`);
+        if (state.paths) {
+          appendLog(`Paths: python=${state.paths.python} venv=${state.paths.venv} wav2lip=${state.paths.wav2lip}`);
+        }
 
-      if (state.fullyInstalled) {
-        // Everything is already installed — show launch button
-        setStageStatus("python", "تم ✓", 100);
-        setStageStatus("pip", "تم ✓", 100);
-        setStageStatus("wav2lip", "تم ✓", 100);
-        installBtn.style.display = "none";
-        launchBtn.style.display = "inline-flex";
-      } else {
-        // Restore partial state
-        if (state.venv) setStageStatus("python", "تم ✓", 100);
-        if (state.wav2lip) setStageStatus("wav2lip", "تم ✓", 100);
+        if (state.fullyInstalled) {
+          // Everything is already installed — show launch button
+          setStageStatus("python", "تم ✓", 100);
+          setStageStatus("pip", "تم ✓", 100);
+          setStageStatus("wav2lip", "تم ✓", 100);
+          installBtn.style.display = "none";
+          launchBtn.style.display = "inline-flex";
+        } else {
+          // Restore partial state
+          if (state.venv) setStageStatus("python", "تم ✓", 100);
+          if (state.wav2lip) setStageStatus("wav2lip", "تم ✓", 100);
+        }
+      } catch (e) {
+        appendLog("checkInitial failed: " + (e?.message || e));
+        showError("فشل التحقق من حالة التثبيت: " + (e?.message || e));
       }
     }
 
@@ -357,39 +365,57 @@
       hideError();
       installBtn.disabled = true;
       installBtn.innerHTML = '<span class="spinner"></span> جاري التثبيت...';
+      // Always show the log panel during install so user sees progress
+      logEl.classList.add("visible");
 
       try {
+        // Verify IPC bridge is available
+        if (!window.installer || !window.installer.installPython) {
+          throw new Error("IPC bridge مش موجود. ده مشكلة في بناء التطبيق.");
+        }
+
+        appendLog("بدء التثبيت...");
+
         // Stage 1: Python
         const state = await installer.getInstallState();
+        appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`);
+
         if (!state.venv) {
           markStageWaiting("python", "بدء التثبيت...");
+          appendLog("Stage 1: Installing Python...");
           const r1 = await installer.installPython();
           if (!r1.success) throw new Error(r1.error || "Python install failed");
         } else {
           setStageStatus("python", "تم ✓", 100);
+          appendLog("Stage 1: Python already installed, skipping.");
         }
 
         // Stage 2: pip deps
         markStageWaiting("pip", "بدء التثبيت...");
+        appendLog("Stage 2: Installing pip dependencies (torch, opencv, fastapi, ...)");
         const r2 = await installer.installPipDeps();
         if (!r2.success) throw new Error(r2.error || "pip install failed");
 
         // Stage 3: Wav2Lip
         if (!state.wav2lip) {
           markStageWaiting("wav2lip", "بدء التثبيت...");
+          appendLog("Stage 3: Installing Wav2Lip + downloading model (~415MB)");
           const r3 = await installer.installWav2Lip();
           if (!r3.success) throw new Error(r3.error || "Wav2Lip install failed");
         } else {
           setStageStatus("wav2lip", "تم ✓", 100);
+          appendLog("Stage 3: Wav2Lip already installed, skipping.");
         }
 
         // All done!
-        appendLog("All stages complete!");
+        appendLog("✓ All stages complete!");
         installBtn.style.display = "none";
         launchBtn.style.display = "inline-flex";
       } catch (e) {
-        appendLog("FATAL: " + (e?.message || e));
-        showError(e?.message || "Unknown error");
+        const errMsg = e?.message || String(e);
+        appendLog("FATAL: " + errMsg);
+        if (e?.stack) appendLog(e.stack);
+        showError(errMsg);
         installBtn.disabled = false;
         installBtn.textContent = "أعد المحاولة";
       }

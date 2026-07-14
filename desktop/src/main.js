@@ -70,11 +70,17 @@ function log(...args) {
 // State checks
 // ---------------------------------------------------------------------------
 
-/** Returns true if the Python venv binary exists. */
+/** Returns true if a usable Python is installed (either venv or embedded). */
 function isVenvInstalled() {
   const isWin = process.platform === "win32";
-  const py = path.join(VENV_DIR, isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
-  return fs.existsSync(py);
+  // Check venv first
+  const venvPy = path.join(VENV_DIR, isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
+  if (fs.existsSync(venvPy)) return true;
+  // Check embedded Python marker
+  const embeddedMarker = path.join(PYTHON_DIR, "USE_EMBEDDED.txt");
+  const embeddedPy = path.join(PYTHON_DIR, "python.exe");
+  if (fs.existsSync(embeddedMarker) && fs.existsSync(embeddedPy)) return true;
+  return false;
 }
 
 /** Returns true if Wav2Lip checkpoint exists and is large enough. */
@@ -97,7 +103,14 @@ function isFullyInstalled() {
 
 function getVenvPython() {
   const isWin = process.platform === "win32";
-  return path.join(VENV_DIR, isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
+  // Prefer venv if it exists
+  const venvPy = path.join(VENV_DIR, isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python");
+  if (fs.existsSync(venvPy)) return venvPy;
+  // Fall back to embedded Python (no venv case)
+  const embeddedPy = path.join(PYTHON_DIR, "python.exe");
+  if (fs.existsSync(embeddedPy)) return embeddedPy;
+  // Return venvPy as default (will fail with clear error if used)
+  return venvPy;
 }
 
 function startBackend() {
@@ -355,13 +368,13 @@ ipcMain.handle("installer:installPython", async () => {
 ipcMain.handle("installer:installPipDeps", async () => {
   sendProgress("pip", 0, "بدء تثبيت مكتبات Python...");
   const { installPipDeps } = require("./installer-python");
-  return installPipDeps({ VENV_DIR, BACKEND_SRC_DIR, sendProgress, log });
+  return installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgress, log });
 });
 
 ipcMain.handle("installer:installWav2Lip", async () => {
   sendProgress("wav2lip", 0, "بدء تثبيت Wav2Lip...");
   const { installWav2Lip } = require("./installer-python");
-  return installWav2Lip({ WAV2LIP_DIR, CKPT_PATH, VENV_DIR, sendProgress, log });
+  return installWav2Lip({ WAV2LIP_DIR, CKPT_PATH, VENV_DIR, PYTHON_DIR, sendProgress, log });
 });
 
 ipcMain.handle("installer:launchApp", async () => {

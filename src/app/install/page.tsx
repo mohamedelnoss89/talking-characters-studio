@@ -50,7 +50,7 @@ const DOWNLOADS = {
   windowsZip: {
     url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.0-windows.zip`,
     label: "Windows (ZIP)",
-    size: "~103MB",
+    size: "~91MB",
     icon: Monitor,
   },
   windows: {

@@ -16,7 +16,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawn, execFile, execFileSync } = require("child_process");
+const { spawn, execFile, execFileSync, spawnSync } = require("child_process");
 const https = require("https");
 const http = require("http");
 const { URL } = require("url");
@@ -53,24 +53,70 @@ function spawnAsync(cmd, args, opts = {}) {
   });
 }
 
-/** Find a usable system Python 3.x binary. */
+/**
+ * Find a usable system Python 3.x binary.
+ *
+ * IMPORTANT: Python 3.4+ prints `--version` to STDERR, not stdout.
+ * Also, on Windows, `python.exe` may be a Microsoft Store stub that
+ * prints nothing — we need to detect that case and skip it.
+ *
+ * Returns the command (as a string, possibly with spaces for args like
+ * "py.exe -3") or null if no Python 3.x is found.
+ */
 function findSystemPython() {
   const candidates =
     process.platform === "win32"
-      ? ["python.exe", "python3.exe", "py.exe -3"]
+      ? ["py.exe -3", "python.exe", "python3.exe"]
       : ["python3", "python"];
+
   for (const c of candidates) {
     try {
       const parts = c.split(" ");
-      const out = execFileSync(parts[0], parts.slice(1).concat(["--version"]), {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        windowsHide: true,
-      });
-      if (/Python 3\./.test(out)) return c;
+      // Capture BOTH stdout and stderr — Python 3.4+ prints version to stderr
+      const result = require("child_process").spawnSync(
+        parts[0],
+        parts.slice(1).concat(["--version"]),
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          timeout: 5000,
+        }
+      );
+      const combined = (result.stdout || "") + (result.stderr || "");
+      // Must contain "Python 3." to be valid
+      if (/Python 3\.\d+/.test(combined)) {
+        return c;
+      }
+      // If the output mentions "Microsoft Store" or "Windows Store",
+      // it's the Store stub — skip it.
+      // (No output at all also means stub — silent failure.)
     } catch {}
   }
   return null;
+}
+
+/**
+ * Get the full version string of a Python binary (e.g. "Python 3.11.9").
+ * Used for diagnostic logging.
+ */
+function getPythonVersion(cmd) {
+  try {
+    const parts = cmd.split(" ");
+    const result = require("child_process").spawnSync(
+      parts[0],
+      parts.slice(1).concat(["--version"]),
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 5000,
+      }
+    );
+    return (result.stdout || "").trim() + (result.stderr || "").trim();
+  } catch {
+    return "(unknown)";
+  }
 }
 
 /** Download a URL to a file path. Reports progress via onProgress(received, total). */
@@ -132,79 +178,137 @@ async function extractZip(zipPath, destDir) {
 // ---------------------------------------------------------------------------
 // installPython
 // ---------------------------------------------------------------------------
+//
+// Strategy:
+//   1. On Windows: try system Python first. If not found (or it's the
+//      Microsoft Store stub), download Python embeddable (~10MB) and
+//      bootstrap pip into it using get-pip.py. No venv needed — we use
+//      the embeddable Python directly.
+//   2. On Mac/Linux: use system python3, create a venv.
+//
+// The venv path (VENV_DIR) is kept for backwards compatibility — on Windows
+// with embedded Python, we set VENV_DIR = PYTHON_DIR (same location).
+// ---------------------------------------------------------------------------
 
 async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
   try {
     fs.mkdirSync(PYTHON_DIR, { recursive: true });
     fs.mkdirSync(path.dirname(VENV_DIR), { recursive: true });
 
-    // Step 1: Get a Python binary to use for venv creation
     sendProgress && sendProgress("python", 5, "البحث عن Python...");
 
     let pythonExe = null;
+    let useEmbedded = false;
 
-    if (process.platform === "win32") {
-      // Windows: try to use system Python first (cheaper than downloading embed)
-      pythonExe = findSystemPython();
-      if (!pythonExe) {
-        // Download Python embeddable (smallest option, ~10MB)
-        sendProgress && sendProgress("python", 15, "تحميل Python embedded...");
-        const pyVersion = "3.11.9";
-        const pyUrl = `https://www.python.org/ftp/python/${pyVersion}/python-${pyVersion}-embed-amd64.zip`;
-        const zipPath = path.join(PYTHON_DIR, "python-embed.zip");
-        await downloadFile(pyUrl, zipPath, (r, t) => {
-          if (t) {
-            const pct = 15 + Math.floor((r / t) * 30);
-            sendProgress && sendProgress("python", pct, `تحميل Python... ${Math.floor(r / 1024 / 1024)}MB / ${Math.floor(t / 1024 / 1024)}MB`);
-          }
-        });
-        sendProgress && sendProgress("python", 45, "فك ضغط Python...");
-        await extractZip(zipPath, PYTHON_DIR);
-        fs.unlinkSync(zipPath);
-        // Embeddable Python doesn't include pip — we need to bootstrap it later.
-        // For venv creation we need a full Python. Fall back to system install.
-        sendProgress && sendProgress("python", 50, "Python embedded لا يدعم venv. البحث عن Python مثبت...");
-        pythonExe = findSystemPython();
-        if (!pythonExe) {
-          throw new Error(
-            "Python مش مثبت على الويندوز. نزّل Python 3.11+ من python.org وشغّل التثبيت تاني."
-          );
+    // Try system Python first
+    pythonExe = findSystemPython();
+    if (pythonExe) {
+      log("[installPython] Found system Python:", pythonExe, getPythonVersion(pythonExe));
+    } else if (process.platform === "win32") {
+      // Windows without system Python → download embeddable + bootstrap pip
+      log("[installPython] No system Python. Downloading embeddable Python...");
+      useEmbedded = true;
+
+      sendProgress && sendProgress("python", 10, "تحميل Python embedded (~10MB)...");
+      const pyVersion = "3.11.9";
+      const pyUrl = `https://www.python.org/ftp/python/${pyVersion}/python-${pyVersion}-embed-amd64.zip`;
+      const zipPath = path.join(PYTHON_DIR, "python-embed.zip");
+
+      await downloadFile(pyUrl, zipPath, (r, t) => {
+        if (t) {
+          const pct = 10 + Math.floor((r / t) * 30);
+          const mbDone = Math.floor(r / 1024 / 1024);
+          const mbTotal = Math.floor(t / 1024 / 1024);
+          sendProgress && sendProgress("python", pct, `تحميل Python... ${mbDone}MB / ${mbTotal}MB`);
+        }
+      });
+
+      sendProgress && sendProgress("python", 45, "فك ضغط Python...");
+      await extractZip(zipPath, PYTHON_DIR);
+      try { fs.unlinkSync(zipPath); } catch {}
+
+      // Enable pip in embeddable Python:
+      // 1. Uncomment "import site" in the ._pth file (otherwise pip won't work)
+      const pthFiles = fs.readdirSync(PYTHON_DIR).filter(f => f.endsWith("._pth"));
+      for (const pthFile of pthFiles) {
+        const pthPath = path.join(PYTHON_DIR, pthFile);
+        let content = fs.readFileSync(pthPath, "utf8");
+        if (content.includes("#import site")) {
+          content = content.replace("#import site", "import site");
+          fs.writeFileSync(pthPath, content);
+          log("[installPython] Enabled 'import site' in", pthFile);
         }
       }
-    } else {
-      // Mac/Linux: use system python3
-      pythonExe = findSystemPython();
-      if (!pythonExe) {
-        throw new Error(
-          "Python 3 مش موجود. ثبّته من brew install python (Mac) أو apt install python3 (Linux)."
-        );
+
+      // 2. Download get-pip.py and run it to bootstrap pip
+      sendProgress && sendProgress("python", 55, "تثبيت pip...");
+      const getPipUrl = "https://bootstrap.pypa.io/get-pip.py";
+      const getPipPath = path.join(PYTHON_DIR, "get-pip.py");
+      await downloadFile(getPipUrl, getPipPath);
+
+      const embeddedPython = path.join(PYTHON_DIR, "python.exe");
+      if (!fs.existsSync(embeddedPython)) {
+        throw new Error(`python.exe مش موجود بعد فك الضغط. اتحقق من: ${PYTHON_DIR}`);
       }
+
+      await spawnAsync(embeddedPython, [getPipPath, "--no-warn-script-location"], {
+        cwd: PYTHON_DIR,
+        onStdout: (s) => log("[get-pip]", s.trim()),
+        onStderr: (s) => log("[get-pip:err]", s.trim()),
+      });
+
+      // Verify pip works
+      const pipCheck = spawnSync(embeddedPython, ["-m", "pip", "--version"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 10000,
+      });
+      const pipVersion = ((pipCheck.stdout || "") + (pipCheck.stderr || "")).trim();
+      if (!pipVersion.includes("pip")) {
+        throw new Error("pip ماتثبتش صح في الـ embedded Python. الإخراج: " + pipVersion);
+      }
+      log("[installPython] pip installed:", pipVersion);
+
+      pythonExe = embeddedPython;
+
+      // For embedded Python, VENV_DIR = PYTHON_DIR (we use it directly)
+      // We write a marker file so installPipDeps knows to use PYTHON_DIR
+      fs.writeFileSync(path.join(PYTHON_DIR, "USE_EMBEDDED.txt"), "1");
+
+      sendProgress && sendProgress("python", 95, "Python + pip جاهز ✓");
+    } else {
+      // Mac/Linux without python3
+      throw new Error(
+        "Python 3 مش موجود. ثبّته من brew install python (Mac) أو apt install python3 (Linux)."
+      );
     }
 
-    // Step 2: Create venv
-    sendProgress && sendProgress("python", 60, "إنشاء البيئة الافتراضية (venv)...");
-    const pyParts = pythonExe.split(" ");
-    await spawnAsync(pyParts[0], pyParts.slice(1).concat([
-      "-m",
-      "venv",
-      "--system-site-packages",
-      VENV_DIR,
-    ]), {
-      onStdout: (s) => log("[venv]", s.trim()),
-      onStderr: (s) => log("[venv:err]", s.trim()),
-    });
+    // Create venv only if we're using system Python (not embedded)
+    if (!useEmbedded) {
+      sendProgress && sendProgress("python", 60, "إنشاء البيئة الافتراضية (venv)...");
+      const pyParts = pythonExe.split(" ");
+      await spawnAsync(pyParts[0], pyParts.slice(1).concat([
+        "-m",
+        "venv",
+        "--system-site-packages",
+        VENV_DIR,
+      ]), {
+        onStdout: (s) => log("[venv]", s.trim()),
+        onStderr: (s) => log("[venv:err]", s.trim()),
+      });
 
-    // Step 3: Upgrade pip
-    sendProgress && sendProgress("python", 80, "تحديث pip...");
-    const venvPy = path.join(
-      VENV_DIR,
-      process.platform === "win32" ? "Scripts" : "bin",
-      process.platform === "win32" ? "python.exe" : "python"
-    );
-    await spawnAsync(venvPy, ["-m", "pip", "install", "--upgrade", "pip"], {
-      onStdout: (s) => log("[pip-upgrade]", s.trim()),
-      onStderr: (s) => log("[pip-upgrade:err]", s.trim()),
-    });
+      sendProgress && sendProgress("python", 80, "تحديث pip...");
+      const venvPy = path.join(
+        VENV_DIR,
+        process.platform === "win32" ? "Scripts" : "bin",
+        process.platform === "win32" ? "python.exe" : "python"
+      );
+      await spawnAsync(venvPy, ["-m", "pip", "install", "--upgrade", "pip"], {
+        onStdout: (s) => log("[pip-upgrade]", s.trim()),
+        onStderr: (s) => log("[pip-upgrade:err]", s.trim()),
+      });
+    }
 
     sendProgress && sendProgress("python", 100, "Python جاهز ✓");
     return { success: true };
@@ -215,20 +319,46 @@ async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
   }
 }
 
+/**
+ * Get the Python executable to use for running pip / backend.
+ * - If VENV_DIR/Scripts/python.exe (or bin/python) exists → use venv
+ * - Else if PYTHON_DIR/USE_EMBEDDED.txt exists → use PYTHON_DIR/python.exe
+ * - Else fall back to PYTHON_DIR/python.exe (legacy)
+ */
+function getActivePython(VENV_DIR, PYTHON_DIR) {
+  const isWin = process.platform === "win32";
+  const venvPy = path.join(
+    VENV_DIR,
+    isWin ? "Scripts" : "bin",
+    isWin ? "python.exe" : "python"
+  );
+  if (fs.existsSync(venvPy)) return venvPy;
+
+  const embeddedMarker = path.join(PYTHON_DIR || "", "USE_EMBEDDED.txt");
+  if (PYTHON_DIR && fs.existsSync(embeddedMarker)) {
+    const embPy = path.join(PYTHON_DIR, "python.exe");
+    if (fs.existsSync(embPy)) return embPy;
+  }
+
+  // Legacy fallback
+  if (PYTHON_DIR) {
+    const legacy = path.join(PYTHON_DIR, "python.exe");
+    if (fs.existsSync(legacy)) return legacy;
+  }
+  return venvPy; // returns nonexistent path; caller will fail with clear error
+}
+
 // ---------------------------------------------------------------------------
 // installPipDeps
 // ---------------------------------------------------------------------------
 
-async function installPipDeps({ VENV_DIR, BACKEND_SRC_DIR, sendProgress, log }) {
+async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgress, log }) {
   try {
-    const venvPy = path.join(
-      VENV_DIR,
-      process.platform === "win32" ? "Scripts" : "bin",
-      process.platform === "win32" ? "python.exe" : "python"
-    );
+    const venvPy = getActivePython(VENV_DIR, PYTHON_DIR);
     if (!fs.existsSync(venvPy)) {
-      throw new Error("venv مش موجود. شغّل تثبيت Python الأول.");
+      throw new Error("Python مش موجود. شغّل تثبيت Python الأول. (الاتجول على: " + venvPy + ")");
     }
+    log("[installPipDeps] Using Python:", venvPy);
 
     // Pin versions known to work with Wav2Lip
     const packages = [
@@ -281,16 +411,13 @@ async function installPipDeps({ VENV_DIR, BACKEND_SRC_DIR, sendProgress, log }) 
 // installWav2Lip
 // ---------------------------------------------------------------------------
 
-async function installWav2Lip({ WAV2LIP_DIR, CKPT_PATH, VENV_DIR, sendProgress, log }) {
+async function installWav2Lip({ WAV2LIP_DIR, CKPT_PATH, VENV_DIR, PYTHON_DIR, sendProgress, log }) {
   try {
-    const venvPy = path.join(
-      VENV_DIR,
-      process.platform === "win32" ? "Scripts" : "bin",
-      process.platform === "win32" ? "python.exe" : "python"
-    );
+    const venvPy = getActivePython(VENV_DIR, PYTHON_DIR);
     if (!fs.existsSync(venvPy)) {
-      throw new Error("venv مش موجود. شغّل تثبيت Python الأول.");
+      throw new Error("Python مش موجود. شغّل تثبيت Python الأول. (الاتجول على: " + venvPy + ")");
     }
+    log("[installWav2Lip] Using Python:", venvPy);
 
     // Step 1: clone Wav2Lip
     if (fs.existsSync(path.join(WAV2LIP_DIR, "models", "wav2lip.py"))) {
