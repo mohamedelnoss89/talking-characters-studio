@@ -101,9 +101,15 @@ async function isTokenStillValid(payload: JWTPayload): Promise<boolean> {
     }
     // token_invalid_before is a TIMESTAMPTZ; Neon returns it as ISO string
     const invalidBeforeMs = new Date(row.token_invalid_before).getTime();
-    // Token is valid only if it was issued AFTER the invalidation timestamp
-    // (with a 5-second grace period to handle clock skew between servers)
-    return iatMs >= invalidBeforeMs - 5000;
+    // Token is valid ONLY if it was issued at or after the invalidation
+    // timestamp (i.e. the user logged in AGAIN after logging out).
+    // Strict comparison — no grace period — because:
+    //   - Login and logout both run on Vercel, clocks are NTP-synced
+    //   - Any token issued BEFORE the user clicked logout must be rejected
+    //   - Clock skew between Vercel and Neon is irrelevant because we
+    //     compare absolute timestamps (iat from Vercel vs. NOW() from Neon,
+    //     both in UTC ms since epoch)
+    return iatMs >= invalidBeforeMs;
   } catch (e) {
     // If the DB query fails, fail OPEN (allow the request) so we don't
     // lock users out due to transient DB issues. The JWT signature check
