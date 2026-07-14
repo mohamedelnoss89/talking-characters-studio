@@ -43,6 +43,8 @@ async function ensureSchema(): Promise<void> {
     `;
     // Make password_hash nullable for Google OAuth users (idempotent — no-op if already nullable)
     await s`ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL`;
+    // Add auth_provider column if it doesn't exist (for databases that already had the users table before Google OAuth)
+    await s`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'local'`;
     await s`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower
       ON users (LOWER(username))
