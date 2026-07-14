@@ -44,10 +44,19 @@ const GITHUB_RELEASE_BASE =
   "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download";
 
 const DOWNLOADS = {
+  // RECOMMENDED for Windows: ZIP version. ZIP files don't trigger SmartScreen.
+  // User extracts the ZIP, then runs the .exe inside (which may show SmartScreen
+  // but at least they can see it's a real app folder with all DLLs).
+  windowsZip: {
+    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.0-windows.zip`,
+    label: "Windows (ZIP)",
+    size: "~103MB",
+    icon: Monitor,
+  },
   windows: {
-    // Windows portable .exe (NSIS self-extracting) — no admin required
+    // Windows portable .exe (NSIS self-extracting) — smaller but triggers SmartScreen
     url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-Portable-1.0.0.exe`,
-    label: "Windows",
+    label: "Windows (.exe)",
     size: "~67MB",
     icon: Monitor,
   },
@@ -71,7 +80,7 @@ export default function InstallPage() {
   const router = useRouter();
   const { toast } = useToast();
   const [lang, setLang] = useState<"ar" | "en">("ar");
-  const [downloading, setDownloading] = useState<null | "windows" | "mac" | "linux">(null);
+  const [downloading, setDownloading] = useState<null | "windows" | "windowsZip" | "mac" | "linux">(null);
   const [ready, setReady] = useState(false);
 
   const isRTL = lang === "ar";
@@ -82,9 +91,34 @@ export default function InstallPage() {
         ? "لازم تنزّل التطبيق على كمبيوترك الأول علشان تقدر تستخدمه. التطبيق بيحمّل Python وكل مكتبات الـ AI أوتوماتيك."
         : "You need to download the app to your computer first. The installer will automatically download Python and all AI libraries.",
     downloadWindows: lang === "ar" ? "تحميل لـ Windows" : "Download for Windows",
+    downloadWindowsZip: lang === "ar" ? "Windows (ZIP) — موصى به" : "Windows (ZIP) — Recommended",
+    downloadWindowsExe: lang === "ar" ? "Windows (.exe) — أصغر" : "Windows (.exe) — Smaller",
     downloadLinux: lang === "ar" ? "تحميل لـ Linux" : "Download for Linux",
     downloadMac: lang === "ar" ? "تحميل لـ macOS" : "Download for macOS",
     macComingSoon: lang === "ar" ? "قريبًا" : "Coming soon",
+    smartScreen: {
+      title: lang === "ar" ? "⚠️ تنبيه: Windows SmartScreen" : "⚠️ Windows SmartScreen warning",
+      body:
+        lang === "ar"
+          ? "لما تشغّل الـ .exe لأول مرة، Windows هيظهر رسالة «protected your PC». ده طبيعي لأن التطبيق مش موقّع رقميًا (مش معروف لـ Microsoft لسه)."
+          : "When you run the .exe for the first time, Windows shows a 'protected your PC' message. This is normal because the app is not digitally signed (unknown to Microsoft yet).",
+      steps:
+        lang === "ar"
+          ? [
+              "اضغط على «More info» (معلومات إضافية)",
+              "هيظهر زرار «Run anyway» (تشغيل على أي حال)",
+              "اضغط عليه — التطبيق هيشتغل عادي",
+            ]
+          : [
+              "Click on 'More info'",
+              "A 'Run anyway' button will appear",
+              "Click it — the app will start normally",
+            ],
+      safe:
+        lang === "ar"
+          ? "التطبيق آمن — مفيش فيه فيروسات. المصدر: github.com/mohamedelnoss89/talking-characters-studio"
+          : "The app is safe — no viruses. Source: github.com/mohamedelnoss89/talking-characters-studio",
+    },
     apkComingSoon:
       lang === "ar"
         ? "نسخة أندرويد مش متاحة حاليًا."
@@ -137,7 +171,7 @@ export default function InstallPage() {
     setReady(true);
   }, [router]);
 
-  const handleDownload = (platform: "windows" | "mac" | "linux") => {
+  const handleDownload = (platform: "windows" | "windowsZip" | "mac" | "linux") => {
     const info = DOWNLOADS[platform];
     if (!info.url) {
       toast({
@@ -208,26 +242,29 @@ export default function InstallPage() {
           </div>
 
           {/* Main download buttons */}
-          <div className="grid sm:grid-cols-3 gap-4 mb-6">
-            {/* Windows */}
+          <div className="grid sm:grid-cols-2 gap-4 mb-6">
+            {/* Windows ZIP — RECOMMENDED (doesn't trigger SmartScreen on download) */}
             <button
               type="button"
-              onClick={() => handleDownload("windows")}
+              onClick={() => handleDownload("windowsZip")}
               disabled={downloading !== null}
-              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 p-6 text-white shadow-xl shadow-purple-500/30 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center"
+              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 p-6 text-white shadow-xl shadow-purple-500/30 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center ring-2 ring-purple-400/50"
             >
+              <div className="absolute top-2 end-2 px-2 py-0.5 rounded-full bg-emerald-500/90 text-white text-[10px] font-bold uppercase tracking-wide">
+                {lang === "ar" ? "موصى به" : "Recommended"}
+              </div>
               <div className="flex flex-col items-center gap-3">
                 <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center">
-                  {downloading === "windows" ? (
+                  {downloading === "windowsZip" ? (
                     <Loader2 className="w-7 h-7 animate-spin" />
                   ) : (
                     <Monitor className="w-7 h-7" />
                   )}
                 </div>
                 <div>
-                  <p className="font-bold text-lg">{t.downloadWindows}</p>
+                  <p className="font-bold text-lg">{t.downloadWindowsZip}</p>
                   <p className="text-xs text-white/70 mt-1">
-                    {DOWNLOADS.windows.size} · .exe
+                    {DOWNLOADS.windowsZip.size} · .zip
                   </p>
                 </div>
               </div>
@@ -257,6 +294,30 @@ export default function InstallPage() {
               </div>
             </button>
 
+            {/* Windows .exe — smaller but triggers SmartScreen */}
+            <button
+              type="button"
+              onClick={() => handleDownload("windows")}
+              disabled={downloading !== null}
+              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-700 to-slate-800 hover:from-slate-600 hover:to-slate-700 p-6 text-white shadow-xl shadow-slate-500/20 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center"
+            >
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center">
+                  {downloading === "windows" ? (
+                    <Loader2 className="w-7 h-7 animate-spin" />
+                  ) : (
+                    <Monitor className="w-7 h-7" />
+                  )}
+                </div>
+                <div>
+                  <p className="font-bold text-lg">{t.downloadWindowsExe}</p>
+                  <p className="text-xs text-white/70 mt-1">
+                    {DOWNLOADS.windows.size} · .exe
+                  </p>
+                </div>
+              </div>
+            </button>
+
             {/* macOS — disabled, coming soon */}
             <button
               type="button"
@@ -276,6 +337,25 @@ export default function InstallPage() {
                 </div>
               </div>
             </button>
+          </div>
+
+          {/* SmartScreen warning — prominent yellow box */}
+          <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border-2 border-amber-500/50">
+            <div className="flex items-start gap-3 mb-3">
+              <Shield className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-200 text-sm mb-1">{t.smartScreen.title}</p>
+                <p className="text-xs text-amber-100/80 leading-relaxed">{t.smartScreen.body}</p>
+              </div>
+            </div>
+            <ol className="text-xs text-amber-100/90 space-y-1 mt-3 ms-8 list-decimal">
+              {t.smartScreen.steps.map((step, i) => (
+                <li key={i} className="leading-relaxed">{step}</li>
+              ))}
+            </ol>
+            <div className="mt-3 pt-3 border-t border-amber-500/20">
+              <p className="text-[11px] text-amber-200/60 text-center">{t.smartScreen.safe}</p>
+            </div>
           </div>
 
           {/* System requirements */}
@@ -325,8 +405,8 @@ export default function InstallPage() {
                 <p className="font-medium text-purple-300 mb-1">{t.steps.windows}</p>
                 <p className="text-gray-400">
                   {lang === "ar"
-                    ? "1. حمّل ملف .exe وافتحه. 2. اضغط «التالي» في معالج التثبيت. 3. أول تشغيل هيفتح شاشة تثبيت Python والمكتبات أوتوماتيك — استنى 10-15 دقيقة."
-                    : "1. Download the .exe and open it. 2. Click 'Next' in the installer. 3. First launch opens an installer screen that downloads Python + libraries automatically — wait 10-15 minutes."}
+                    ? "1. حمّل ملف ZIP وفك ضغطه. 2. ادخل على المجلد اللي طلع وافتح ملف «محرك الشخصيات المتكلمة.exe». 3. لو ظهر رسالة SmartScreen → اضغط «More info» → «Run anyway» (شوف التنبيه فوق). 4. أول تشغيل هيفتح شاشة تثبيت Python والمكتبات أوتوماتيك — استنى 10-15 دقيقة."
+                    : "1. Download the ZIP and extract it. 2. Open the extracted folder and run 'محرك الشخصيات المتكلمة.exe'. 3. If SmartScreen appears → click 'More info' → 'Run anyway' (see warning above). 4. First launch opens an installer screen that downloads Python + libraries automatically — wait 10-15 minutes."}
                 </p>
               </div>
               <div>
