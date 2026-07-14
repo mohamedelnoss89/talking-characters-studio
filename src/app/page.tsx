@@ -1328,7 +1328,7 @@ export default function Home() {
       }}
     >
       {/* Header */}
-      <header className="border-b border-purple-500/20 backdrop-blur-md bg-black/20">
+      <header className="border-b border-purple-500/20 backdrop-blur-md bg-black/20 relative z-50">
         <div className="container mx-auto px-2 sm:px-4 py-3 sm:py-4 flex items-center justify-between gap-2">
           {/* Logo + Title */}
           <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-shrink">
@@ -1417,7 +1417,7 @@ export default function Home() {
                 {userMenuOpen && (
                   <div
                     role="menu"
-                    className="absolute end-0 mt-2 w-44 max-w-[calc(100vw-1rem)] bg-[#161820] border border-purple-500/30 rounded-lg shadow-xl py-1 z-50"
+                    className="absolute end-0 mt-2 w-44 max-w-[calc(100vw-1rem)] bg-[#161820] border border-purple-500/30 rounded-lg shadow-xl py-1 z-[100]"
                     style={{ direction: lang === "ar" ? "rtl" : "ltr" }}
                   >
                     {/* User info header (name only — NO email) */}
