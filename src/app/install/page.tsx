@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Sparkles,
   Download,
@@ -14,19 +14,29 @@ import {
   Info,
   Shield,
   Zap,
+  Lock,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
+import {
+  isStandaloneMode,
+  hasBypassFlag,
+  setBypassFlag,
+  clearBypassFlag,
+} from "@/lib/pwa";
 
 /**
- * Install page — lets users install the app as a PWA or download the APK.
+ * Install gate page.
  *
- * Two main buttons:
- *   1. "تثبيت التطبيق" — triggers the browser's native PWA install prompt
- *      (works on Chrome, Edge, Samsung Internet, etc.). On iOS Safari,
- *      shows instructions for "Add to Home Screen".
- *   2. "تحميل APK" — downloads the Android APK (placeholder for now; the
- *      actual APK will be generated in a later step).
+ * Behavior:
+ *   - If the app is already installed (standalone mode) OR the user has a
+ *     bypass flag, redirect to /login immediately.
+ *   - Otherwise show the install UI. After a successful install, redirect
+ *     to /login automatically.
+ *   - A subtle "continue in browser" link at the bottom sets the bypass
+ *     flag and proceeds — this is the escape hatch for browsers that
+ *     don't support PWA install (Firefox desktop) or for users who really
+ *     don't want to install.
  *
  * Bilingual (ar/en) — defaults to Arabic, RTL.
  */
@@ -38,23 +48,23 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 export default function InstallPage() {
+  const router = useRouter();
   const { toast } = useToast();
   const [lang, setLang] = useState<"ar" | "en">("ar");
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [platform, setPlatform] = useState<"android" | "ios" | "desktop" | "other">("other");
+  const [ready, setReady] = useState(false);
 
   const isRTL = lang === "ar";
   const t = {
     title: lang === "ar" ? "تثبيت التطبيق" : "Install the App",
     subtitle:
       lang === "ar"
-        ? "حمّل تطبيق محرك الشخصيات المتكلمة على جهازك واستخدمه في أي وقت — حتى من غير إنترنت"
-        : "Install Talking Characters Studio on your device and use it anytime — even offline",
+        ? "لازم تثبّت التطبيق الأول علشان تقدر تستخدمه. حمّله على جهازك واستخدمه في أي وقت — حتى من غير إنترنت."
+        : "You need to install the app first to use it. Install it on your device and use it anytime — even offline.",
     installBtn: lang === "ar" ? "تثبيت التطبيق" : "Install App",
     installing: lang === "ar" ? "جاري التثبيت..." : "Installing...",
-    installed: lang === "ar" ? "التطبيق مثبت" : "App Installed",
     downloadApk: lang === "ar" ? "تحميل APK" : "Download APK",
     apkSize: lang === "ar" ? "للأندرويد" : "For Android",
     apkComingSoon:
@@ -69,10 +79,6 @@ export default function InstallPage() {
       lang === "ar"
         ? "اضغط على زر التثبيت في شريط العنوان"
         : "Click the install button in the address bar",
-    alreadyInstalled:
-      lang === "ar"
-        ? "التطبيق مثبت بالفعل على جهازك"
-        : "The app is already installed on your device",
     notSupported:
       lang === "ar"
         ? "المتصفح بتاعك مش بيدعم تثبيت PWA. جرّب Chrome أو Edge."
@@ -101,27 +107,35 @@ export default function InstallPage() {
       ios: lang === "ar" ? "على الايفون" : "On iOS",
       desktop: lang === "ar" ? "على الكمبيوتر" : "On Desktop",
     },
-    backHome: lang === "ar" ? "ارجع للصفحة الرئيسية" : "Back to home",
+    continueInBrowser:
+      lang === "ar" ? "تابع في المتصفح بدون تثبيت" : "Continue in browser without installing",
+    continueNote:
+      lang === "ar"
+        ? "يفضّل تثبيت التطبيق لتجربة أفضل"
+        : "Installing the app is recommended for a better experience",
+    required: lang === "ar" ? "التثبيت مطلوب" : "Installation required",
+    requiredDesc:
+      lang === "ar"
+        ? "التطبيق محتاج يتثبّت على جهازك علشان تشتغل عليه"
+        : "The app must be installed on your device to use it",
   };
 
-  // Detect platform
+  // ---- EFFECT 1: detect platform + standalone state on mount ----
   useEffect(() => {
     const ua = navigator.userAgent.toLowerCase();
     if (/android/.test(ua)) setPlatform("android");
     else if (/iphone|ipad|ipod/.test(ua) || (ua.includes("mac") && "ontouchend" in document)) setPlatform("ios");
     else if (/windows|macintosh|linux/.test(ua)) setPlatform("desktop");
-  }, []);
 
-  // Check if already installed (running in standalone mode)
-  useEffect(() => {
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
-      // iOS Safari
-      (window.navigator as any).standalone === true;
-    if (standalone) setIsInstalled(true);
-  }, []);
+    // If already installed OR bypass already set, jump straight to /login.
+    if (isStandaloneMode() || hasBypassFlag()) {
+      router.replace("/login");
+      return;
+    }
+    setReady(true);
+  }, [router]);
 
-  // Capture the beforeinstallprompt event so we can trigger it later
+  // ---- EFFECT 2: keep listening for the browser's install prompt ----
   useEffect(() => {
     const handler = (e: Event) => {
       e.preventDefault();
@@ -130,6 +144,28 @@ export default function InstallPage() {
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
+
+  // ---- EFFECT 3: when the app enters standalone mode, redirect to /login ----
+  useEffect(() => {
+    const mq = window.matchMedia("(display-mode: standalone)");
+    const onChange = () => {
+      if (mq.matches || (window.navigator as any).standalone === true) {
+        clearBypassFlag(); // installed properly — clear any stale bypass
+        toast({
+          title: lang === "ar" ? "تم التثبيت" : "Installed",
+          description: lang === "ar" ? "جاري التحويل..." : "Redirecting...",
+        });
+        setTimeout(() => router.replace("/login"), 400);
+      }
+    };
+    mq.addEventListener?.("change", onChange);
+    // iOS doesn't fire change events; check on focus too
+    window.addEventListener("focus", onChange);
+    return () => {
+      mq.removeEventListener?.("change", onChange);
+      window.removeEventListener("focus", onChange);
+    };
+  }, [router, lang, toast]);
 
   const handleInstall = async () => {
     // iOS doesn't support beforeinstallprompt — show instructions instead
@@ -144,8 +180,7 @@ export default function InstallPage() {
     if (!installPrompt) {
       toast({
         title: lang === "ar" ? "التثبيت مش متاح" : "Installation not available",
-        description:
-          platform === "desktop" ? t.desktopInstructions : t.notSupported,
+        description: platform === "desktop" ? t.desktopInstructions : t.notSupported,
       });
       return;
     }
@@ -155,11 +190,12 @@ export default function InstallPage() {
       await installPrompt.prompt();
       const choice = await installPrompt.userChoice;
       if (choice.outcome === "accepted") {
-        setIsInstalled(true);
         toast({
           title: lang === "ar" ? "تم التثبيت" : "Installed",
-          description: lang === "ar" ? "التطبيق اتثبت على جهازك" : "The app has been installed",
+          description: lang === "ar" ? "جاري التحويل..." : "Redirecting...",
         });
+        // Give the browser a beat to flip into standalone mode, then bounce.
+        setTimeout(() => router.replace("/login"), 600);
       }
       setInstallPrompt(null);
     } catch (e) {
@@ -181,6 +217,18 @@ export default function InstallPage() {
     });
   };
 
+  const handleContinueInBrowser = () => {
+    setBypassFlag();
+    toast({
+      title: lang === "ar" ? "متابعة في المتصفح" : "Continuing in browser",
+      description: t.continueNote,
+    });
+    setTimeout(() => router.replace("/login"), 200);
+  };
+
+  // Don't render anything until we've decided (avoids flicker before redirect)
+  if (!ready) return null;
+
   return (
     <div
       className="min-h-screen flex flex-col"
@@ -201,8 +249,14 @@ export default function InstallPage() {
         <span>{lang === "ar" ? "English" : "عربي"}</span>
       </button>
 
-      <main className="flex-1 flex items-center justify-center p-4">
+      <main className="flex-1 flex items-center justify-center p-4 py-8">
         <div className="w-full max-w-2xl">
+          {/* Required banner */}
+          <div className="mb-6 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex items-center gap-3 justify-center">
+            <Lock className="w-4 h-4 shrink-0" />
+            <span className="text-sm font-medium text-center">{t.requiredDesc}</span>
+          </div>
+
           {/* Header */}
           <div className="text-center mb-8">
             <div className="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-br from-purple-500 to-pink-500 shadow-2xl shadow-purple-500/40 mb-6">
@@ -214,29 +268,19 @@ export default function InstallPage() {
             <p className="text-gray-400 text-sm sm:text-base px-4">{t.subtitle}</p>
           </div>
 
-          {/* Already installed banner */}
-          {isInstalled && (
-            <div className="mb-6 p-4 rounded-xl bg-green-500/10 border border-green-500/30 text-green-300 flex items-center gap-3">
-              <CheckCircle2 className="w-5 h-5 shrink-0" />
-              <span className="text-sm">{t.alreadyInstalled}</span>
-            </div>
-          )}
-
           {/* Main install buttons */}
           <div className="grid sm:grid-cols-2 gap-4 mb-8">
             {/* PWA Install button */}
             <button
               type="button"
               onClick={handleInstall}
-              disabled={isInstalling || isInstalled}
+              disabled={isInstalling}
               className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 p-6 text-white shadow-xl shadow-purple-500/30 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center"
             >
               <div className="flex flex-col items-center gap-3">
                 <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center">
                   {isInstalling ? (
                     <Loader2 className="w-7 h-7 animate-spin" />
-                  ) : isInstalled ? (
-                    <CheckCircle2 className="w-7 h-7" />
                   ) : platform === "ios" ? (
                     <Apple className="w-7 h-7" />
                   ) : platform === "android" ? (
@@ -247,7 +291,7 @@ export default function InstallPage() {
                 </div>
                 <div>
                   <p className="font-bold text-lg">
-                    {isInstalled ? t.installed : isInstalling ? t.installing : t.installBtn}
+                    {isInstalling ? t.installing : t.installBtn}
                   </p>
                   <p className="text-xs text-white/70 mt-1">
                     {platform === "ios"
@@ -347,14 +391,15 @@ export default function InstallPage() {
             </div>
           </div>
 
-          {/* Back home link */}
-          <div className="text-center">
-            <Link
-              href="/"
-              className="inline-flex items-center gap-2 text-sm text-purple-300 hover:text-purple-200 transition-colors"
+          {/* Subtle "continue in browser" bypass — escape hatch */}
+          <div className="text-center pt-2">
+            <button
+              type="button"
+              onClick={handleContinueInBrowser}
+              className="text-xs text-gray-500 hover:text-gray-400 underline-offset-2 hover:underline transition-colors"
             >
-              {t.backHome}
-            </Link>
+              {t.continueInBrowser}
+            </button>
           </div>
         </div>
       </main>

@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import { translations, type Language } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/toaster";
+import PWAGuard from "@/components/PWAGuard";
 import {
   startLipSync,
   startMultiLipSync,
@@ -256,6 +257,14 @@ function FaceSelector({
 }
 
 export default function Home() {
+  return (
+    <PWAGuard>
+      <HomeInner />
+    </PWAGuard>
+  );
+}
+
+function HomeInner() {
   const [lang, setLang] = useState<Language>("ar");
   const t = translations[lang];
 

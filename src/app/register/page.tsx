@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
+import PWAGuard from "@/components/PWAGuard";
 
 /**
  * Register page — multi-user signup.
@@ -28,6 +29,14 @@ import { useToast } from "@/hooks/use-toast";
  * Bilingual (ar/en) — defaults to Arabic, RTL.
  */
 export default function RegisterPage() {
+  return (
+    <PWAGuard>
+      <RegisterPageInner />
+    </PWAGuard>
+  );
+}
+
+function RegisterPageInner() {
   const router = useRouter();
   const { toast } = useToast();
   const [name, setName] = useState("");
