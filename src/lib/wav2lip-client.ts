@@ -1,11 +1,35 @@
 /**
  * Wav2Lip API Client
- * يتصل مع الـ Python backend عن طريق Next.js API routes (proxy)
- * عشان يشتغل من أي browser حتى لو الـ backend على server تاني
+ *
+ * IMPORTANT — ARCHITECTURE CHANGE
+ * --------------------------------
+ * Previously this client called Next.js API routes (`/api/tts`, `/api/lip-sync`, …)
+ * which were serverless proxies running on Vercel that forwarded each request to
+ * `http://localhost:8000`. That worked in dev (because the user's machine was
+ * "the server") but in production on Vercel, `localhost:8000` meant *Vercel's
+ * own machine*, which has no Python backend → every request failed with 503.
+ *
+ * Now this client talks DIRECTLY to the Python backend running on the user's
+ * own machine (started by the Electron installer, or by `python server.py`).
+ *
+ * Two base URLs:
+ *   - BACKEND_URL  → Python FastAPI on http://localhost:8000 (lip-sync, tts, …)
+ *   - AUTH_BASE    → "" (relative) → Next.js on Vercel for login/register/logout
+ *                    (auth needs the JWT cookie, which is scoped to the web app)
+ *
+ * CORS note: the Python backend already has `CORSMiddleware` enabled in
+ * server.py allowing all origins, so cross-origin fetches from the PWA
+ * (served from Vercel) to localhost:8000 work out of the box.
  */
 
-// نستخدم relative URLs - الـ Next.js API routes بتعمل proxy للـ backend
-const API_BASE = "";
+// The Python backend URL. Read from env in case the user runs it on a non-default
+// port, but default to http://localhost:8000 which is what `python server.py` uses.
+const BACKEND_URL =
+  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_BACKEND_URL) ||
+  "http://localhost:8000";
+
+// Auth requests stay on the same origin (Vercel) — they need the httpOnly JWT cookie.
+const AUTH_BASE = "";
 
 export interface LipSyncJobStatus {
   job_id: string;
@@ -52,7 +76,7 @@ export interface VoicesResponse {
  */
 export async function listVoices(): Promise<VoicesResponse> {
   try {
-    const res = await fetch(`/api/voices`, { cache: "no-store" });
+    const res = await fetch(`${BACKEND_URL}/voices`, { cache: "no-store" });
     if (!res.ok) throw new Error(`Voices fetch failed: ${res.status}`);
     return res.json();
   } catch (e: any) {
@@ -77,7 +101,7 @@ export async function previewTts(
   formData.append("voice", voice);
   formData.append("rate", rate);
 
-  const res = await fetch(`/api/tts`, {
+  const res = await fetch(`${BACKEND_URL}/tts`, {
     method: "POST",
     body: formData,
   });
@@ -96,7 +120,7 @@ export async function detectFaces(imageBlob: Blob, imageName = "image.png"): Pro
   const formData = new FormData();
   formData.append("file", imageBlob, imageName);
 
-  const res = await fetch(`/api/detect-faces`, {
+  const res = await fetch(`${BACKEND_URL}/detect-faces`, {
     method: "POST",
     body: formData,
   });
@@ -167,7 +191,7 @@ export async function startLipSync(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const res = await fetch(`/api/lip-sync`, {
+      const res = await fetch(`${BACKEND_URL}/lip-sync`, {
         method: "POST",
         body: formData,
       });
@@ -276,7 +300,7 @@ export async function startMultiLipSync(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const res = await fetch(`/api/lip-sync-multi`, {
+      const res = await fetch(`${BACKEND_URL}/lip-sync-multi`, {
         method: "POST",
         body: formData,
       });
@@ -331,7 +355,7 @@ export async function getJobStatus(jobId: string): Promise<LipSyncJobStatus> {
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const res = await fetch(`/api/status/${jobId}`);
+      const res = await fetch(`${BACKEND_URL}/status/${jobId}`);
       if (res.ok) {
         return res.json();
       }
@@ -365,7 +389,7 @@ export async function getJobStatus(jobId: string): Promise<LipSyncJobStatus> {
  * يحمل الفيديو الناتج
  */
 export async function downloadVideo(jobId: string): Promise<Blob> {
-  const res = await fetch(`/api/download/${jobId}`);
+  const res = await fetch(`${BACKEND_URL}/download/${jobId}`);
   if (!res.ok) {
     throw new Error(`Download failed: ${res.status}`);
   }
@@ -377,7 +401,7 @@ export async function downloadVideo(jobId: string): Promise<Blob> {
  */
 export async function cleanupJob(jobId: string): Promise<void> {
   try {
-    await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+    await fetch(`${BACKEND_URL}/jobs/${jobId}`, { method: "DELETE" });
   } catch {
     // ignore
   }
@@ -449,7 +473,7 @@ export async function checkBackendHealth(): Promise<{
   wav2lip_available?: boolean;
   tts_available?: boolean;
 }> {
-  const res = await fetch(`/api/health`);
+  const res = await fetch(`${BACKEND_URL}/health`);
   if (!res.ok) throw new Error("Backend not reachable");
   return res.json();
 }
@@ -496,7 +520,7 @@ export async function getCharacterOptions(): Promise<{
   genders: CharacterGender[];
 }> {
   try {
-    const res = await fetch(`/api/generate-character`, { cache: "no-store" });
+    const res = await fetch(`${BACKEND_URL}/generate-character`, { cache: "no-store" });
     if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
     return res.json();
   } catch {
@@ -537,7 +561,7 @@ export async function generateCharacter(
 
   // 1. ابدأ الـ job
   onProgress?.(5, language === "ar" ? "بدء التوليد..." : "Starting...");
-  const startRes = await fetch(`/api/generate-character`, {
+  const startRes = await fetch(`${BACKEND_URL}/generate-character`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, style, gender, language }),
@@ -565,7 +589,7 @@ export async function generateCharacter(
 
     let pollRes: Response;
     try {
-      pollRes = await fetch(`/api/generate-character?id=${encodeURIComponent(jobId)}`, {
+      pollRes = await fetch(`${BACKEND_URL}/generate-character?id=${encodeURIComponent(jobId)}`, {
         cache: "no-store",
       });
     } catch {
@@ -688,7 +712,7 @@ export async function editCharacter(
 
   // 1. ابدأ الـ job
   onProgress?.(5, language === "ar" ? "بتعديل الصورة..." : "Editing image...", 0);
-  const startRes = await fetch(`/api/edit-character`, {
+  const startRes = await fetch(`${BACKEND_URL}/edit-character`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image_base64, edit_prompt: edit_prompt.trim(), language }),
@@ -721,7 +745,7 @@ export async function editCharacter(
 
     let pollRes: Response | null = null;
     try {
-      pollRes = await fetch(`/api/edit-character?id=${encodeURIComponent(jobId)}`, {
+      pollRes = await fetch(`${BACKEND_URL}/edit-character?id=${encodeURIComponent(jobId)}`, {
         cache: "no-store",
       });
       consecutiveErrors = 0;
