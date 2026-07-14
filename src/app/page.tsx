@@ -385,17 +385,29 @@ export default function Home() {
   }, [lang]);
 
   // === تسجيل الخروج ===
-  const handleLogout = async () => {
+  const handleLogout = async (e?: React.MouseEvent) => {
+    // Prevent any parent handler (e.g. the outside-click mousedown listener)
+    // from swallowing the click before our fetch runs.
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (loggingOut) return; // already in progress — ignore double-clicks
     setLoggingOut(true);
     setUserMenuOpen(false);
     try {
-      await fetch("/api/logout", { method: "POST" });
-      setCurrentUser(null);
-      window.location.href = "/login";
-    } catch (e) {
-      window.location.href = "/login";
+      // Use keepalive so the request survives even if the page navigates
+      await fetch("/api/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+      });
+    } catch (err) {
+      // ignore — we'll redirect to /login anyway, which clears the UI session
     } finally {
-      setLoggingOut(false);
+      setCurrentUser(null);
+      // Hard reload to /login to clear all client state
+      window.location.assign("/login");
     }
   };
 
