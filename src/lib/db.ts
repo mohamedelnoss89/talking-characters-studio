@@ -45,6 +45,11 @@ async function ensureSchema(): Promise<void> {
     await s`ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL`;
     // Add auth_provider column if it doesn't exist (for databases that already had the users table before Google OAuth)
     await s`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'local'`;
+    // Add token_invalid_before column for server-side logout (JWT blocklist).
+    // When a user logs out, we set this to NOW(). The middleware then rejects
+    // any JWT whose iat (issued-at) is older than this timestamp — so even if
+    // the browser keeps sending the old cookie, it won't be honored.
+    await s`ALTER TABLE users ADD COLUMN IF NOT EXISTS token_invalid_before TIMESTAMPTZ`;
     await s`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower
       ON users (LOWER(username))
@@ -295,6 +300,49 @@ export async function countUsers(): Promise<number> {
   await ensureSchema();
   const rows = await sql()`SELECT COUNT(*)::int AS c FROM users`;
   return (rows[0] as { c: number })?.c ?? 0;
+}
+
+/**
+ * Mark all of a user's currently-issued JWTs as invalid by setting
+ * `token_invalid_before = NOW()`. Any JWT with `iat < NOW()` will be
+ * rejected by the middleware on the next request.
+ *
+ * Used by /api/logout to implement server-side token revocation.
+ * Returns the new token_invalid_before value (ISO string) on success.
+ */
+export async function invalidateUserTokens(userId: number): Promise<string | null> {
+  await ensureSchema();
+  const rows = await sql()`
+    UPDATE users
+    SET token_invalid_before = NOW(), updated_at = NOW()
+    WHERE id = ${userId}
+    RETURNING token_invalid_before
+  `;
+  const row = rows[0] as { token_invalid_before?: string | Date } | undefined;
+  if (!row || !row.token_invalid_before) return null;
+  const v: any = row.token_invalid_before;
+  return typeof v === "object" && typeof v.toISOString === "function"
+    ? v.toISOString()
+    : String(v);
+}
+
+/**
+ * Get the user's `token_invalid_before` timestamp (if any).
+ * Returns null if the user has never logged out (or if the user doesn't exist).
+ *
+ * Used by the middleware to check whether a JWT is still valid.
+ */
+export async function getUserTokenInvalidBefore(userId: number): Promise<string | null> {
+  await ensureSchema();
+  const rows = await sql()`
+    SELECT token_invalid_before FROM users WHERE id = ${userId} LIMIT 1
+  `;
+  const row = rows[0] as { token_invalid_before?: string | Date | null } | undefined;
+  if (!row || !row.token_invalid_before) return null;
+  const v: any = row.token_invalid_before;
+  return typeof v === "object" && typeof v.toISOString === "function"
+    ? v.toISOString()
+    : String(v);
 }
 
 export async function getSafeUserById(id: number): Promise<SafeUser | null> {
