@@ -109,12 +109,45 @@ export async function POST(req: NextRequest) {
  * NOTE: We intentionally do NOT return the email here — the UI only needs
  * the display name, and we don't want to leak the email to client-side JS
  * unnecessarily. (The JWT still contains it, but it's not exposed via API.)
+ *
+ * IMPORTANT: This route is in the middleware's public paths list, so the
+ * middleware's blocklist check is SKIPPED. We must do the blocklist check
+ * HERE ourselves — otherwise the client will see `authenticated: true` for
+ * a user who has logged out (but whose browser is still sending the old
+ * cookie, e.g. from bfcache).
  */
 export async function GET(req: NextRequest) {
   const token = req.cookies.get(AUTH_COOKIE_NAME)?.value;
   const { verifySessionToken } = await import("@/lib/auth");
   const session = await verifySessionToken(token);
   if (!session) {
+    return NextResponse.json({ authenticated: false }, { status: 200 });
+  }
+
+  // --- Server-side blocklist check (same logic as middleware) --------------
+  // If the user has logged out since this token was issued, reject it.
+  try {
+    const { getUserTokenInvalidBefore } = await import("@/lib/db");
+    const invalidBefore = await getUserTokenInvalidBefore(session.userId);
+    if (invalidBefore) {
+      const invalidBeforeMs = new Date(invalidBefore).getTime();
+      // session.issuedAt is an ISO string (custom claim). If it's missing
+      // (very old token), treat as unauthenticated for safety.
+      const iatStr = session.issuedAt;
+      if (!iatStr) {
+        return NextResponse.json({ authenticated: false }, { status: 200 });
+      }
+      const iatMs = new Date(iatStr).getTime();
+      if (Number.isNaN(iatMs) || iatMs < invalidBeforeMs) {
+        // Token was issued before the user logged out — treat as unauthenticated
+        return NextResponse.json({ authenticated: false }, { status: 200 });
+      }
+    }
+  } catch (e) {
+    // If the blocklist check fails, fail CLOSED (unauthenticated) for safety.
+    // This is different from the middleware's fail-open behavior because this
+    // route is only used for UI display, not for security boundaries.
+    console.error("[login GET] blocklist check failed:", e);
     return NextResponse.json({ authenticated: false }, { status: 200 });
   }
 
