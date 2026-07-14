@@ -73,10 +73,10 @@ export function clearBypassFlag(): void {
  * The single source of truth for the gate. Returns true when the user
  * should be allowed to see protected pages (`/`, `/login`, `/register`).
  *
- * Returns true when:
- *   - The app is running in standalone (installed) mode, OR
- *   - The user has a saved bypass flag in localStorage
+ * Returns true ONLY when the app is running in standalone (installed)
+ * mode. The previous bypass-flag escape hatch was removed — install is
+ * now strictly required.
  */
 export function shouldAllowAccess(): boolean {
-  return isStandaloneMode() || hasBypassFlag();
+  return isStandaloneMode();
 }

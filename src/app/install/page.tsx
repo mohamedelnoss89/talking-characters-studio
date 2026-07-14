@@ -20,8 +20,6 @@ import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 import {
   isStandaloneMode,
-  hasBypassFlag,
-  setBypassFlag,
   clearBypassFlag,
 } from "@/lib/pwa";
 
@@ -107,12 +105,6 @@ export default function InstallPage() {
       ios: lang === "ar" ? "على الايفون" : "On iOS",
       desktop: lang === "ar" ? "على الكمبيوتر" : "On Desktop",
     },
-    continueInBrowser:
-      lang === "ar" ? "تابع في المتصفح بدون تثبيت" : "Continue in browser without installing",
-    continueNote:
-      lang === "ar"
-        ? "يفضّل تثبيت التطبيق لتجربة أفضل"
-        : "Installing the app is recommended for a better experience",
     required: lang === "ar" ? "التثبيت مطلوب" : "Installation required",
     requiredDesc:
       lang === "ar"
@@ -127,11 +119,14 @@ export default function InstallPage() {
     else if (/iphone|ipad|ipod/.test(ua) || (ua.includes("mac") && "ontouchend" in document)) setPlatform("ios");
     else if (/windows|macintosh|linux/.test(ua)) setPlatform("desktop");
 
-    // If already installed OR bypass already set, jump straight to /login.
-    if (isStandaloneMode() || hasBypassFlag()) {
+    // If already installed, redirect to /login immediately.
+    if (isStandaloneMode()) {
       router.replace("/login");
       return;
     }
+    // Clear any stale bypass flag from a previous version of the site —
+    // install is now strictly required.
+    clearBypassFlag();
     setReady(true);
   }, [router]);
 
@@ -215,15 +210,6 @@ export default function InstallPage() {
       title: lang === "ar" ? "قريبًا" : "Coming soon",
       description: t.apkComingSoon,
     });
-  };
-
-  const handleContinueInBrowser = () => {
-    setBypassFlag();
-    toast({
-      title: lang === "ar" ? "متابعة في المتصفح" : "Continuing in browser",
-      description: t.continueNote,
-    });
-    setTimeout(() => router.replace("/login"), 200);
   };
 
   // Don't render anything until we've decided (avoids flicker before redirect)
@@ -389,17 +375,6 @@ export default function InstallPage() {
                 </p>
               </div>
             </div>
-          </div>
-
-          {/* Subtle "continue in browser" bypass — escape hatch */}
-          <div className="text-center pt-2">
-            <button
-              type="button"
-              onClick={handleContinueInBrowser}
-              className="text-xs text-gray-500 hover:text-gray-400 underline-offset-2 hover:underline transition-colors"
-            >
-              {t.continueInBrowser}
-            </button>
           </div>
         </div>
       </main>
