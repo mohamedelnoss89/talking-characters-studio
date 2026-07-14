@@ -4,54 +4,62 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   Sparkles,
-  Download,
-  Smartphone,
   Monitor,
   Globe,
-  CheckCircle2,
-  Apple,
   Loader2,
   Info,
   Shield,
   Zap,
   Lock,
+  Apple,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
-import {
-  isStandaloneMode,
-  clearBypassFlag,
-} from "@/lib/pwa";
+import { isStandaloneMode, clearBypassFlag } from "@/lib/pwa";
 
 /**
  * Install gate page.
  *
  * Behavior:
- *   - If the app is already installed (standalone mode) OR the user has a
- *     bypass flag, redirect to /login immediately.
- *   - Otherwise show the install UI. After a successful install, redirect
- *     to /login automatically.
- *   - A subtle "continue in browser" link at the bottom sets the bypass
- *     flag and proceeds — this is the escape hatch for browsers that
- *     don't support PWA install (Firefox desktop) or for users who really
- *     don't want to install.
- *
- * Bilingual (ar/en) — defaults to Arabic, RTL.
+ *   - If the app is already running as Electron (standalone) → redirect to /login.
+ *   - Otherwise show download buttons for the desktop installer:
+ *       Windows: TalkingCharactersStudio-Setup-x.x.x.exe
+ *       macOS:   TalkingCharactersStudio-x.x.x.dmg
+ *   - The APK button shows "coming soon" (Android dropped per user request).
  */
 
-// TypeScript: extend the BeforeInstallPromptEvent with the fields we use
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+// Detect if we're already running inside Electron (PWA standalone + electron flag)
+function isElectron() {
+  if (typeof window === "undefined") return false;
+  return (
+    (window as any).electronAPI !== undefined ||
+    navigator.userAgent.toLowerCase().includes("electron")
+  );
 }
+
+// GitHub releases URLs (will be filled in after first release is published)
+const DOWNLOADS = {
+  windows: {
+    // electron-builder produces: TalkingCharactersStudio-Setup-1.0.0.exe
+    url: "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download/TalkingCharactersStudio-Setup-1.0.0.exe",
+    label: "Windows",
+    size: "~200MB",
+    icon: Monitor,
+  },
+  mac: {
+    // electron-builder produces: TalkingCharactersStudio-1.0.0.dmg
+    url: "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download/TalkingCharactersStudio-1.0.0.dmg",
+    label: "macOS",
+    size: "~200MB",
+    icon: Apple,
+  },
+};
 
 export default function InstallPage() {
   const router = useRouter();
   const { toast } = useToast();
   const [lang, setLang] = useState<"ar" | "en">("ar");
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalling, setIsInstalling] = useState(false);
-  const [platform, setPlatform] = useState<"android" | "ios" | "desktop" | "other">("other");
+  const [downloading, setDownloading] = useState<null | "windows" | "mac">(null);
   const [ready, setReady] = useState(false);
 
   const isRTL = lang === "ar";
@@ -59,160 +67,74 @@ export default function InstallPage() {
     title: lang === "ar" ? "تثبيت التطبيق" : "Install the App",
     subtitle:
       lang === "ar"
-        ? "لازم تثبّت التطبيق الأول علشان تقدر تستخدمه. حمّله على جهازك واستخدمه في أي وقت — حتى من غير إنترنت."
-        : "You need to install the app first to use it. Install it on your device and use it anytime — even offline.",
-    installBtn: lang === "ar" ? "تثبيت التطبيق" : "Install App",
-    installing: lang === "ar" ? "جاري التثبيت..." : "Installing...",
-    downloadApk: lang === "ar" ? "تحميل APK" : "Download APK",
-    apkSize: lang === "ar" ? "للأندرويد" : "For Android",
+        ? "لازم تنزّل التطبيق على كمبيوترك الأول علشان تقدر تستخدمه. التطبيق بيحمّل Python وكل مكتبات الـ AI أوتوماتيك."
+        : "You need to download the app to your computer first. The installer will automatically download Python and all AI libraries.",
+    downloadWindows: lang === "ar" ? "تحميل لـ Windows" : "Download for Windows",
+    downloadMac: lang === "ar" ? "تحميل لـ macOS" : "Download for macOS",
     apkComingSoon:
       lang === "ar"
-        ? "ملف APK هيتوفر قريبًا. احنا شغالين عليه."
-        : "APK file will be available soon. We're working on it.",
-    iosInstructions:
-      lang === "ar"
-        ? "اضغط زر المشاركة، وبعدين Add to Home Screen"
-        : "Tap the Share button, then Add to Home Screen",
-    desktopInstructions:
-      lang === "ar"
-        ? "اضغط على زر التثبيت في شريط العنوان"
-        : "Click the install button in the address bar",
-    notSupported:
-      lang === "ar"
-        ? "المتصفح بتاعك مش بيدعم تثبيت PWA. جرّب Chrome أو Edge."
-        : "Your browser doesn't support PWA installation. Try Chrome or Edge.",
+        ? "نسخة أندرويد مش متاحة حاليًا."
+        : "Android version is not available yet.",
     features: {
-      title: lang === "ar" ? "ليه تحمل التطبيق؟" : "Why install?",
+      title: lang === "ar" ? "ليه تنزّل التطبيق؟" : "Why download?",
       offline: lang === "ar" ? "شغّال أوفلاين" : "Works offline",
       offlineDesc:
         lang === "ar"
-          ? "استخدم التطبيق من غير إنترنت — الصفحة بتتحمل مرة واحدة"
-          : "Use the app without internet — the page loads once",
+          ? "كل المعالجة بتحصل على جهازك — مفيش بيانات بتطلع بره"
+          : "All processing happens on your machine — no data leaves your computer",
       fast: lang === "ar" ? "أسرع" : "Faster",
       fastDesc:
         lang === "ar"
-          ? "بيفتح في ثانية — من غير ما تكتب الرابط"
-          : "Opens in a second — no need to type the URL",
-      native: lang === "ar" ? "زى التطبيق الأصلي" : "Native feel",
+          ? "بيستخدم GPU بتاعك مباشرة — أسرع من أي سيرفر سحابي"
+          : "Uses your GPU directly — faster than any cloud server",
+      native: lang === "ar" ? "تطبيق أصلي" : "Native app",
       nativeDesc:
         lang === "ar"
           ? "بيظهر كتطبيق مستقل، مش tab في المتصفح"
           : "Appears as a standalone app, not a browser tab",
     },
     steps: {
-      title: lang === "ar" ? "إزاي تثبت التطبيق" : "How to install",
-      android: lang === "ar" ? "على الأندرويد" : "On Android",
-      ios: lang === "ar" ? "على الايفون" : "On iOS",
-      desktop: lang === "ar" ? "على الكمبيوتر" : "On Desktop",
+      title: lang === "ar" ? "إزاي تثبّت التطبيق" : "How to install",
+      windows: lang === "ar" ? "على Windows" : "On Windows",
+      mac: lang === "ar" ? "على macOS" : "On macOS",
     },
     required: lang === "ar" ? "التثبيت مطلوب" : "Installation required",
     requiredDesc:
       lang === "ar"
-        ? "التطبيق محتاج يتثبّت على جهازك علشان تشتغل عليه"
-        : "The app must be installed on your device to use it",
+        ? "التطبيق محتاج يتثبّت على كمبيوترك علشان تشتغل عليه"
+        : "The app must be installed on your computer to use it",
+    systemReq:
+      lang === "ar"
+        ? "الحد الأدنى: Windows 10 / macOS 11، 8GB RAM، 5GB مساحة فاضية"
+        : "Minimum: Windows 10 / macOS 11, 8GB RAM, 5GB free space",
+    firstRunNote:
+      lang === "ar"
+        ? "أول تشغيل هيحمّل ~3GB من مكتبات الـ AI (Python + PyTorch + Wav2Lip)"
+        : "First launch will download ~3GB of AI libraries (Python + PyTorch + Wav2Lip)",
   };
 
-  // ---- EFFECT 1: detect platform + standalone state on mount ----
+  // ---- EFFECT: detect if already installed (Electron = standalone + electronAPI) ----
   useEffect(() => {
-    const ua = navigator.userAgent.toLowerCase();
-    if (/android/.test(ua)) setPlatform("android");
-    else if (/iphone|ipad|ipod/.test(ua) || (ua.includes("mac") && "ontouchend" in document)) setPlatform("ios");
-    else if (/windows|macintosh|linux/.test(ua)) setPlatform("desktop");
-
-    // If already installed, redirect to /login immediately.
-    if (isStandaloneMode()) {
+    if (isStandaloneMode() && isElectron()) {
       router.replace("/login");
       return;
     }
-    // Clear any stale bypass flag from a previous version of the site —
-    // install is now strictly required.
     clearBypassFlag();
     setReady(true);
   }, [router]);
 
-  // ---- EFFECT 2: keep listening for the browser's install prompt ----
-  useEffect(() => {
-    const handler = (e: Event) => {
-      e.preventDefault();
-      setInstallPrompt(e as BeforeInstallPromptEvent);
-    };
-    window.addEventListener("beforeinstallprompt", handler);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
-  }, []);
-
-  // ---- EFFECT 3: when the app enters standalone mode, redirect to /login ----
-  useEffect(() => {
-    const mq = window.matchMedia("(display-mode: standalone)");
-    const onChange = () => {
-      if (mq.matches || (window.navigator as any).standalone === true) {
-        clearBypassFlag(); // installed properly — clear any stale bypass
-        toast({
-          title: lang === "ar" ? "تم التثبيت" : "Installed",
-          description: lang === "ar" ? "جاري التحويل..." : "Redirecting...",
-        });
-        setTimeout(() => router.replace("/login"), 400);
-      }
-    };
-    mq.addEventListener?.("change", onChange);
-    // iOS doesn't fire change events; check on focus too
-    window.addEventListener("focus", onChange);
-    return () => {
-      mq.removeEventListener?.("change", onChange);
-      window.removeEventListener("focus", onChange);
-    };
-  }, [router, lang, toast]);
-
-  const handleInstall = async () => {
-    // iOS doesn't support beforeinstallprompt — show instructions instead
-    if (platform === "ios") {
-      toast({
-        title: lang === "ar" ? "تثبيت على الايفون" : "Install on iOS",
-        description: t.iosInstructions,
-      });
-      return;
-    }
-
-    if (!installPrompt) {
-      toast({
-        title: lang === "ar" ? "التثبيت مش متاح" : "Installation not available",
-        description: platform === "desktop" ? t.desktopInstructions : t.notSupported,
-      });
-      return;
-    }
-
-    setIsInstalling(true);
-    try {
-      await installPrompt.prompt();
-      const choice = await installPrompt.userChoice;
-      if (choice.outcome === "accepted") {
-        toast({
-          title: lang === "ar" ? "تم التثبيت" : "Installed",
-          description: lang === "ar" ? "جاري التحويل..." : "Redirecting...",
-        });
-        // Give the browser a beat to flip into standalone mode, then bounce.
-        setTimeout(() => router.replace("/login"), 600);
-      }
-      setInstallPrompt(null);
-    } catch (e) {
-      toast({
-        title: lang === "ar" ? "فشل التثبيت" : "Install failed",
-        description: String(e),
-        variant: "destructive",
-      });
-    } finally {
-      setIsInstalling(false);
-    }
-  };
-
-  const handleDownloadApk = () => {
-    // APK isn't generated yet — show a "coming soon" message
+  const handleDownload = (platform: "windows" | "mac") => {
+    const info = DOWNLOADS[platform];
+    setDownloading(platform);
+    // Open in new tab so the browser handles the download
+    window.open(info.url, "_blank");
+    setTimeout(() => setDownloading(null), 1500);
     toast({
-      title: lang === "ar" ? "قريبًا" : "Coming soon",
-      description: t.apkComingSoon,
+      title: lang === "ar" ? "بدأ التحميل" : "Download started",
+      description: `${info.label} • ${info.size}`,
     });
   };
 
-  // Don't render anything until we've decided (avoids flicker before redirect)
   if (!ready) return null;
 
   return (
@@ -254,64 +176,65 @@ export default function InstallPage() {
             <p className="text-gray-400 text-sm sm:text-base px-4">{t.subtitle}</p>
           </div>
 
-          {/* Main install buttons */}
-          <div className="grid sm:grid-cols-2 gap-4 mb-8">
-            {/* PWA Install button */}
+          {/* Main download buttons */}
+          <div className="grid sm:grid-cols-2 gap-4 mb-6">
+            {/* Windows */}
             <button
               type="button"
-              onClick={handleInstall}
-              disabled={isInstalling}
+              onClick={() => handleDownload("windows")}
+              disabled={downloading !== null}
               className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 p-6 text-white shadow-xl shadow-purple-500/30 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center"
             >
               <div className="flex flex-col items-center gap-3">
                 <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center">
-                  {isInstalling ? (
+                  {downloading === "windows" ? (
                     <Loader2 className="w-7 h-7 animate-spin" />
-                  ) : platform === "ios" ? (
-                    <Apple className="w-7 h-7" />
-                  ) : platform === "android" ? (
-                    <Smartphone className="w-7 h-7" />
                   ) : (
                     <Monitor className="w-7 h-7" />
                   )}
                 </div>
                 <div>
-                  <p className="font-bold text-lg">
-                    {isInstalling ? t.installing : t.installBtn}
-                  </p>
+                  <p className="font-bold text-lg">{t.downloadWindows}</p>
                   <p className="text-xs text-white/70 mt-1">
-                    {platform === "ios"
-                      ? "iOS · Safari"
-                      : platform === "android"
-                      ? "Android · Chrome"
-                      : platform === "desktop"
-                      ? "Chrome · Edge"
-                      : "PWA"}
+                    {DOWNLOADS.windows.size} · .exe
                   </p>
                 </div>
               </div>
             </button>
 
-            {/* APK Download button */}
+            {/* macOS */}
             <button
               type="button"
-              onClick={handleDownloadApk}
-              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 p-6 text-white shadow-xl shadow-emerald-500/30 transition-all hover:scale-[1.02] text-center"
+              onClick={() => handleDownload("mac")}
+              disabled={downloading !== null}
+              className="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 p-6 text-white shadow-xl shadow-emerald-500/30 transition-all hover:scale-[1.02] disabled:opacity-60 disabled:hover:scale-100 text-center"
             >
               <div className="flex flex-col items-center gap-3">
                 <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center">
-                  <Download className="w-7 h-7" />
+                  {downloading === "mac" ? (
+                    <Loader2 className="w-7 h-7 animate-spin" />
+                  ) : (
+                    <Apple className="w-7 h-7" />
+                  )}
                 </div>
                 <div>
-                  <p className="font-bold text-lg">{t.downloadApk}</p>
-                  <p className="text-xs text-white/70 mt-1">{t.apkSize}</p>
+                  <p className="font-bold text-lg">{t.downloadMac}</p>
+                  <p className="text-xs text-white/70 mt-1">
+                    {DOWNLOADS.mac.size} · .dmg
+                  </p>
                 </div>
               </div>
             </button>
           </div>
 
+          {/* System requirements */}
+          <div className="mb-6 p-3 rounded-lg bg-black/30 border border-white/5 text-center">
+            <p className="text-xs text-gray-400">{t.systemReq}</p>
+            <p className="text-xs text-amber-300/80 mt-1">{t.firstRunNote}</p>
+          </div>
+
           {/* Features section */}
-          <div className="mb-8">
+          <div className="mb-6">
             <h2 className="text-lg font-semibold text-gray-200 mb-4 text-center">
               {t.features.title}
             </h2>
@@ -332,7 +255,7 @@ export default function InstallPage() {
               </div>
               <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-center">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center mx-auto mb-2">
-                  <Smartphone className="w-5 h-5 text-emerald-300" />
+                  <Monitor className="w-5 h-5 text-emerald-300" />
                 </div>
                 <p className="font-medium text-gray-200 text-sm">{t.features.native}</p>
                 <p className="text-xs text-gray-500 mt-1">{t.features.nativeDesc}</p>
@@ -341,37 +264,26 @@ export default function InstallPage() {
           </div>
 
           {/* Step-by-step instructions */}
-          <div className="mb-8 p-5 rounded-xl bg-black/30 border border-purple-500/20">
+          <div className="mb-6 p-5 rounded-xl bg-black/30 border border-purple-500/20">
             <h2 className="text-base font-semibold text-gray-200 mb-4 flex items-center gap-2">
               <Info className="w-4 h-4 text-purple-400" />
               {t.steps.title}
             </h2>
             <div className="space-y-4 text-sm">
-              {/* Android */}
               <div>
-                <p className="font-medium text-purple-300 mb-1">{t.steps.android}</p>
+                <p className="font-medium text-purple-300 mb-1">{t.steps.windows}</p>
                 <p className="text-gray-400">
                   {lang === "ar"
-                    ? "اضغط زر «تثبيت التطبيق»، وبعدها نافذة من Chrome تطلب منك تأكيد التثبيت."
-                    : "Tap «Install App», then a Chrome dialog will ask you to confirm installation."}
+                    ? "1. حمّل ملف .exe وافتحه. 2. اضغط «التالي» في معالج التثبيت. 3. أول تشغيل هيفتح شاشة تثبيت Python والمكتبات أوتوماتيك — استنى 10-15 دقيقة."
+                    : "1. Download the .exe and open it. 2. Click 'Next' in the installer. 3. First launch opens an installer screen that downloads Python + libraries automatically — wait 10-15 minutes."}
                 </p>
               </div>
-              {/* iOS */}
               <div>
-                <p className="font-medium text-purple-300 mb-1">{t.steps.ios}</p>
+                <p className="font-medium text-purple-300 mb-1">{t.steps.mac}</p>
                 <p className="text-gray-400">
                   {lang === "ar"
-                    ? "اضغط زر المشاركة في Safari، اسحب لتحت واختر «Add to Home Screen»."
-                    : "Tap the Share button in Safari, scroll down and select «Add to Home Screen»."}
-                </p>
-              </div>
-              {/* Desktop */}
-              <div>
-                <p className="font-medium text-purple-300 mb-1">{t.steps.desktop}</p>
-                <p className="text-gray-400">
-                  {lang === "ar"
-                    ? "في Chrome أو Edge، هتلاقي أيقونة تثبيت على يمين شريط العنوان. اضغط عليها."
-                    : "In Chrome or Edge, find the install icon on the right of the address bar. Click it."}
+                    ? "1. حمّل ملف .dmg وافتحه. 2. اسحب التطبيق لـ Applications. 3. أول تشغيل: اضغط كليك يمين → Open (مرة واحدة بس). 4. شاشة التثبيت هتفتح أوتوماتيك."
+                    : "1. Download the .dmg and open it. 2. Drag the app to Applications. 3. First launch: right-click → Open (just once). 4. The installer screen opens automatically."}
                 </p>
               </div>
             </div>

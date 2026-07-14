@@ -1,0 +1,110 @@
+{
+  "name": "talking-characters-studio-desktop",
+  "version": "1.0.0",
+  "description": "تطبيق محرك الشخصيات المتكلمة - نسخة الديسكتوب",
+  "main": "src/main.js",
+  "author": {
+    "name": "Talking Characters Studio",
+    "email": "info@talkingchars.com"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "pack": "electron-builder --win --dir",
+    "build": "electron-builder --win nsis",
+    "build:portable": "electron-builder --win portable",
+    "build:mac": "electron-builder --mac dmg",
+    "build:all": "electron-builder --win nsis --mac dmg"
+  },
+  "build": {
+    "appId": "com.talkingchars.studio",
+    "productName": "محرك الشخصيات المتكلمة",
+    "copyright": "Copyright © 2026 Talking Characters Studio",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "!node_modules/**/{CHANGELOG.md,README.md,readme.markdown,*.d.ts,*.map,*.ts}",
+      "!node_modules/**/{test,tests,__tests__,docs,doc,examples,example}/**",
+      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+      "!**/.*"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!Wav2Lip/**",
+          "!checkpoints/**",
+          "!outputs/**",
+          "!results/**",
+          "!temp/**",
+          "!uploads/**",
+          "!__pycache__/**",
+          "!*.pyc",
+          "!test_audio.wav",
+          "!test_speech.wav"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "TalkingCharactersStudio-Setup-${version}.${ext}",
+      "publisherName": "Talking Characters Studio",
+      "verifyUpdateCodeSignature": false,
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "menuCategory": "Talking Characters Studio",
+      "shortcutName": "محرك الشخصيات المتكلمة",
+      "uninstallDisplayName": "محرك الشخصيات المتكلمة",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "displayLanguageSelector": true,
+      "installerLanguages": ["ar-SA", "en-US"],
+      "language": "1025"
+    },
+    "portable": {
+      "artifactName": "TalkingCharactersStudio-Portable-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "artifactName": "TalkingCharactersStudio-${version}.${ext}",
+      "category": "public.app-category.video"
+    }
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  }
+}

@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>تثبيت محرك الشخصيات المتكلمة</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', 'Tahoma', sans-serif;
+      background: linear-gradient(135deg, #0a0b10 0%, #161820 50%, #1a1c25 100%);
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .container {
+      max-width: 560px;
+      width: 100%;
+      text-align: center;
+    }
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 80px;
+      height: 80px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #a855f7, #ec4899);
+      box-shadow: 0 20px 40px -10px rgba(168, 85, 247, 0.4);
+      margin-bottom: 24px;
+      font-size: 40px;
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      background: linear-gradient(90deg, #d8b4fe, #f9a8d4);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      color: #9ca3af;
+      font-size: 14px;
+      margin-bottom: 32px;
+      line-height: 1.6;
+    }
+    .stages {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 24px;
+      text-align: start;
+    }
+    .stage {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(168,85,247,0.15);
+      transition: all 0.2s;
+    }
+    .stage.active {
+      border-color: rgba(168,85,247,0.6);
+      background: rgba(168,85,247,0.08);
+    }
+    .stage.done {
+      border-color: rgba(34,197,94,0.4);
+      background: rgba(34,197,94,0.06);
+    }
+    .stage.error {
+      border-color: rgba(239,68,68,0.5);
+      background: rgba(239,68,68,0.08);
+    }
+    .stage-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+      background: rgba(255,255,255,0.06);
+    }
+    .stage.done .stage-icon {
+      background: rgba(34,197,94,0.2);
+      color: #4ade80;
+    }
+    .stage.active .stage-icon {
+      background: rgba(168,85,247,0.2);
+      color: #c084fc;
+    }
+    .stage-text {
+      flex: 1;
+      min-width: 0;
+    }
+    .stage-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e5e7eb;
+      margin-bottom: 2px;
+    }
+    .stage-status {
+      font-size: 12px;
+      color: #9ca3af;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .progress-bar {
+      width: 100%;
+      height: 4px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #a855f7, #ec4899);
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+    .stage.error .progress-fill {
+      background: #ef4444;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 14px 32px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #a855f7, #ec4899);
+      color: white;
+      box-shadow: 0 10px 25px -5px rgba(168,85,247,0.4);
+    }
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 15px 30px -5px rgba(168,85,247,0.5);
+    }
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .btn-secondary {
+      background: rgba(255,255,255,0.06);
+      color: #d1d5db;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: rgba(255,255,255,0.1);
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-top: 24px;
+    }
+    .log {
+      margin-top: 24px;
+      padding: 12px;
+      background: rgba(0,0,0,0.4);
+      border-radius: 8px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 11px;
+      color: #6b7280;
+      max-height: 150px;
+      overflow-y: auto;
+      text-align: start;
+      direction: ltr;
+      display: none;
+    }
+    .log.visible {
+      display: block;
+    }
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(168,85,247,0.2);
+      border-top-color: #a855f7;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .error-banner {
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      color: #fca5a5;
+      font-size: 13px;
+      margin-top: 16px;
+      display: none;
+    }
+    .error-banner.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">✨</div>
+    <h1>تثبيت محرك الشخصيات المتكلمة</h1>
+    <p class="subtitle">
+      التطبيق محتاج Python ومكتبات الـ AI. هتتثبت أوتوماتيك.<br />
+      الحجم الكلي: ~3 جيجابايت (تحميل أول مرة)
+    </p>
+
+    <div class="stages">
+      <div class="stage" data-stage="python">
+        <div class="stage-icon">🐍</div>
+        <div class="stage-text">
+          <div class="stage-title">Python + venv</div>
+          <div class="stage-status" id="status-python">بانتظار البدء</div>
+          <div class="progress-bar"><div class="progress-fill" id="fill-python"></div></div>
+        </div>
+      </div>
+      <div class="stage" data-stage="pip">
+        <div class="stage-icon">📦</div>
+        <div class="stage-text">
+          <div class="stage-title">مكتبات الـ AI</div>
+          <div class="stage-status" id="status-pip">بانتظار Python</div>
+          <div class="progress-bar"><div class="progress-fill" id="fill-pip"></div></div>
+        </div>
+      </div>
+      <div class="stage" data-stage="wav2lip">
+        <div class="stage-icon">🎬</div>
+        <div class="stage-text">
+          <div class="stage-title">Wav2Lip + Models</div>
+          <div class="stage-status" id="status-wav2lip">بانتظار المكتبات</div>
+          <div class="progress-bar"><div class="progress-fill" id="fill-wav2lip"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="error-banner" id="error-banner"></div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="btn-install" onclick="startInstall()">
+        ابدأ التثبيت
+      </button>
+      <button class="btn btn-secondary" id="btn-launch" onclick="launchApp()" style="display:none">
+        فتح التطبيق
+      </button>
+    </div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <script>
+    const { installer } = window;
+    const logEl = document.getElementById("log");
+    const errorBanner = document.getElementById("error-banner");
+    const installBtn = document.getElementById("btn-install");
+    const launchBtn = document.getElementById("btn-launch");
+
+    const stageLabels = {
+      python: "Python + venv",
+      pip: "مكتبات الـ AI",
+      wav2lip: "Wav2Lip + Models",
+    };
+
+    function appendLog(msg) {
+      const line = document.createElement("div");
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+      logEl.classList.add("visible");
+    }
+
+    function setStageStatus(stage, text, percent) {
+      const statusEl = document.getElementById(`status-${stage}`);
+      const fillEl = document.getElementById(`fill-${stage}`);
+      const stageEl = document.querySelector(`.stage[data-stage="${stage}"]`);
+      if (statusEl) statusEl.textContent = text;
+      if (fillEl) {
+        if (percent < 0) {
+          fillEl.style.width = "100%";
+          stageEl.classList.add("error");
+          stageEl.classList.remove("active");
+        } else if (percent >= 100) {
+          fillEl.style.width = "100%";
+          stageEl.classList.add("done");
+          stageEl.classList.remove("active");
+          statusEl.textContent = "تم ✓";
+        } else {
+          fillEl.style.width = `${percent}%`;
+          stageEl.classList.add("active");
+        }
+      }
+    }
+
+    function markStageWaiting(stage, text) {
+      const stageEl = document.querySelector(`.stage[data-stage="${stage}"]`);
+      if (stageEl) {
+        stageEl.classList.remove("active", "done", "error");
+      }
+      const statusEl = document.getElementById(`status-${stage}`);
+      if (statusEl) statusEl.textContent = text;
+      const fillEl = document.getElementById(`fill-${stage}`);
+      if (fillEl) fillEl.style.width = "0%";
+    }
+
+    function showError(msg) {
+      errorBanner.textContent = msg;
+      errorBanner.classList.add("visible");
+    }
+
+    function hideError() {
+      errorBanner.classList.remove("visible");
+    }
+
+    // Subscribe to progress events
+    installer.onProgress(({ stage, percent, message }) => {
+      appendLog(`[${stage}] ${percent}% ${message}`);
+      setStageStatus(stage, message, percent);
+      if (percent < 0) {
+        showError(`فشل في ${stageLabels[stage] || stage}: ${message}`);
+        installBtn.disabled = false;
+        installBtn.textContent = "أعد المحاولة";
+      }
+    });
+
+    async function checkInitial() {
+      const state = await installer.getInstallState();
+      appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip}`);
+
+      if (state.fullyInstalled) {
+        // Everything is already installed — show launch button
+        setStageStatus("python", "تم ✓", 100);
+        setStageStatus("pip", "تم ✓", 100);
+        setStageStatus("wav2lip", "تم ✓", 100);
+        installBtn.style.display = "none";
+        launchBtn.style.display = "inline-flex";
+      } else {
+        // Restore partial state
+        if (state.venv) setStageStatus("python", "تم ✓", 100);
+        if (state.wav2lip) setStageStatus("wav2lip", "تم ✓", 100);
+      }
+    }
+
+    async function startInstall() {
+      hideError();
+      installBtn.disabled = true;
+      installBtn.innerHTML = '<span class="spinner"></span> جاري التثبيت...';
+
+      try {
+        // Stage 1: Python
+        const state = await installer.getInstallState();
+        if (!state.venv) {
+          markStageWaiting("python", "بدء التثبيت...");
+          const r1 = await installer.installPython();
+          if (!r1.success) throw new Error(r1.error || "Python install failed");
+        } else {
+          setStageStatus("python", "تم ✓", 100);
+        }
+
+        // Stage 2: pip deps
+        markStageWaiting("pip", "بدء التثبيت...");
+        const r2 = await installer.installPipDeps();
+        if (!r2.success) throw new Error(r2.error || "pip install failed");
+
+        // Stage 3: Wav2Lip
+        if (!state.wav2lip) {
+          markStageWaiting("wav2lip", "بدء التثبيت...");
+          const r3 = await installer.installWav2Lip();
+          if (!r3.success) throw new Error(r3.error || "Wav2Lip install failed");
+        } else {
+          setStageStatus("wav2lip", "تم ✓", 100);
+        }
+
+        // All done!
+        appendLog("All stages complete!");
+        installBtn.style.display = "none";
+        launchBtn.style.display = "inline-flex";
+      } catch (e) {
+        appendLog("FATAL: " + (e?.message || e));
+        showError(e?.message || "Unknown error");
+        installBtn.disabled = false;
+        installBtn.textContent = "أعد المحاولة";
+      }
+    }
+
+    async function launchApp() {
+      launchBtn.disabled = true;
+      launchBtn.innerHTML = '<span class="spinner"></span> جاري الفتح...';
+      const r = await installer.launchApp();
+      if (!r.success) {
+        showError(r.error || "Launch failed");
+        launchBtn.disabled = false;
+        launchBtn.textContent = "أعد المحاولة";
+      }
+      // On success, the main process closes this window and opens the app.
+    }
+
+    // Kick off initial check
+    checkInitial();
+  </script>
+</body>
+</html>

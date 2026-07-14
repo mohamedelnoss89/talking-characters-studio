@@ -15,11 +15,24 @@ export const PWA_BYPASS_KEY = "tcs_pwa_bypass";
 
 /**
  * Returns true when the app is running inside its own installed window
- * (PWA standalone mode), on either Chromium browsers, iOS Safari, or
- * any browser that matches the CSS media query `display-mode: standalone`.
+ * (PWA standalone mode OR Electron), on either Chromium browsers, iOS Safari,
+ * or any browser that matches the CSS media query `display-mode: standalone`.
+ *
+ * Electron detection: Electron adds a custom userAgent string and the preload
+ * script can expose window.electronAPI. We treat either as "installed".
  */
 export function isStandaloneMode(): boolean {
   if (typeof window === "undefined") return false;
+
+  // Electron detection — desktop app
+  if (
+    typeof navigator !== "undefined" &&
+    navigator.userAgent.toLowerCase().includes("electron")
+  ) {
+    return true;
+  }
+  // Also accept the exposed electronAPI bridge (defense in depth)
+  if ((window as any).electronAPI !== undefined) return true;
 
   // 1. CSS media query — works on Chromium / Firefox / Samsung
   if (window.matchMedia("(display-mode: standalone)").matches) return true;
@@ -27,8 +40,7 @@ export function isStandaloneMode(): boolean {
   // 2. iOS Safari exposes a non-standard `navigator.standalone` boolean
   if ((window.navigator as any).standalone === true) return true;
 
-  // 3. Newer spec: window.caches + display-mode minimal-ui still counts
-  //    as "installed" on some Android browsers (Samsung Internet).
+  // 3. Newer spec: minimal-ui still counts as "installed" on some Android browsers
   if (window.matchMedia("(display-mode: minimal-ui)").matches) return true;
 
   return false;
