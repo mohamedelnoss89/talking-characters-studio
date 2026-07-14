@@ -33,13 +33,16 @@ async function ensureSchema(): Promise<void> {
       CREATE TABLE IF NOT EXISTS users (
         id            SERIAL PRIMARY KEY,
         username      TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
+        password_hash TEXT,
         display_name  TEXT,
         email         TEXT,
+        auth_provider TEXT DEFAULT 'local',
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `;
+    // Make password_hash nullable for Google OAuth users (idempotent — no-op if already nullable)
+    await s`ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL`;
     await s`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower
       ON users (LOWER(username))
@@ -65,8 +68,9 @@ export interface UserRecord {
   id: number;
   username: string;
   email: string | null;
-  password_hash: string;
+  password_hash: string | null;
   display_name: string | null;
+  auth_provider: string | null;
   created_at: string | Date;
   updated_at: string | Date;
 }
@@ -232,8 +236,57 @@ export async function verifyUser(
   }
   if (!user) return null;
 
+  // Google OAuth users don't have a password hash — they can't log in via /api/login
+  if (!user.password_hash) return null;
+
   const ok = bcrypt.compareSync(password, user.password_hash);
   return ok ? toSafe(user) : null;
+}
+
+/**
+ * Find or create a user from a Google OAuth profile.
+ * Called by /api/auth/google/callback after a successful Google sign-in.
+ *
+ * - If a user with the same email already exists (whether local or Google),
+ *   we return that user (account linking by email).
+ * - Otherwise we create a new user with auth_provider='google' and a NULL
+ *   password_hash (so they can never log in via /api/login — only via Google).
+ */
+export async function findOrCreateGoogleUser(opts: {
+  email: string;
+  displayName?: string | null;
+}): Promise<SafeUser> {
+  await ensureSchema();
+  const email = (opts.email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) {
+    throw new Error("Invalid email from Google: " + email);
+  }
+
+  // 1) Try existing user (by email — covers both local and Google accounts)
+  const existing = await findUserByEmail(email);
+  if (existing) {
+    // If this is the first Google login for a previously-local account, mark it
+    if (!existing.auth_provider || existing.auth_provider === "local") {
+      await sql()`UPDATE users SET auth_provider = 'google_local', updated_at = NOW() WHERE id = ${existing.id}`;
+    }
+    return toSafe(existing);
+  }
+
+  // 2) Create a new Google-only user
+  const prefix = email.split("@")[0] || "user";
+  const username = await deriveUniqueUsername(prefix);
+  const displayName = (opts.displayName || "").trim() || null;
+
+  const rows = await sql()`
+    INSERT INTO users (username, email, password_hash, display_name, auth_provider)
+    VALUES (${username}, ${email}, NULL, ${displayName}, 'google')
+    RETURNING id, username, email, password_hash, display_name, auth_provider, created_at, updated_at
+  `;
+  const created = rows[0] as UserRecord | undefined;
+  if (!created) {
+    throw new Error("Failed to create Google user (insert returned no row)");
+  }
+  return toSafe(created);
 }
 
 export async function countUsers(): Promise<number> {

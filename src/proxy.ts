@@ -37,6 +37,9 @@ function isPublicPath(pathname: string): boolean {
     pathname === "/api/register" ||
     pathname === "/api/logout" ||
     pathname === "/api/health" ||
+    // Google OAuth routes — must be reachable without a session cookie
+    pathname === "/api/auth/google" ||
+    pathname.startsWith("/api/auth/google/") ||
     pathname.startsWith("/_next/") ||
     pathname.startsWith("/static/") ||
     pathname.startsWith("/fonts/") ||

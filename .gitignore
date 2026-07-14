@@ -69,3 +69,9 @@ backend/test_outputs/
 # Local shared libraries (libGLESv2.so.2 symlinks for mediapipe)
 .libs/
 *.tsbuildinfo
+
+# Local SQLite DB (we use Neon Postgres now — db.ts ignores this file but
+# don't accidentally commit it back)
+data/auth.db
+data/auth.db-shm
+data/auth.db-wal
