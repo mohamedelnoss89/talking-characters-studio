@@ -13,6 +13,7 @@ import {
   UserPlus,
   Mail,
   Lock,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -262,6 +263,17 @@ export default function LoginPage() {
             >
               <UserPlus className="w-3.5 h-3.5" />
               {t.signUp}
+            </Link>
+          </div>
+
+          {/* Install app link */}
+          <div className="text-center pt-1">
+            <Link
+              href="/install"
+              className="text-xs text-emerald-300/80 hover:text-emerald-200 inline-flex items-center gap-1"
+            >
+              <Download className="w-3 h-3" />
+              {lang === "ar" ? "تثبيت التطبيق على جهازك" : "Install the app"}
             </Link>
           </div>
         </form>

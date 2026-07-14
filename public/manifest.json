@@ -1,0 +1,56 @@
+{
+  "name": "محرك الشخصيات المتكلمة | Talking Characters Studio",
+  "short_name": "TalkingChars",
+  "description": "حوّل أي صورة لشخصية متكلمة - lip sync + حركة طبيعية",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0b10",
+  "theme_color": "#0a0b10",
+  "categories": ["productivity", "multimedia", "entertainment"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "تسجيل الدخول",
+      "short_name": "دخول",
+      "description": "سجل الدخول لحسابك",
+      "url": "/login",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "تثبيت التطبيق",
+      "short_name": "تثبيت",
+      "description": "حمل التطبيق على جهازك",
+      "url": "/install",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

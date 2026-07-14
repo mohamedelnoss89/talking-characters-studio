@@ -36,6 +36,7 @@ function isPublicPath(pathname: string): boolean {
   return (
     pathname === LOGIN_PATH ||
     pathname === "/register" ||
+    pathname === "/install" ||
     pathname === "/api/login" ||
     pathname === "/api/register" ||
     pathname === "/api/logout" ||
@@ -43,6 +44,12 @@ function isPublicPath(pathname: string): boolean {
     // Google OAuth routes — must be reachable without a session cookie
     pathname === "/api/auth/google" ||
     pathname.startsWith("/api/auth/google/") ||
+    // PWA assets — manifest, icons, service worker
+    pathname === "/manifest.json" ||
+    pathname.startsWith("/icon-") ||
+    pathname.startsWith("/maskable-") ||
+    pathname.startsWith("/apple-touch-icon") ||
+    pathname.startsWith("/favicon-") ||
     pathname.startsWith("/_next/") ||
     pathname.startsWith("/static/") ||
     pathname.startsWith("/fonts/") ||
