@@ -1,0 +1,149 @@
+name: Build Desktop Installers
+
+# This workflow builds the Electron desktop installers (.exe for Windows,
+# .dmg for macOS) and publishes them to GitHub Releases.
+#
+# Triggers:
+#   - Manually from the Actions tab ("Run workflow")
+#   - On pushing a tag like "v1.0.0" (creates a release automatically)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (e.g. 1.0.0)"
+        required: true
+        default: "1.0.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write  # needed to create a release and upload assets
+
+jobs:
+  build-windows:
+    name: Build Windows installer (.exe)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: desktop/package.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build installer
+        run: npm run build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS installer (.dmg)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: desktop/package.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build installer
+        run: npm run build:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: desktop/dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    name: Publish to GitHub Releases
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Tag push: extract version from tag (v1.0.0 → 1.0.0)
+            TAG="${GITHUB_REF#refs/tags/v}"
+            echo "version=$TAG" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: release-assets/
+
+      - name: Download macOS installer
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-installer
+          path: release-assets/
+
+      - name: List release assets
+        run: ls -la release-assets/
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Talking Characters Studio v${{ steps.version.outputs.version }}
+          body: |
+            # تحميل التطبيق — Download the App
+
+            ## Windows
+            - حمّل ملف `.exe` وافتحه
+            - اضغط «التالي» في معالج التثبيت
+            - أول تشغيل هيفتح شاشة تثبيت Python والمكتبات أوتوماتيك
+
+            ## macOS
+            - حمّل ملف `.dmg` وافتحه
+            - اسحب التطبيق لـ Applications
+            - أول تشغيل: اضغط كليك يمين → Open (مرة واحدة بس)
+
+            ## ملاحظات
+            - الحجم: ~200MB (بدون الـ AI models)
+            - أول تشغيل بينزل ~3GB من Python + PyTorch + Wav2Lip
+            - الحد الأدنى: Windows 10 / macOS 11، 8GB RAM، 5GB مساحة فاضية
+          files: |
+            release-assets/*.exe
+            release-assets/*.dmg
+          draft: false
+          prerelease: false

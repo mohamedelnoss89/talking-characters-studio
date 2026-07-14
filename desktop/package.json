@@ -95,7 +95,7 @@
           "arch": ["x64", "arm64"]
         }
       ],
-      "icon": "build/icon.icns",
+      "icon": "build/icon.png",
       "artifactName": "TalkingCharactersStudio-${version}.${ext}",
       "category": "public.app-category.video"
     }

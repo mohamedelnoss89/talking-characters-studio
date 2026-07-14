@@ -9,6 +9,10 @@ out/
 build/
 dist/
 
+# Exception: keep desktop/build/ (icons for electron-builder)
+!desktop/build/
+!desktop/build/**/*
+
 # Python
 __pycache__/
 *.py[cod]
