@@ -159,6 +159,27 @@ export default function InstallPage() {
       lang === "ar"
         ? "أول تشغيل هيحمّل ~3GB من مكتبات الـ AI (Python + PyTorch + Wav2Lip)"
         : "First launch will download ~3GB of AI libraries (Python + PyTorch + Wav2Lip)",
+    oldVersionCleanup: {
+      title: lang === "ar" ? "🧹 لو نزّلت نسخة قديمة قبل كده" : "🧹 If you downloaded an older version before",
+      body:
+        lang === "ar"
+          ? "لو نزّلت البرنامج قبل كده وزرار «ابدأ التثبيت» مش اشتغل، لازم تمسح النسخة القديمة الأول قبل ما تنزل الجديدة:"
+          : "If you downloaded the app before and the 'Start Install' button didn't work, you must delete the old version first before downloading the new one:",
+      steps:
+        lang === "ar"
+          ? [
+              "امسح ملف الـ .exe أو الـ .zip القديم من مجلد التنزيلات",
+              "افتح Run (اضغط Win + R)، اكتب:%LOCALAPPDATA%واضغط Enter",
+              "امسح المجلد اللي اسمه «Talking Characters Studio» كامل (ده بيمسح Python القديم المعطوب)",
+              "ارجع لهذه الصفحة وحمّل النسخة الجديدة من الأزرار فوق",
+            ]
+          : [
+              "Delete the old .exe or .zip file from your Downloads folder",
+              "Open Run (Win + R), type: %LOCALAPPDATA% and press Enter",
+              "Delete the folder named 'Talking Characters Studio' entirely (this removes the broken old Python)",
+              "Come back to this page and download the new version using the buttons above",
+            ],
+    },
   };
 
   // ---- EFFECT: detect if already installed (Electron = standalone + electronAPI) ----
@@ -362,6 +383,22 @@ export default function InstallPage() {
           <div className="mb-6 p-3 rounded-lg bg-black/30 border border-white/5 text-center">
             <p className="text-xs text-gray-400">{t.systemReq}</p>
             <p className="text-xs text-amber-300/80 mt-1">{t.firstRunNote}</p>
+          </div>
+
+          {/* Old version cleanup — IMPORTANT for users who tried the broken v1.0.0 */}
+          <div className="mb-6 p-4 rounded-xl bg-red-500/10 border-2 border-red-500/40">
+            <div className="flex items-start gap-3 mb-3">
+              <span className="text-2xl shrink-0">🧹</span>
+              <div>
+                <p className="font-bold text-red-200 text-sm mb-1">{t.oldVersionCleanup.title}</p>
+                <p className="text-xs text-red-100/80 leading-relaxed">{t.oldVersionCleanup.body}</p>
+              </div>
+            </div>
+            <ol className="text-xs text-red-100/90 space-y-2 mt-3 ms-8 list-decimal">
+              {t.oldVersionCleanup.steps.map((step, i) => (
+                <li key={i} className="leading-relaxed">{step}</li>
+              ))}
+            </ol>
           </div>
 
           {/* Features section */}
