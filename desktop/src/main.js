@@ -16,9 +16,31 @@
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { spawn, execFile } = require("child_process");
+const os = require("os");
+const { spawn, execFile, spawnSync } = require("child_process");
 const http = require("http");
 const https = require("https");
+
+// ---------------------------------------------------------------------------
+// Log file — write all installer logs to a file so we can debug even if the
+// UI doesn't show the error.
+// ---------------------------------------------------------------------------
+
+const LOG_DIR = path.join(app.getPath("userData"), "logs");
+const LOG_FILE = path.join(LOG_DIR, `installer-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
+
+try {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  fs.writeFileSync(LOG_FILE, `=== Talking Characters Studio Installer Log ===\nStarted: ${new Date().toISOString()}\nPlatform: ${process.platform} ${process.arch}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\nApp version: ${app.getVersion()}\n\n`);
+} catch (e) {
+  console.error("Failed to create log file:", e);
+}
+
+function logToFile(msg) {
+  try {
+    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {}
+}
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -63,7 +85,9 @@ let backendStarting = false;
 // ---------------------------------------------------------------------------
 
 function log(...args) {
-  console.log("[main]", ...args);
+  const msg = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+  console.log("[main]", msg);
+  logToFile("[main] " + msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,24 +381,26 @@ function sendProgress(stage, percent, message) {
   }
 }
 
-// Stub implementations — these will be filled in by the next edit
+// Set log file path in installer-python so it writes to the same file
+const installerPython = require("./installer-python");
+installerPython.setLogFilePath(LOG_FILE);
+
 ipcMain.handle("installer:installPython", async () => {
   sendProgress("python", 0, "بدء تثبيت Python...");
-  // Implementation in installer-python.js (loaded below via require)
-  const { installPython } = require("./installer-python");
-  return installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log });
+  log("[IPC] installPython invoked");
+  return installerPython.installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log });
 });
 
 ipcMain.handle("installer:installPipDeps", async () => {
   sendProgress("pip", 0, "بدء تثبيت مكتبات Python...");
-  const { installPipDeps } = require("./installer-python");
-  return installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgress, log });
+  log("[IPC] installPipDeps invoked");
+  return installerPython.installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgress, log });
 });
 
 ipcMain.handle("installer:installWav2Lip", async () => {
   sendProgress("wav2lip", 0, "بدء تثبيت Wav2Lip...");
-  const { installWav2Lip } = require("./installer-python");
-  return installWav2Lip({ WAV2LIP_DIR, CKPT_PATH, VENV_DIR, PYTHON_DIR, sendProgress, log });
+  log("[IPC] installWav2Lip invoked");
+  return installerPython.installWav2Lip({ WAV2LIP_DIR, CKPT_PATH, VENV_DIR, PYTHON_DIR, sendProgress, log });
 });
 
 ipcMain.handle("installer:launchApp", async () => {
@@ -390,6 +416,101 @@ ipcMain.handle("installer:launchApp", async () => {
   } catch (e) {
     log("Launch failed:", e);
     return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// Open the log folder in the OS file explorer
+ipcMain.handle("installer:openLogFolder", async () => {
+  try {
+    log("[IPC] openLogFolder invoked. LOG_DIR=" + LOG_DIR);
+    // Ensure the log folder exists
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    // Open the folder (not the file) so the user can see all log files
+    shell.openPath(LOG_DIR);
+    return { success: true, path: LOG_DIR };
+  } catch (e) {
+    log("[IPC] openLogFolder failed:", e);
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+// Return diagnostic info about the system
+ipcMain.handle("installer:getDiagnosticInfo", async () => {
+  try {
+    const info = {
+      platform: `${process.platform} ${os.release()}`,
+      arch: process.arch,
+      electronVersion: process.versions.electron,
+      nodeVersion: process.versions.node,
+      appVersion: app.getVersion(),
+      userDataDir: app.getPath("userData"),
+      pythonDir: PYTHON_DIR,
+      venvDir: VENV_DIR,
+      wav2lipDir: WAV2LIP_DIR,
+      backendSrcDir: BACKEND_SRC_DIR,
+      logDir: LOG_DIR,
+      logFile: LOG_FILE,
+      hasPowershell: false,
+      hasTar: false,
+      hasGit: false,
+      userDataWritable: false,
+      venvInstalled: isVenvInstalled(),
+      wav2lipInstalled: isWav2LipInstalled(),
+      fullyInstalled: isFullyInstalled(),
+    };
+
+    // Check if PowerShell is available (Windows)
+    if (process.platform === "win32") {
+      try {
+        const r = spawnSync("powershell.exe", ["-NoProfile", "-Command", "echo ok"], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          timeout: 5000,
+        });
+        info.hasPowershell = r.status === 0 && (r.stdout || "").includes("ok");
+      } catch {}
+    }
+
+    // Check if tar is available
+    try {
+      const tarCmd = process.platform === "win32" ? "tar.exe" : "tar";
+      const r = spawnSync(tarCmd, ["--version"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 5000,
+      });
+      info.hasTar = r.status === 0;
+    } catch {}
+
+    // Check if git is available
+    try {
+      const r = spawnSync("git", ["--version"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 5000,
+      });
+      info.hasGit = r.status === 0;
+    } catch {}
+
+    // Check if userData dir is writable
+    try {
+      const testFile = path.join(app.getPath("userData"), ".write-test-" + Date.now());
+      fs.writeFileSync(testFile, "test");
+      fs.unlinkSync(testFile);
+      info.userDataWritable = true;
+    } catch (e) {
+      info.userDataWritable = false;
+      info.userDataError = String(e?.message || e);
+    }
+
+    log("[IPC] getDiagnosticInfo:", JSON.stringify(info, null, 2));
+    return info;
+  } catch (e) {
+    log("[IPC] getDiagnosticInfo failed:", e);
+    return { error: String(e?.message || e) };
   }
 });
 

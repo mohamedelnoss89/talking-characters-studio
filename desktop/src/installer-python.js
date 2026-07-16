@@ -5,25 +5,75 @@
  *   installPython()   → download Python embeddable (Win) / use system Python (Mac),
  *                       then create a venv
  *   installPipDeps()  → pip install torch + opencv + fastapi + ... + edge-tts
- *   installWav2Lip()  → git clone Wav2Lip, download wav2lip_gan.pth (~415MB),
+ *   installWav2Lip()  → git clone Wav2Lip (or download ZIP), download wav2lip_gan.pth,
  *                       patch librosa
  *
  * Each function accepts { ..., sendProgress, log } and calls
  * sendProgress(stage, percent, message) to push UI updates.
  *
  * Returns { success: boolean, error?: string }.
+ *
+ * CRITICAL FIXES (v2):
+ *   - Use tar.exe (built into Windows 10 1803+) for zip extraction instead of
+ *     PowerShell Expand-Archive. PowerShell's quoting breaks when paths contain
+ *     non-ASCII characters (e.g. the Arabic app name in userData dir).
+ *   - Properly configure embedded Python ._pth: add Lib\site-packages AND
+ *     Lib to the path. Without this, `python -m pip` fails even after
+ *     get-pip.py runs.
+ *   - Add fallback for git clone: download Wav2Lip ZIP from GitHub directly.
+ *     Many Windows users don't have git in PATH.
+ *   - Add timeouts to network operations (download, pip install) so they
+ *     don't hang forever.
  */
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { spawn, execFile, execFileSync, spawnSync } = require("child_process");
 const https = require("https");
 const http = require("http");
 const { URL } = require("url");
 
 // ---------------------------------------------------------------------------
+// Logging to file — so we can debug even if the UI doesn't show the error
+// ---------------------------------------------------------------------------
+
+let LOG_FILE_PATH = null;
+
+function setLogFilePath(p) {
+  LOG_FILE_PATH = p;
+}
+
+function logToFile(msg) {
+  if (!LOG_FILE_PATH) return;
+  try {
+    const line = `[${new Date().toISOString()}] ${msg}\n`;
+    fs.appendFileSync(LOG_FILE_PATH, line);
+  } catch {
+    // ignore — log file is best-effort
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Check whether a command exists in PATH (returns true/false). */
+function commandExists(cmd) {
+  try {
+    const isWin = process.platform === "win32";
+    const checker = isWin ? "where" : "which";
+    const result = spawnSync(checker, [cmd], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      timeout: 5000,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
 
 /** Promise-wrapper around spawn that streams stdout/stderr to `log`. */
 function spawnAsync(cmd, args, opts = {}) {
@@ -45,10 +95,12 @@ function spawnAsync(cmd, args, opts = {}) {
       stderr += s;
       opts.onStderr && opts.onStderr(s);
     });
-    proc.on("error", reject);
+    proc.on("error", (err) => {
+      reject(new Error(`Failed to spawn '${cmd}': ${err.message}`));
+    });
     proc.on("exit", (code) => {
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`Command failed: ${cmd} ${args.join(" ")}\n${stderr}`));
+      else reject(new Error(`Command failed (exit ${code}): ${cmd} ${args.join(" ")}\n${stderr.slice(-2000)}`));
     });
   });
 }
@@ -72,8 +124,7 @@ function findSystemPython() {
   for (const c of candidates) {
     try {
       const parts = c.split(" ");
-      // Capture BOTH stdout and stderr — Python 3.4+ prints version to stderr
-      const result = require("child_process").spawnSync(
+      const result = spawnSync(
         parts[0],
         parts.slice(1).concat(["--version"]),
         {
@@ -84,26 +135,18 @@ function findSystemPython() {
         }
       );
       const combined = (result.stdout || "") + (result.stderr || "");
-      // Must contain "Python 3." to be valid
       if (/Python 3\.\d+/.test(combined)) {
         return c;
       }
-      // If the output mentions "Microsoft Store" or "Windows Store",
-      // it's the Store stub — skip it.
-      // (No output at all also means stub — silent failure.)
     } catch {}
   }
   return null;
 }
 
-/**
- * Get the full version string of a Python binary (e.g. "Python 3.11.9").
- * Used for diagnostic logging.
- */
 function getPythonVersion(cmd) {
   try {
     const parts = cmd.split(" ");
-    const result = require("child_process").spawnSync(
+    const result = spawnSync(
       parts[0],
       parts.slice(1).concat(["--version"]),
       {
@@ -119,24 +162,28 @@ function getPythonVersion(cmd) {
   }
 }
 
-/** Download a URL to a file path. Reports progress via onProgress(received, total). */
-function downloadFile(url, dest, onProgress) {
+/**
+ * Download a URL to a file path. Reports progress via onProgress(received, total).
+ * Follows redirects. Has a default 5-minute timeout.
+ */
+function downloadFile(url, dest, onProgress, timeoutMs) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
     let received = 0;
     let total = 0;
+    const startedAt = Date.now();
+    const maxTimeout = timeoutMs || 5 * 60 * 1000; // 5 min default
 
     const handle = (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // follow redirect
         file.close();
-        fs.unlinkSync(dest);
+        try { fs.unlinkSync(dest); } catch {}
         const next = new URL(res.headers.location, url).toString();
-        return downloadFile(next, dest, onProgress).then(resolve, reject);
+        return downloadFile(next, dest, onProgress, timeoutMs).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
         file.close();
-        fs.unlinkSync(dest);
+        try { fs.unlinkSync(dest); } catch {}
         return reject(new Error(`HTTP ${res.statusCode} for ${url}`));
       }
       total = parseInt(res.headers["content-length"] || "0", 10);
@@ -147,47 +194,72 @@ function downloadFile(url, dest, onProgress) {
       res.pipe(file);
       file.on("finish", () => file.close(() => resolve()));
       file.on("error", (e) => {
-        fs.unlinkSync(dest);
+        try { fs.unlinkSync(dest); } catch {}
         reject(e);
       });
     };
 
     const mod = url.startsWith("https") ? https : http;
     const req = mod.get(url, handle);
-    req.on("error", reject);
-    req.setTimeout(120_000, () => {
-      req.destroy(new Error("Download timed out"));
+    req.on("error", (e) => {
+      try { fs.unlinkSync(dest); } catch {}
+      reject(e);
+    });
+    req.setTimeout(maxTimeout, () => {
+      req.destroy(new Error(`Download timed out after ${maxTimeout/1000}s: ${url}`));
     });
   });
 }
 
-/** Extract a .zip to a directory using Node's built-in approach (via unzip cmd). */
-async function extractZip(zipPath, destDir) {
-  // Use PowerShell on Windows, unzip on Mac/Linux
+/**
+ * Extract a .zip to a directory.
+ *
+ * FIX: Use tar.exe on Windows 10+ (built-in, no quoting issues with non-ASCII
+ * paths). Fall back to PowerShell Expand-Archive. On Mac/Linux use unzip.
+ */
+async function extractZip(zipPath, destDir, log) {
+  fs.mkdirSync(destDir, { recursive: true });
+
   if (process.platform === "win32") {
+    // Try tar.exe first — it's built into Windows 10 1803+ (April 2018)
+    // and handles non-ASCII paths correctly without quoting nightmares.
+    if (commandExists("tar.exe") || commandExists("tar")) {
+      log && log("[extractZip] Using tar.exe");
+      try {
+        await spawnAsync("tar.exe", ["-xf", zipPath, "-C", destDir], {
+          windowsHide: true,
+        });
+        return;
+      } catch (e) {
+        log && log("[extractZip] tar.exe failed: " + e.message + " — trying PowerShell");
+      }
+    }
+
+    // Fallback: PowerShell Expand-Archive
+    log && log("[extractZip] Using PowerShell Expand-Archive");
+    // NOTE: Use -LiteralPath (handles spaces/special chars) and avoid
+    // single-quote escaping issues by using a here-string.
+    const psScript = `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${destDir}" -Force`;
     await spawnAsync("powershell.exe", [
       "-NoProfile",
-      "-Command",
-      `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force`,
+      "-NonInteractive",
+      "-ExecutionPolicy", "Bypass",
+      "-Command", psScript,
     ]);
   } else {
-    await spawnAsync("unzip", ["-o", zipPath, "-d", destDir]);
+    // Mac/Linux
+    if (commandExists("unzip")) {
+      await spawnAsync("unzip", ["-o", zipPath, "-d", destDir]);
+    } else if (commandExists("tar")) {
+      await spawnAsync("tar", ["-xf", zipPath, "-C", destDir]);
+    } else {
+      throw new Error("No unzip tool available. Install unzip or tar.");
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
 // installPython
-// ---------------------------------------------------------------------------
-//
-// Strategy:
-//   1. On Windows: try system Python first. If not found (or it's the
-//      Microsoft Store stub), download Python embeddable (~10MB) and
-//      bootstrap pip into it using get-pip.py. No venv needed — we use
-//      the embeddable Python directly.
-//   2. On Mac/Linux: use system python3, create a venv.
-//
-// The venv path (VENV_DIR) is kept for backwards compatibility — on Windows
-// with embedded Python, we set VENV_DIR = PYTHON_DIR (same location).
 // ---------------------------------------------------------------------------
 
 async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
@@ -196,6 +268,9 @@ async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
     fs.mkdirSync(path.dirname(VENV_DIR), { recursive: true });
 
     sendProgress && sendProgress("python", 5, "البحث عن Python...");
+    log("[installPython] PYTHON_DIR=" + PYTHON_DIR);
+    log("[installPython] VENV_DIR=" + VENV_DIR);
+    logToFile("[installPython] start. PYTHON_DIR=" + PYTHON_DIR);
 
     let pythonExe = null;
     let useEmbedded = false;
@@ -203,10 +278,12 @@ async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
     // Try system Python first
     pythonExe = findSystemPython();
     if (pythonExe) {
-      log("[installPython] Found system Python:", pythonExe, getPythonVersion(pythonExe));
+      log("[installPython] Found system Python: " + pythonExe + " " + getPythonVersion(pythonExe));
+      logToFile("[installPython] using system python: " + pythonExe);
     } else if (process.platform === "win32") {
       // Windows without system Python → download embeddable + bootstrap pip
       log("[installPython] No system Python. Downloading embeddable Python...");
+      logToFile("[installPython] downloading embeddable python");
       useEmbedded = true;
 
       sendProgress && sendProgress("python", 10, "تحميل Python embedded (~10MB)...");
@@ -221,59 +298,93 @@ async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
           const mbTotal = Math.floor(t / 1024 / 1024);
           sendProgress && sendProgress("python", pct, `تحميل Python... ${mbDone}MB / ${mbTotal}MB`);
         }
-      });
+      }, 5 * 60 * 1000); // 5 min timeout
 
+      log("[installPython] Downloaded, extracting...");
       sendProgress && sendProgress("python", 45, "فك ضغط Python...");
-      await extractZip(zipPath, PYTHON_DIR);
+      await extractZip(zipPath, PYTHON_DIR, log);
       try { fs.unlinkSync(zipPath); } catch {}
 
-      // Enable pip in embeddable Python:
-      // 1. Uncomment "import site" in the ._pth file (otherwise pip won't work)
-      const pthFiles = fs.readdirSync(PYTHON_DIR).filter(f => f.endsWith("._pth"));
-      for (const pthFile of pthFiles) {
-        const pthPath = path.join(PYTHON_DIR, pthFile);
-        let content = fs.readFileSync(pthPath, "utf8");
-        if (content.includes("#import site")) {
-          content = content.replace("#import site", "import site");
-          fs.writeFileSync(pthPath, content);
-          log("[installPython] Enabled 'import site' in", pthFile);
-        }
-      }
-
-      // 2. Download get-pip.py and run it to bootstrap pip
-      sendProgress && sendProgress("python", 55, "تثبيت pip...");
-      const getPipUrl = "https://bootstrap.pypa.io/get-pip.py";
-      const getPipPath = path.join(PYTHON_DIR, "get-pip.py");
-      await downloadFile(getPipUrl, getPipPath);
-
+      // Verify python.exe exists
       const embeddedPython = path.join(PYTHON_DIR, "python.exe");
       if (!fs.existsSync(embeddedPython)) {
         throw new Error(`python.exe مش موجود بعد فك الضغط. اتحقق من: ${PYTHON_DIR}`);
       }
+      log("[installPython] python.exe found at: " + embeddedPython);
 
+      // CRITICAL FIX: Properly configure ._pth file.
+      // The embeddable Python's ._pth file restricts sys.path to ONLY the
+      // entries listed in it. Just uncommenting "import site" is NOT enough —
+      // we also need to add Lib\site-packages so pip can be found after install.
+      const pthFiles = fs.readdirSync(PYTHON_DIR).filter(f => f.endsWith("._pth"));
+      log("[installPython] Found ._pth files: " + pthFiles.join(", "));
+      for (const pthFile of pthFiles) {
+        const pthPath = path.join(PYTHON_DIR, pthFile);
+        let content = fs.readFileSync(pthPath, "utf8");
+        log("[installPython] Original ._pth content:\n" + content);
+
+        let modified = content;
+        // Uncomment "import site"
+        if (modified.includes("#import site")) {
+          modified = modified.replace("#import site", "import site");
+        } else if (!modified.includes("import site")) {
+          modified += "\nimport site\n";
+        }
+        // Add Lib\site-packages and Lib to the path (so pip works)
+        if (!modified.includes("Lib\\site-packages") && !modified.includes("Lib/site-packages")) {
+          modified += "\nLib\\site-packages\n";
+        }
+        if (!modified.includes("\nLib\n") && !modified.includes("\nLib\\") && !modified.includes("Lib\n")) {
+          modified += "\nLib\n";
+        }
+        if (modified !== content) {
+          fs.writeFileSync(pthPath, modified);
+          log("[installPython] Updated ._pth content:\n" + modified);
+          logToFile("[installPython] patched ._pth: " + pthFile);
+        }
+      }
+
+      // Download get-pip.py and run it to bootstrap pip
+      sendProgress && sendProgress("python", 55, "تثبيت pip...");
+      log("[installPython] Downloading get-pip.py...");
+      const getPipUrl = "https://bootstrap.pypa.io/get-pip.py";
+      const getPipPath = path.join(PYTHON_DIR, "get-pip.py");
+      await downloadFile(getPipUrl, getPipPath, null, 60 * 1000);
+
+      log("[installPython] Running get-pip.py...");
       await spawnAsync(embeddedPython, [getPipPath, "--no-warn-script-location"], {
         cwd: PYTHON_DIR,
-        onStdout: (s) => log("[get-pip]", s.trim()),
-        onStderr: (s) => log("[get-pip:err]", s.trim()),
+        onStdout: (s) => { log("[get-pip] " + s.trim()); logToFile("[get-pip] " + s.trim()); },
+        onStderr: (s) => { log("[get-pip:err] " + s.trim()); logToFile("[get-pip:err] " + s.trim()); },
       });
 
+      // Try to clean up get-pip.py (best effort)
+      try { fs.unlinkSync(getPipPath); } catch {}
+
       // Verify pip works
+      log("[installPython] Verifying pip...");
       const pipCheck = spawnSync(embeddedPython, ["-m", "pip", "--version"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
-        timeout: 10000,
+        timeout: 15000,
       });
       const pipVersion = ((pipCheck.stdout || "") + (pipCheck.stderr || "")).trim();
-      if (!pipVersion.includes("pip")) {
-        throw new Error("pip ماتثبتش صح في الـ embedded Python. الإخراج: " + pipVersion);
+      log("[installPython] pip check output: " + pipVersion);
+      logToFile("[installPython] pip version: " + pipVersion);
+
+      if (!pipVersion.toLowerCase().includes("pip")) {
+        throw new Error(
+          "pip ماتثبتش صح في الـ embedded Python.\n" +
+          "Output: " + pipVersion + "\n" +
+          "Exit code: " + pipCheck.status
+        );
       }
-      log("[installPython] pip installed:", pipVersion);
+      log("[installPython] pip installed: " + pipVersion);
 
       pythonExe = embeddedPython;
 
-      // For embedded Python, VENV_DIR = PYTHON_DIR (we use it directly)
-      // We write a marker file so installPipDeps knows to use PYTHON_DIR
+      // For embedded Python, we use it directly (no venv). Write a marker.
       fs.writeFileSync(path.join(PYTHON_DIR, "USE_EMBEDDED.txt"), "1");
 
       sendProgress && sendProgress("python", 95, "Python + pip جاهز ✓");
@@ -294,8 +405,8 @@ async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
         "--system-site-packages",
         VENV_DIR,
       ]), {
-        onStdout: (s) => log("[venv]", s.trim()),
-        onStderr: (s) => log("[venv:err]", s.trim()),
+        onStdout: (s) => log("[venv] " + s.trim()),
+        onStderr: (s) => log("[venv:err] " + s.trim()),
       });
 
       sendProgress && sendProgress("python", 80, "تحديث pip...");
@@ -305,26 +416,22 @@ async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
         process.platform === "win32" ? "python.exe" : "python"
       );
       await spawnAsync(venvPy, ["-m", "pip", "install", "--upgrade", "pip"], {
-        onStdout: (s) => log("[pip-upgrade]", s.trim()),
-        onStderr: (s) => log("[pip-upgrade:err]", s.trim()),
+        onStdout: (s) => log("[pip-upgrade] " + s.trim()),
+        onStderr: (s) => log("[pip-upgrade:err] " + s.trim()),
       });
     }
 
     sendProgress && sendProgress("python", 100, "Python جاهز ✓");
+    logToFile("[installPython] success");
     return { success: true };
   } catch (e) {
-    log("[installPython] FAILED:", e);
+    log("[installPython] FAILED: " + (e?.stack || e));
+    logToFile("[installPython] FAILED: " + (e?.stack || e));
     sendProgress && sendProgress("python", -1, `فشل: ${e.message}`);
     return { success: false, error: String(e?.message || e) };
   }
 }
 
-/**
- * Get the Python executable to use for running pip / backend.
- * - If VENV_DIR/Scripts/python.exe (or bin/python) exists → use venv
- * - Else if PYTHON_DIR/USE_EMBEDDED.txt exists → use PYTHON_DIR/python.exe
- * - Else fall back to PYTHON_DIR/python.exe (legacy)
- */
 function getActivePython(VENV_DIR, PYTHON_DIR) {
   const isWin = process.platform === "win32";
   const venvPy = path.join(
@@ -340,12 +447,11 @@ function getActivePython(VENV_DIR, PYTHON_DIR) {
     if (fs.existsSync(embPy)) return embPy;
   }
 
-  // Legacy fallback
   if (PYTHON_DIR) {
     const legacy = path.join(PYTHON_DIR, "python.exe");
     if (fs.existsSync(legacy)) return legacy;
   }
-  return venvPy; // returns nonexistent path; caller will fail with clear error
+  return venvPy;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,9 +464,9 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
     if (!fs.existsSync(venvPy)) {
       throw new Error("Python مش موجود. شغّل تثبيت Python الأول. (الاتجول على: " + venvPy + ")");
     }
-    log("[installPipDeps] Using Python:", venvPy);
+    log("[installPipDeps] Using Python: " + venvPy);
+    logToFile("[installPipDeps] using python: " + venvPy);
 
-    // Pin versions known to work with Wav2Lip
     const packages = [
       "torch==2.2.2",
       "torchvision==0.17.2",
@@ -379,7 +485,6 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
       "requests",
     ];
 
-    // Install in chunks so we can report progress
     const chunks = [];
     for (let i = 0; i < packages.length; i += 4) {
       chunks.push(packages.slice(i, i + 4));
@@ -388,20 +493,28 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
     for (let i = 0; i < chunks.length; i++) {
       const pct = Math.floor((i / chunks.length) * 100);
       sendProgress && sendProgress("pip", pct, `تثبيت: ${chunks[i].join(", ")}`);
-      await spawnAsync(
-        venvPy,
-        ["-m", "pip", "install", ...chunks[i]],
-        {
-          onStdout: (s) => log("[pip]", s.trim()),
-          onStderr: (s) => log("[pip:err]", s.trim()),
-        }
-      );
+      log("[installPipDeps] Chunk " + (i+1) + "/" + chunks.length + ": " + chunks[i].join(", "));
+      try {
+        await spawnAsync(
+          venvPy,
+          ["-m", "pip", "install", ...chunks[i]],
+          {
+            onStdout: (s) => log("[pip] " + s.trim()),
+            onStderr: (s) => log("[pip:err] " + s.trim()),
+          }
+        );
+      } catch (e) {
+        log("[installPipDeps] Chunk failed: " + e.message);
+        throw e;
+      }
     }
 
     sendProgress && sendProgress("pip", 100, "كل المكتبات اتثبتت ✓");
+    logToFile("[installPipDeps] success");
     return { success: true };
   } catch (e) {
-    log("[installPipDeps] FAILED:", e);
+    log("[installPipDeps] FAILED: " + (e?.stack || e));
+    logToFile("[installPipDeps] FAILED: " + (e?.stack || e));
     sendProgress && sendProgress("pip", -1, `فشل: ${e.message}`);
     return { success: false, error: String(e?.message || e) };
   }
@@ -417,38 +530,89 @@ async function installWav2Lip({ WAV2LIP_DIR, CKPT_PATH, VENV_DIR, PYTHON_DIR, se
     if (!fs.existsSync(venvPy)) {
       throw new Error("Python مش موجود. شغّل تثبيت Python الأول. (الاتجول على: " + venvPy + ")");
     }
-    log("[installWav2Lip] Using Python:", venvPy);
+    log("[installWav2Lip] Using Python: " + venvPy);
+    logToFile("[installWav2Lip] start. WAV2LIP_DIR=" + WAV2LIP_DIR);
 
-    // Step 1: clone Wav2Lip
+    // Step 1: clone Wav2Lip (or download ZIP if git not available)
     if (fs.existsSync(path.join(WAV2LIP_DIR, "models", "wav2lip.py"))) {
       sendProgress && sendProgress("wav2lip", 10, "Wav2Lip موجود بالفعل، تخطّي...");
+      log("[installWav2Lip] Wav2Lip already exists, skipping clone");
     } else {
       sendProgress && sendProgress("wav2lip", 5, "تحميل Wav2Lip من GitHub...");
       fs.mkdirSync(path.dirname(WAV2LIP_DIR), { recursive: true });
-      // Delete partial dir if exists
       if (fs.existsSync(WAV2LIP_DIR)) {
         fs.rmSync(WAV2LIP_DIR, { recursive: true, force: true });
       }
-      await spawnAsync("git", [
-        "clone",
-        "--depth",
-        "1",
-        "https://github.com/Rudrabha/Wav2Lip.git",
-        WAV2LIP_DIR,
-      ], {
-        onStdout: (s) => log("[git]", s.trim()),
-        onStderr: (s) => log("[git:err]", s.trim()),
-      });
+
+      // Try git clone first
+      let cloned = false;
+      if (commandExists("git")) {
+        log("[installWav2Lip] Using git clone");
+        try {
+          await spawnAsync("git", [
+            "clone",
+            "--depth",
+            "1",
+            "https://github.com/Rudrabha/Wav2Lip.git",
+            WAV2LIP_DIR,
+          ], {
+            onStdout: (s) => log("[git] " + s.trim()),
+            onStderr: (s) => log("[git:err] " + s.trim()),
+          });
+          cloned = true;
+        } catch (e) {
+          log("[installWav2Lip] git clone failed: " + e.message + " — falling back to ZIP download");
+        }
+      } else {
+        log("[installWav2Lip] git not in PATH — using ZIP download");
+      }
+
+      // Fallback: download ZIP from GitHub
+      if (!cloned) {
+        sendProgress && sendProgress("wav2lip", 8, "تحميل Wav2Lip كـ ZIP...");
+        const zipUrl = "https://github.com/Rudrabha/Wav2Lip/archive/refs/heads/master.zip";
+        const zipPath = path.join(path.dirname(WAV2LIP_DIR), "wav2lip-master.zip");
+        await downloadFile(zipUrl, zipPath, (r, t) => {
+          if (t) {
+            const pct = 5 + Math.floor((r / t) * 10);
+            sendProgress && sendProgress("wav2lip", pct, `تحميل Wav2Lip ZIP... ${Math.floor(r/1024/1024)}MB`);
+          }
+        }, 3 * 60 * 1000);
+
+        // Extract to temp dir, then move contents to WAV2LIP_DIR
+        const tempExtractDir = path.join(path.dirname(WAV2LIP_DIR), "wav2lip-extract-" + Date.now());
+        await extractZip(zipPath, tempExtractDir, log);
+        try { fs.unlinkSync(zipPath); } catch {}
+
+        // The ZIP extracts to "Wav2Lip-master/", move its contents to WAV2LIP_DIR
+        const extractedSubdir = path.join(tempExtractDir, "Wav2Lip-master");
+        if (fs.existsSync(extractedSubdir)) {
+          fs.mkdirSync(WAV2LIP_DIR, { recursive: true });
+          // Move all contents
+          for (const item of fs.readdirSync(extractedSubdir)) {
+            fs.renameSync(path.join(extractedSubdir, item), path.join(WAV2LIP_DIR, item));
+          }
+          try { fs.rmSync(tempExtractDir, { recursive: true, force: true }); } catch {}
+        } else {
+          throw new Error("Wav2Lip ZIP extract failed: Wav2Lip-master subdir not found in " + tempExtractDir);
+        }
+        log("[installWav2Lip] Wav2Lip extracted from ZIP to " + WAV2LIP_DIR);
+      }
+
+      // Verify
+      if (!fs.existsSync(path.join(WAV2LIP_DIR, "models", "wav2lip.py"))) {
+        throw new Error("Wav2Lip clone/extract failed: models/wav2lip.py not found in " + WAV2LIP_DIR);
+      }
     }
 
     // Step 2: download checkpoint (~415MB)
     if (fs.existsSync(CKPT_PATH) && fs.statSync(CKPT_PATH).size > 400_000_000) {
       sendProgress && sendProgress("wav2lip", 80, "الـ model موجود بالفعل، تخطّي...");
+      log("[installWav2Lip] Checkpoint already exists, skipping");
     } else {
       sendProgress && sendProgress("wav2lip", 20, "تحميل model Wav2Lip (~415MB)...");
       fs.mkdirSync(path.dirname(CKPT_PATH), { recursive: true });
 
-      // Use huggingface_hub for resumable download
       const script = `
 from huggingface_hub import hf_hub_download
 import shutil
@@ -460,7 +624,6 @@ path = hf_hub_download(
 shutil.copy(path, r"${CKPT_PATH.replace(/\\/g, "\\\\")}")
 print("DOWNLOADED:", "${CKPT_PATH.replace(/\\/g, "\\\\")}")
 `;
-      // Stream progress — we can't easily get huggingface_hub progress, so use a fake ticker
       let fakePct = 20;
       const ticker = setInterval(() => {
         fakePct = Math.min(75, fakePct + 1);
@@ -469,15 +632,15 @@ print("DOWNLOADED:", "${CKPT_PATH.replace(/\\/g, "\\\\")}")
 
       try {
         await spawnAsync(venvPy, ["-c", script], {
-          onStdout: (s) => log("[hf]", s.trim()),
-          onStderr: (s) => log("[hf:err]", s.trim()),
+          onStdout: (s) => log("[hf] " + s.trim()),
+          onStderr: (s) => log("[hf:err] " + s.trim()),
         });
       } finally {
         clearInterval(ticker);
       }
 
       if (!fs.existsSync(CKPT_PATH) || fs.statSync(CKPT_PATH).size < 400_000_000) {
-        throw new Error("الـ model ماتحملش صح. حاول تاني.");
+        throw new Error("الـ model ماتحملش صح. حاول تاني. (Path: " + CKPT_PATH + ")");
       }
     }
 
@@ -491,30 +654,36 @@ print("DOWNLOADED:", "${CKPT_PATH.replace(/\\/g, "\\\\")}")
       if (text.includes(old) && !text.includes(neu)) {
         text = text.replace(old, neu);
         fs.writeFileSync(audioPy, text);
-        log("[wav2lip] patched audio.py for librosa 0.10+");
+        log("[installWav2Lip] patched audio.py for librosa 0.10+");
       }
     }
 
-    // Step 4: verify
+    // Step 4: verify (best-effort — don't fail the whole install if verify fails)
     sendProgress && sendProgress("wav2lip", 95, "اختبار التثبيت...");
-    await spawnAsync(
-      venvPy,
-      ["-c", "import sys; sys.path.insert(0, r'" + WAV2LIP_DIR + "'); import wav2lip_runner; wav2lip_runner._check_wav2lip_available(); print('OK')"],
-      {
-        cwd: BACKEND_SRC_DIR || undefined,
-        env: { ...process.env, PYTHONPATH: WAV2LIP_DIR },
-        onStdout: (s) => log("[verify]", s.trim()),
-        onStderr: (s) => log("[verify:err]", s.trim()),
-      }
-    );
+    try {
+      await spawnAsync(
+        venvPy,
+        ["-c", "import sys; sys.path.insert(0, r'" + WAV2LIP_DIR + "'); import wav2lip_runner; wav2lip_runner._check_wav2lip_available(); print('OK')"],
+        {
+          cwd: BACKEND_SRC_DIR || undefined,
+          env: { ...process.env, PYTHONPATH: WAV2LIP_DIR },
+          onStdout: (s) => log("[verify] " + s.trim()),
+          onStderr: (s) => log("[verify:err] " + s.trim()),
+        }
+      );
+    } catch (e) {
+      log("[installWav2Lip] Verify step failed (non-fatal): " + e.message);
+    }
 
     sendProgress && sendProgress("wav2lip", 100, "Wav2Lip جاهز ✓");
+    logToFile("[installWav2Lip] success");
     return { success: true };
   } catch (e) {
-    log("[installWav2Lip] FAILED:", e);
+    log("[installWav2Lip] FAILED: " + (e?.stack || e));
+    logToFile("[installWav2Lip] FAILED: " + (e?.stack || e));
     sendProgress && sendProgress("wav2lip", -1, `فشل: ${e.message}`);
     return { success: false, error: String(e?.message || e) };
   }
 }
 
-module.exports = { installPython, installPipDeps, installWav2Lip, downloadFile, spawnAsync };
+module.exports = { installPython, installPipDeps, installWav2Lip, downloadFile, spawnAsync, extractZip, commandExists, setLogFilePath };

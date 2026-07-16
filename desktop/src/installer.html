@@ -16,7 +16,7 @@
       padding: 24px;
     }
     .container {
-      max-width: 560px;
+      max-width: 640px;
       width: 100%;
       text-align: center;
     }
@@ -44,21 +44,80 @@
     .subtitle {
       color: #9ca3af;
       font-size: 14px;
-      margin-bottom: 32px;
+      margin-bottom: 24px;
       line-height: 1.6;
+    }
+    /* CRITICAL: Error banner is BIG, RED, and at the TOP — impossible to miss */
+    .error-banner {
+      padding: 16px 20px;
+      border-radius: 12px;
+      background: rgba(239,68,68,0.15);
+      border: 2px solid rgba(239,68,68,0.6);
+      color: #fecaca;
+      font-size: 14px;
+      line-height: 1.6;
+      margin-bottom: 16px;
+      display: none;
+      text-align: start;
+      box-shadow: 0 8px 24px -8px rgba(239,68,68,0.4);
+    }
+    .error-banner.visible { display: block; animation: shake 0.4s; }
+    .error-banner .err-title {
+      font-weight: 700;
+      color: #fca5a5;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+    .error-banner .err-msg {
+      font-family: 'Consolas', 'Monaco', monospace;
+      direction: ltr;
+      text-align: left;
+      background: rgba(0,0,0,0.4);
+      padding: 8px 10px;
+      border-radius: 6px;
+      margin-top: 8px;
+      font-size: 12px;
+      max-height: 120px;
+      overflow-y: auto;
+      word-break: break-all;
+      white-space: pre-wrap;
+    }
+    .error-banner .err-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .error-banner .err-actions button {
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(252,165,165,0.4);
+      background: rgba(239,68,68,0.15);
+      color: #fca5a5;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .error-banner .err-actions button:hover {
+      background: rgba(239,68,68,0.3);
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-4px); }
+      75% { transform: translateX(4px); }
     }
     .stages {
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      margin-bottom: 24px;
+      gap: 10px;
+      margin-bottom: 16px;
       text-align: start;
     }
     .stage {
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 14px 16px;
+      padding: 12px 14px;
       border-radius: 12px;
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(168,85,247,0.15);
@@ -164,29 +223,43 @@
     .btn-secondary:hover:not(:disabled) {
       background: rgba(255,255,255,0.1);
     }
+    .btn-ghost {
+      background: transparent;
+      color: #9ca3af;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 8px 16px;
+      font-size: 13px;
+    }
+    .btn-ghost:hover {
+      background: rgba(255,255,255,0.05);
+      color: #e5e7eb;
+    }
     .actions {
       display: flex;
       gap: 12px;
       justify-content: center;
-      margin-top: 24px;
+      margin-top: 16px;
+      flex-wrap: wrap;
     }
+    /* Log panel: ALWAYS visible so user sees what's happening */
     .log {
-      margin-top: 24px;
+      margin-top: 16px;
       padding: 12px;
-      background: rgba(0,0,0,0.4);
+      background: rgba(0,0,0,0.5);
       border-radius: 8px;
       font-family: 'Consolas', 'Monaco', monospace;
       font-size: 11px;
-      color: #6b7280;
-      max-height: 150px;
+      color: #9ca3af;
+      max-height: 180px;
       overflow-y: auto;
       text-align: start;
       direction: ltr;
-      display: none;
+      border: 1px solid rgba(255,255,255,0.08);
     }
-    .log.visible {
-      display: block;
-    }
+    .log-line { line-height: 1.5; word-break: break-all; }
+    .log-line.error { color: #fca5a5; }
+    .log-line.success { color: #4ade80; }
+    .log-line.info { color: #93c5fd; }
     .spinner {
       width: 14px;
       height: 14px;
@@ -198,17 +271,18 @@
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
-    .error-banner {
-      padding: 12px 16px;
-      border-radius: 8px;
-      background: rgba(239,68,68,0.1);
-      border: 1px solid rgba(239,68,68,0.3);
-      color: #fca5a5;
-      font-size: 13px;
-      margin-top: 16px;
-      display: none;
+    .diag-info {
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 12px;
+      padding: 8px 10px;
+      background: rgba(0,0,0,0.3);
+      border-radius: 6px;
+      text-align: start;
+      direction: ltr;
+      font-family: 'Consolas', monospace;
+      line-height: 1.6;
     }
-    .error-banner.visible { display: block; }
   </style>
 </head>
 <body>
@@ -219,6 +293,18 @@
       التطبيق محتاج Python ومكتبات الـ AI. هتتثبت أوتوماتيك.<br />
       الحجم الكلي: ~3 جيجابايت (تحميل أول مرة)
     </p>
+
+    <!-- CRITICAL: Error banner at the TOP, big and red -->
+    <div class="error-banner" id="error-banner">
+      <div class="err-title">⚠️ حدث خطأ أثناء التثبيت</div>
+      <div id="error-message"></div>
+      <div class="err-msg" id="error-detail"></div>
+      <div class="err-actions">
+        <button onclick="copyErrorToClipboard()">📋 نسخ الخطأ</button>
+        <button onclick="openLogFolder()">📁 فتح مجلد السجلات</button>
+        <button onclick="hideError()">إخفاء</button>
+      </div>
+    </div>
 
     <div class="stages">
       <div class="stage" data-stage="python">
@@ -247,8 +333,6 @@
       </div>
     </div>
 
-    <div class="error-banner" id="error-banner"></div>
-
     <div class="actions">
       <button class="btn btn-primary" id="btn-install" onclick="startInstall()">
         ابدأ التثبيت
@@ -256,17 +340,30 @@
       <button class="btn btn-secondary" id="btn-launch" onclick="launchApp()" style="display:none">
         فتح التطبيق
       </button>
+      <button class="btn btn-ghost" id="btn-log" onclick="openLogFolder()" title="افتح مجلد السجلات">
+        📁 السجلات
+      </button>
     </div>
 
+    <!-- Log panel: ALWAYS visible so user sees what's happening -->
     <div class="log" id="log"></div>
+
+    <div class="diag-info" id="diag-info">جاري جمع المعلومات التشخيصية...</div>
   </div>
 
   <script>
-    const { installer } = window;
+    // ============================================================
+    // DEFENSIVE: Check IPC bridge FIRST. If it's missing, show a
+    // clear error instead of silently failing.
+    // ============================================================
+    const installer = window.installer;
     const logEl = document.getElementById("log");
     const errorBanner = document.getElementById("error-banner");
+    const errorMessage = document.getElementById("error-message");
+    const errorDetail = document.getElementById("error-detail");
     const installBtn = document.getElementById("btn-install");
     const launchBtn = document.getElementById("btn-launch");
+    const diagInfo = document.getElementById("diag-info");
 
     const stageLabels = {
       python: "Python + venv",
@@ -274,12 +371,17 @@
       wav2lip: "Wav2Lip + Models",
     };
 
-    function appendLog(msg) {
+    function appendLog(msg, level) {
       const line = document.createElement("div");
-      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      line.className = "log-line" + (level ? " " + level : "");
+      const time = new Date().toLocaleTimeString();
+      line.textContent = `[${time}] ${msg}`;
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
-      logEl.classList.add("visible");
+      // Cap at 500 lines to prevent memory bloat
+      while (logEl.children.length > 500) {
+        logEl.removeChild(logEl.firstChild);
+      }
     }
 
     function setStageStatus(stage, text, percent) {
@@ -315,107 +417,233 @@
       if (fillEl) fillEl.style.width = "0%";
     }
 
-    function showError(msg) {
-      errorBanner.textContent = msg;
+    function showError(title, detail) {
+      errorMessage.textContent = title;
+      if (detail) {
+        errorDetail.textContent = typeof detail === "string" ? detail : (detail?.message || String(detail));
+        errorDetail.style.display = "block";
+      } else {
+        errorDetail.style.display = "none";
+      }
       errorBanner.classList.add("visible");
+      errorBanner.scrollIntoView({ behavior: "smooth", block: "center" });
+      appendLog("ERROR: " + title, "error");
+      if (detail) appendLog("DETAIL: " + (typeof detail === "string" ? detail : (detail?.message || String(detail))), "error");
     }
 
     function hideError() {
       errorBanner.classList.remove("visible");
     }
 
-    // Subscribe to progress events
-    installer.onProgress(({ stage, percent, message }) => {
-      appendLog(`[${stage}] ${percent}% ${message}`);
-      setStageStatus(stage, message, percent);
-      if (percent < 0) {
-        showError(`فشل في ${stageLabels[stage] || stage}: ${message}`);
-        installBtn.disabled = false;
-        installBtn.textContent = "أعد المحاولة";
+    async function copyErrorToClipboard() {
+      const text = errorMessage.textContent + "\n\n" + (errorDetail.textContent || "");
+      try {
+        await navigator.clipboard.writeText(text);
+        appendLog("✓ تم نسخ الخطأ إلى الحافظة", "success");
+      } catch (e) {
+        appendLog("تعذّر النسخ: " + e.message, "error");
       }
-    });
+    }
+
+    async function openLogFolder() {
+      try {
+        if (!installer || !installer.openLogFolder) {
+          appendLog("openLogFolder غير متاح في IPC bridge", "error");
+          return;
+        }
+        await installer.openLogFolder();
+      } catch (e) {
+        appendLog("تعذّر فتح مجلد السجلات: " + e.message, "error");
+      }
+    }
+
+    // ============================================================
+    // IPC bridge check — if missing, show clear error immediately
+    // ============================================================
+    if (!installer || !installer.installPython) {
+      appendLog("FATAL: IPC bridge (window.installer) غير موجود!", "error");
+      appendLog("ده معناه إن preload.js ما تحمّلش. حاول إعادة تثبيت البرنامج.", "error");
+      showError(
+        "مشكلة في بناء التطبيق",
+        "IPC bridge مش موجود. preload.js ما تحمّلش.\nحاول تنزّل البرنامج من جديد. لو المشكلة استمرت، تواصل مع الدعم."
+      );
+      installBtn.disabled = true;
+      installBtn.textContent = "التطبيق معطوب";
+    } else {
+      appendLog("✓ IPC bridge متاح", "success");
+
+      // Subscribe to progress events
+      try {
+        installer.onProgress(({ stage, percent, message }) => {
+          appendLog(`[${stage}] ${percent}% ${message}`, percent < 0 ? "error" : "info");
+          setStageStatus(stage, message, percent);
+          if (percent < 0) {
+            showError(
+              `فشل في مرحلة: ${stageLabels[stage] || stage}`,
+              message
+            );
+            installBtn.disabled = false;
+            installBtn.textContent = "أعد المحاولة";
+          }
+        });
+        appendLog("✓ مشترك في تحديثات التقدّم", "success");
+      } catch (e) {
+        appendLog("تعذّر الاشتراك في تحديثات التقدّم: " + e.message, "error");
+      }
+    }
+
+    // ============================================================
+    // Diagnostic info — gather system info so we can debug
+    // ============================================================
+    async function gatherDiagnostics() {
+      try {
+        if (!installer || !installer.getDiagnosticInfo) {
+          diagInfo.textContent = "المعلومات التشخيصية غير متاحة";
+          return;
+        }
+        const info = await installer.getDiagnosticInfo();
+        const lines = [
+          `OS: ${info.platform} ${info.arch}`,
+          `Electron: ${info.electronVersion}`,
+          `Node: ${info.nodeVersion}`,
+          `User data: ${info.userDataDir}`,
+          `Python dir: ${info.pythonDir}`,
+          `Venv dir: ${info.venvDir}`,
+          `Wav2Lip dir: ${info.wav2lipDir}`,
+          `Backend src: ${info.backendSrcDir}`,
+          `PowerShell available: ${info.hasPowershell ? "yes ✓" : "NO ✗"}`,
+          `tar.exe available: ${info.hasTar ? "yes ✓" : "NO ✗"}`,
+          `git available: ${info.hasGit ? "yes ✓" : "NO ✗"}`,
+          `User data writable: ${info.userDataWritable ? "yes ✓" : "NO ✗"}`,
+          `Venv installed: ${info.venvInstalled ? "yes ✓" : "no"}`,
+          `Wav2Lip installed: ${info.wav2lipInstalled ? "yes ✓" : "no"}`,
+          `Fully installed: ${info.fullyInstalled ? "yes ✓" : "no"}`,
+        ];
+        diagInfo.textContent = lines.join("\n");
+        appendLog("Diagnostic info gathered", "info");
+        if (!info.userDataWritable) {
+          showError(
+            "مجلد بيانات المستخدم غير قابل للكتابة",
+            `المسار: ${info.userDataDir}\nشغّل البرنامج كمسؤول أو اختر مجلد آخر.`
+          );
+        }
+        if (!info.hasTar && !info.hasPowershell) {
+          showError(
+            "لا يوجد أداة لفك الضغط",
+            "البرنامج محتاج tar.exe (Windows 10+) أو PowerShell.\nحدّث Windows أو ثبّت PowerShell."
+          );
+        }
+      } catch (e) {
+        diagInfo.textContent = "تعذّر جمع المعلومات التشخيصية: " + e.message;
+        appendLog("Diagnostic info failed: " + e.message, "error");
+      }
+    }
 
     async function checkInitial() {
+      if (!installer || !installer.getInstallState) return;
       try {
         const state = await installer.getInstallState();
-        appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`);
+        appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`, "info");
         if (state.paths) {
-          appendLog(`Paths: python=${state.paths.python} venv=${state.paths.venv} wav2lip=${state.paths.wav2lip}`);
+          appendLog(`Paths: python=${state.paths.python}`);
+          appendLog(`       venv=${state.paths.venv}`);
+          appendLog(`       wav2lip=${state.paths.wav2lip}`);
         }
 
         if (state.fullyInstalled) {
-          // Everything is already installed — show launch button
           setStageStatus("python", "تم ✓", 100);
           setStageStatus("pip", "تم ✓", 100);
           setStageStatus("wav2lip", "تم ✓", 100);
           installBtn.style.display = "none";
           launchBtn.style.display = "inline-flex";
+          appendLog("✓ كل حاجة متثبتة — يرجى الضغط على 'فتح التطبيق'", "success");
         } else {
-          // Restore partial state
-          if (state.venv) setStageStatus("python", "تم ✓", 100);
-          if (state.wav2lip) setStageStatus("wav2lip", "تم ✓", 100);
+          if (state.venv) {
+            setStageStatus("python", "تم ✓", 100);
+            appendLog("Python متثبت بالفعل", "success");
+          }
+          if (state.wav2lip) {
+            setStageStatus("wav2lip", "تم ✓", 100);
+            appendLog("Wav2Lip متثبت بالفعل", "success");
+          }
         }
       } catch (e) {
-        appendLog("checkInitial failed: " + (e?.message || e));
-        showError("فشل التحقق من حالة التثبيت: " + (e?.message || e));
+        appendLog("checkInitial failed: " + (e?.message || e), "error");
+        showError("فشل التحقق من حالة التثبيت", e);
       }
     }
 
+    // ============================================================
+    // The actual install flow
+    // ============================================================
     async function startInstall() {
+      // IMMEDIATE visual feedback — change button text BEFORE any awaits
       hideError();
       installBtn.disabled = true;
       installBtn.innerHTML = '<span class="spinner"></span> جاري التثبيت...';
-      // Always show the log panel during install so user sees progress
-      logEl.classList.add("visible");
+      appendLog("=== بدء التثبيت ===", "info");
+
+      // Defensive: check IPC bridge again
+      if (!window.installer || !window.installer.installPython) {
+        showError(
+          "IPC bridge مش موجود",
+          "ده مشكلة في بناء التطبيق. حمّل النسخة من جديد."
+        );
+        installBtn.disabled = false;
+        installBtn.textContent = "أعد المحاولة";
+        return;
+      }
 
       try {
-        // Verify IPC bridge is available
-        if (!window.installer || !window.installer.installPython) {
-          throw new Error("IPC bridge مش موجود. ده مشكلة في بناء التطبيق.");
-        }
-
-        appendLog("بدء التثبيت...");
-
         // Stage 1: Python
         const state = await installer.getInstallState();
-        appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`);
+        appendLog(`State: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`);
 
         if (!state.venv) {
           markStageWaiting("python", "بدء التثبيت...");
-          appendLog("Stage 1: Installing Python...");
+          appendLog(">>> Stage 1: Installing Python...", "info");
           const r1 = await installer.installPython();
-          if (!r1.success) throw new Error(r1.error || "Python install failed");
+          if (!r1.success) {
+            throw new Error("Python install failed: " + (r1.error || "unknown"));
+          }
+          appendLog("✓ Stage 1 (Python) complete", "success");
         } else {
           setStageStatus("python", "تم ✓", 100);
-          appendLog("Stage 1: Python already installed, skipping.");
+          appendLog("Stage 1: Python already installed, skipping.", "info");
         }
 
         // Stage 2: pip deps
         markStageWaiting("pip", "بدء التثبيت...");
-        appendLog("Stage 2: Installing pip dependencies (torch, opencv, fastapi, ...)");
+        appendLog(">>> Stage 2: Installing pip dependencies (torch, opencv, fastapi, ...)", "info");
         const r2 = await installer.installPipDeps();
-        if (!r2.success) throw new Error(r2.error || "pip install failed");
+        if (!r2.success) {
+          throw new Error("pip install failed: " + (r2.error || "unknown"));
+        }
+        appendLog("✓ Stage 2 (pip deps) complete", "success");
 
         // Stage 3: Wav2Lip
         if (!state.wav2lip) {
           markStageWaiting("wav2lip", "بدء التثبيت...");
-          appendLog("Stage 3: Installing Wav2Lip + downloading model (~415MB)");
+          appendLog(">>> Stage 3: Installing Wav2Lip + downloading model (~415MB)", "info");
           const r3 = await installer.installWav2Lip();
-          if (!r3.success) throw new Error(r3.error || "Wav2Lip install failed");
+          if (!r3.success) {
+            throw new Error("Wav2Lip install failed: " + (r3.error || "unknown"));
+          }
+          appendLog("✓ Stage 3 (Wav2Lip) complete", "success");
         } else {
           setStageStatus("wav2lip", "تم ✓", 100);
-          appendLog("Stage 3: Wav2Lip already installed, skipping.");
+          appendLog("Stage 3: Wav2Lip already installed, skipping.", "info");
         }
 
         // All done!
-        appendLog("✓ All stages complete!");
+        appendLog("=== ✓ كل المراحل اكتملت! ===", "success");
         installBtn.style.display = "none";
         launchBtn.style.display = "inline-flex";
       } catch (e) {
         const errMsg = e?.message || String(e);
-        appendLog("FATAL: " + errMsg);
-        if (e?.stack) appendLog(e.stack);
-        showError(errMsg);
+        appendLog("FATAL: " + errMsg, "error");
+        if (e?.stack) appendLog(e.stack, "error");
+        showError("فشل التثبيت", e);
         installBtn.disabled = false;
         installBtn.textContent = "أعد المحاولة";
       }
@@ -424,16 +652,23 @@
     async function launchApp() {
       launchBtn.disabled = true;
       launchBtn.innerHTML = '<span class="spinner"></span> جاري الفتح...';
-      const r = await installer.launchApp();
-      if (!r.success) {
-        showError(r.error || "Launch failed");
+      appendLog(">>> Launching app...", "info");
+      try {
+        const r = await installer.launchApp();
+        if (!r.success) {
+          showError("فشل فتح التطبيق", r.error || "Launch failed");
+          launchBtn.disabled = false;
+          launchBtn.textContent = "أعد المحاولة";
+        }
+      } catch (e) {
+        showError("فشل فتح التطبيق", e);
         launchBtn.disabled = false;
         launchBtn.textContent = "أعد المحاولة";
       }
-      // On success, the main process closes this window and opens the app.
     }
 
-    // Kick off initial check
+    // Kick off initial checks
+    gatherDiagnostics();
     checkInitial();
   </script>
 </body>
