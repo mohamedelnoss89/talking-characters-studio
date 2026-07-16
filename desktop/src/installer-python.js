@@ -214,48 +214,83 @@ function downloadFile(url, dest, onProgress, timeoutMs) {
 /**
  * Extract a .zip to a directory.
  *
- * FIX: Use tar.exe on Windows 10+ (built-in, no quoting issues with non-ASCII
- * paths). Fall back to PowerShell Expand-Archive. On Mac/Linux use unzip.
+ * CRITICAL FIX: Use `extract-zip` (pure Node.js, no system dependencies) as
+ * the PRIMARY extraction method. This eliminates ALL issues with:
+ *   - tar.exe not being available (Windows 7/8)
+ *   - tar.exe not being able to extract .zip (Linux GNU tar)
+ *   - PowerShell Expand-Archive failing on non-ASCII paths (Arabic app name)
+ *   - System tool availability
+ *
+ * Falls back to tar.exe / PowerShell / unzip only if extract-zip fails.
  */
 async function extractZip(zipPath, destDir, log) {
   fs.mkdirSync(destDir, { recursive: true });
+  const absDestDir = path.resolve(destDir);
+  const absZipPath = path.resolve(zipPath);
 
-  if (process.platform === "win32") {
-    // Try tar.exe first — it's built into Windows 10 1803+ (April 2018)
-    // and handles non-ASCII paths correctly without quoting nightmares.
-    if (commandExists("tar.exe") || commandExists("tar")) {
-      log && log("[extractZip] Using tar.exe");
-      try {
-        await spawnAsync("tar.exe", ["-xf", zipPath, "-C", destDir], {
-          windowsHide: true,
-        });
-        return;
-      } catch (e) {
-        log && log("[extractZip] tar.exe failed: " + e.message + " — trying PowerShell");
-      }
-    }
+  // Method 1: extract-zip (pure Node.js) — ALWAYS works, no system deps
+  try {
+    log && log("[extractZip] Using extract-zip (Node.js native)");
+    const extract = require("extract-zip");
+    await extract(absZipPath, { dir: absDestDir });
+    log && log("[extractZip] extract-zip succeeded");
+    return;
+  } catch (e) {
+    log && log("[extractZip] extract-zip failed: " + e.message + " — trying system tools");
+    logToFile("[extractZip] extract-zip failed: " + (e?.stack || e));
+  }
 
-    // Fallback: PowerShell Expand-Archive
-    log && log("[extractZip] Using PowerShell Expand-Archive");
-    // NOTE: Use -LiteralPath (handles spaces/special chars) and avoid
-    // single-quote escaping issues by using a here-string.
-    const psScript = `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${destDir}" -Force`;
-    await spawnAsync("powershell.exe", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy", "Bypass",
-      "-Command", psScript,
-    ]);
-  } else {
-    // Mac/Linux
-    if (commandExists("unzip")) {
-      await spawnAsync("unzip", ["-o", zipPath, "-d", destDir]);
-    } else if (commandExists("tar")) {
-      await spawnAsync("tar", ["-xf", zipPath, "-C", destDir]);
-    } else {
-      throw new Error("No unzip tool available. Install unzip or tar.");
+  // Method 2: tar.exe (Windows 10 1803+ has bsdtar which CAN extract zip)
+  if (process.platform === "win32" && (commandExists("tar.exe") || commandExists("tar"))) {
+    log && log("[extractZip] Trying tar.exe");
+    try {
+      await spawnAsync("tar.exe", ["-xf", absZipPath, "-C", absDestDir], {
+        windowsHide: true,
+      });
+      return;
+    } catch (e) {
+      log && log("[extractZip] tar.exe failed: " + e.message);
     }
   }
+
+  // Method 3: PowerShell Expand-Archive (Windows)
+  if (process.platform === "win32") {
+    log && log("[extractZip] Trying PowerShell Expand-Archive");
+    const psScript = `Expand-Archive -LiteralPath '${absZipPath}' -DestinationPath '${absDestDir}' -Force`;
+    try {
+      await spawnAsync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-Command", psScript,
+      ]);
+      return;
+    } catch (e) {
+      log && log("[extractZip] PowerShell failed: " + e.message);
+    }
+  }
+
+  // Method 4: unzip (Mac/Linux)
+  if (process.platform !== "win32") {
+    if (commandExists("unzip")) {
+      log && log("[extractZip] Trying unzip");
+      await spawnAsync("unzip", ["-o", absZipPath, "-d", absDestDir]);
+      return;
+    }
+    if (commandExists("tar")) {
+      log && log("[extractZip] Trying tar (BSD/Mac)");
+      await spawnAsync("tar", ["-xf", absZipPath, "-C", absDestDir]);
+      return;
+    }
+  }
+
+  // All methods failed
+  throw new Error(
+    "فشل فك ضغط الملف بكل الطرق المتاحة.\n" +
+    "الملف: " + absZipPath + "\n" +
+    "الوجهة: " + absDestDir + "\n" +
+    "جرب تشغيل البرنامج كمسؤول أو تواصل مع الدعم."
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -349,10 +384,13 @@ async function installPython({ PYTHON_DIR, VENV_DIR, sendProgress, log }) {
       log("[installPython] Downloading get-pip.py...");
       const getPipUrl = "https://bootstrap.pypa.io/get-pip.py";
       const getPipPath = path.join(PYTHON_DIR, "get-pip.py");
-      await downloadFile(getPipUrl, getPipPath, null, 60 * 1000);
+      await downloadFile(getPipUrl, getPipPath, null, 3 * 60 * 1000); // 3 min timeout
 
       log("[installPython] Running get-pip.py...");
-      await spawnAsync(embeddedPython, [getPipPath, "--no-warn-script-location"], {
+      // Use just the filename since cwd is PYTHON_DIR — avoids path issues
+      // with backslashes/forward-slashes in args on Windows
+      const getPipName = path.basename(getPipPath);
+      await spawnAsync(embeddedPython, [getPipName, "--no-warn-script-location"], {
         cwd: PYTHON_DIR,
         onStdout: (s) => { log("[get-pip] " + s.trim()); logToFile("[get-pip] " + s.trim()); },
         onStderr: (s) => { log("[get-pip:err] " + s.trim()); logToFile("[get-pip:err] " + s.trim()); },
