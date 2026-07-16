@@ -355,8 +355,16 @@
     // ============================================================
     // DEFENSIVE: Check IPC bridge FIRST. If it's missing, show a
     // clear error instead of silently failing.
+    //
+    // NOTE: We use `const installerApi` instead of `const installer`
+    // because contextBridge.exposeInMainWorld("installer", ...) in
+    // preload.js creates a non-configurable global property named
+    // `installer`. Declaring `const installer` in the same scope
+    // triggers "Identifier 'installer' has already been declared"
+    // SyntaxError, which kills the entire script and makes
+    // startInstall() undefined — so the button does nothing.
     // ============================================================
-    const installer = window.installer;
+    const installerApi = window.installer;
     const logEl = document.getElementById("log");
     const errorBanner = document.getElementById("error-banner");
     const errorMessage = document.getElementById("error-message");
@@ -447,11 +455,11 @@
 
     async function openLogFolder() {
       try {
-        if (!installer || !installer.openLogFolder) {
+        if (!installerApi || !installerApi.openLogFolder) {
           appendLog("openLogFolder غير متاح في IPC bridge", "error");
           return;
         }
-        await installer.openLogFolder();
+        await installerApi.openLogFolder();
       } catch (e) {
         appendLog("تعذّر فتح مجلد السجلات: " + e.message, "error");
       }
@@ -460,7 +468,7 @@
     // ============================================================
     // IPC bridge check — if missing, show clear error immediately
     // ============================================================
-    if (!installer || !installer.installPython) {
+    if (!installerApi || !installerApi.installPython) {
       appendLog("FATAL: IPC bridge (window.installer) غير موجود!", "error");
       appendLog("ده معناه إن preload.js ما تحمّلش. حاول إعادة تثبيت البرنامج.", "error");
       showError(
@@ -474,7 +482,7 @@
 
       // Subscribe to progress events
       try {
-        installer.onProgress(({ stage, percent, message }) => {
+        installerApi.onProgress(({ stage, percent, message }) => {
           appendLog(`[${stage}] ${percent}% ${message}`, percent < 0 ? "error" : "info");
           setStageStatus(stage, message, percent);
           if (percent < 0) {
@@ -497,11 +505,11 @@
     // ============================================================
     async function gatherDiagnostics() {
       try {
-        if (!installer || !installer.getDiagnosticInfo) {
+        if (!installerApi || !installerApi.getDiagnosticInfo) {
           diagInfo.textContent = "المعلومات التشخيصية غير متاحة";
           return;
         }
-        const info = await installer.getDiagnosticInfo();
+        const info = await installerApi.getDiagnosticInfo();
         const lines = [
           `OS: ${info.platform} ${info.arch}`,
           `Electron: ${info.electronVersion}`,
@@ -540,9 +548,9 @@
     }
 
     async function checkInitial() {
-      if (!installer || !installer.getInstallState) return;
+      if (!installerApi || !installerApi.getInstallState) return;
       try {
-        const state = await installer.getInstallState();
+        const state = await installerApi.getInstallState();
         appendLog(`Initial state: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`, "info");
         if (state.paths) {
           appendLog(`Paths: python=${state.paths.python}`);
@@ -596,13 +604,13 @@
 
       try {
         // Stage 1: Python
-        const state = await installer.getInstallState();
+        const state = await installerApi.getInstallState();
         appendLog(`State: venv=${state.venv} wav2lip=${state.wav2lip} fullyInstalled=${state.fullyInstalled}`);
 
         if (!state.venv) {
           markStageWaiting("python", "بدء التثبيت...");
           appendLog(">>> Stage 1: Installing Python...", "info");
-          const r1 = await installer.installPython();
+          const r1 = await installerApi.installPython();
           if (!r1.success) {
             throw new Error("Python install failed: " + (r1.error || "unknown"));
           }
@@ -615,7 +623,7 @@
         // Stage 2: pip deps
         markStageWaiting("pip", "بدء التثبيت...");
         appendLog(">>> Stage 2: Installing pip dependencies (torch, opencv, fastapi, ...)", "info");
-        const r2 = await installer.installPipDeps();
+        const r2 = await installerApi.installPipDeps();
         if (!r2.success) {
           throw new Error("pip install failed: " + (r2.error || "unknown"));
         }
@@ -625,7 +633,7 @@
         if (!state.wav2lip) {
           markStageWaiting("wav2lip", "بدء التثبيت...");
           appendLog(">>> Stage 3: Installing Wav2Lip + downloading model (~415MB)", "info");
-          const r3 = await installer.installWav2Lip();
+          const r3 = await installerApi.installWav2Lip();
           if (!r3.success) {
             throw new Error("Wav2Lip install failed: " + (r3.error || "unknown"));
           }
@@ -654,7 +662,7 @@
       launchBtn.innerHTML = '<span class="spinner"></span> جاري الفتح...';
       appendLog(">>> Launching app...", "info");
       try {
-        const r = await installer.launchApp();
+        const r = await installerApi.launchApp();
         if (!r.success) {
           showError("فشل فتح التطبيق", r.error || "Launch failed");
           launchBtn.disabled = false;
