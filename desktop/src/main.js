@@ -504,9 +504,19 @@ function sendProgress(stage, percent, message) {
 // see what the Python backend is doing during launch (e.g. "Loading model...",
 // "Starting server on port 8000..."). Without this, the launch appears frozen
 // for 1-3 minutes while the Wav2Lip model loads.
+//
+// Also broadcasts to ALL windows (including the PWA main window) so the PWA
+// can show what's happening if the user opens the diagnostic panel.
 function sendBackendLog(line) {
+  const payload = { line, ts: Date.now() };
   if (installerWindow && !installerWindow.isDestroyed()) {
-    installerWindow.webContents.send("installer:backendLog", { line });
+    installerWindow.webContents.send("installer:backendLog", payload);
+  }
+  // Broadcast to all windows (including PWA) so the renderer can subscribe via window.backend.onLog
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win !== installerWindow && !win.isDestroyed()) {
+      win.webContents.send("backend:log", payload);
+    }
   }
 }
 
@@ -644,3 +654,53 @@ ipcMain.handle("installer:getDiagnosticInfo", async () => {
 });
 
 log("Main process module loaded");
+
+// ---------------------------------------------------------------------------
+// Auto-update IPC handlers (see desktop/src/updater.js)
+// ---------------------------------------------------------------------------
+
+const { initUpdater, checkForUpdatesAfterDelay } = require("./updater");
+initUpdater(log);
+
+// ---------------------------------------------------------------------------
+// Backend lifecycle IPC — restart + status
+// Lets the PWA restart the local Python backend when it crashes (OOM during
+// heavy lip-sync) instead of forcing the user to quit and relaunch the app.
+// ---------------------------------------------------------------------------
+
+ipcMain.handle("backend:restart", async () => {
+  log("[IPC] backend:restart invoked");
+  try {
+    if (backendProcess) {
+      log("[backend:restart] Stopping current backend...");
+      stopBackend();
+      // Give the OS a moment to free port 8000
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    log("[backend:restart] Starting backend...");
+    await startBackend();
+    return { success: true };
+  } catch (e) {
+    log("[backend:restart] FAILED:", e);
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+ipcMain.handle("backend:status", async () => {
+  return {
+    running: !!backendProcess,
+    starting: backendStarting,
+    port: BACKEND_PORT,
+    pid: backendProcess ? backendProcess.pid : null,
+    venvInstalled: isVenvInstalled(),
+    wav2lipInstalled: isWav2LipInstalled(),
+    fullyInstalled: isFullyInstalled(),
+    backendSrc: BACKEND_SRC_DIR,
+  };
+});
+
+// After the app is ready, kick off a background update check (non-blocking —
+// the user sees a banner only if an update exists).
+app.whenReady().then(() => {
+  checkForUpdatesAfterDelay(8000);
+});

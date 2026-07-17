@@ -1,6 +1,6 @@
 {
   "name": "talking-characters-studio-desktop",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "تطبيق محرك الشخصيات المتكلمة - نسخة الديسكتوب",
   "main": "src/main.js",
   "author": {
@@ -94,7 +94,8 @@
         "ar-SA",
         "en-US"
       ],
-      "language": "1025"
+      "language": "1025",
+      "differentialPackage": true
     },
     "portable": {
       "artifactName": "TalkingCharactersStudio-Portable-${version}.${ext}"
@@ -129,6 +130,7 @@
   },
   "dependencies": {
     "electron-store": "^8.1.0",
+    "electron-updater": "^6.1.7",
     "extract-zip": "^2.0.1"
   },
   "devDependencies": {

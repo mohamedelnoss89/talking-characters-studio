@@ -72,7 +72,7 @@ export interface VoicesResponse {
 }
 
 /**
- * يجيب قائمة الأصوات من الـ backend
+ * يجيب قائمة الأصوات من ال backend
  */
 export async function listVoices(): Promise<VoicesResponse> {
   try {
@@ -478,6 +478,69 @@ export async function checkBackendHealth(): Promise<{
   return res.json();
 }
 
+/**
+ * فحص سريع للـ backend — بيرجع true/false بس من غير ما يرمي استثناء.
+ * بيستخدم abort signal بـ 1500ms عشان ما يعملش block للـ UI لو السيرفر بطيء.
+ *
+ * مهم: ده بيتكلم مباشرة مع http://localhost:8000 (مش الـ Vercel proxy).
+ * الـ /api/health اللي على Vercel بيرجع "ok" دايماً حتى لو الـ backend
+ * المحلي مش شغال، فلازم نستخدم ده للتشخيص الحقيقي.
+ */
+export async function isBackendReachable(timeoutMs = 1500): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(`${BACKEND_URL}/health`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * يعيد تشغيل الـ backend المحلي عبر Electron IPC.
+ * - بيشتغل بس جوه تطبيق الديسكتوب (مش في المتصفح).
+ * - بيرجع { success, error? }.
+ *
+ * الاستخدام: لما الـ backend يقع أثناء معالجة فيديو (OOM)، المستخدم
+ * يقدر يضغط "إعادة تشغيل السيرفر" من الـ UI بدل ما يقفل التطبيق كله.
+ */
+export async function restartDesktopBackend(): Promise<{ success: boolean; error?: string }> {
+  // window.backend موجود بس جوه Electron (شوف desktop/src/preload.js)
+  const backendApi = (typeof window !== "undefined" && (window as any).backend) || null;
+  if (!backendApi || typeof backendApi.restart !== "function") {
+    return {
+      success: false,
+      error: "restart غير متاح — أنت مش جوه تطبيق الديسكتوب",
+    };
+  }
+  try {
+    return await backendApi.restart();
+  } catch (e: any) {
+    return { success: false, error: e?.message || String(e) };
+  }
+}
+
+/**
+ * يعمل pre-flight check قبل ما يبدأ lip-sync أو توليد صورة.
+ * - لو الـ backend مش متاح، بيرجع رسالة خطأ واضحة.
+ * - لو متاح، بيرجع null (يعني كمل).
+ *
+ * استخدم ده قبل أي طلب للـ backend عشان تدي المستخدم رسالة واضحة بدل
+ * ما يطول 30 ثانية ويرجع "السيرفر مش متاح".
+ */
+export async function preflightBackendCheck(language: "ar" | "en" = "ar"): Promise<string | null> {
+  const reachable = await isBackendReachable(2000);
+  if (reachable) return null;
+  return language === "ar"
+    ? "السيرفر المحلي مش شغال. لو التطبيق لسه شغال، استنى دقيقة علشان النماذج تحمّل. لو وقع، اضغط 'إعادة تشغيل السيرفر'."
+    : "Local backend is not running. If the app just started, wait ~1 min for models to load. If it crashed, click 'Restart Server'.";
+}
+
 // ============================================================
 // توليد الشخصيات بالـ AI (Character Generation)
 // ============================================================
@@ -547,11 +610,16 @@ export async function getCharacterOptions(): Promise<{
  * يولّد شخصية جديدة بالـ AI من وصف نصي.
  * - يستخدم job-based pattern: POST يبدأ الشغل ويرجع job_id، وبعدين poll كل 2s.
  * - ده عشان نتجنب proxy/ALB timeout (الـ streaming approach كان بيتقطع بعد 30s).
- * - onProgress callback عشان الـ UI يعرض التقدم.
+ * - onProgress callback عشان الـ UI يعرض التقدم + الوقت المنقضي.
+ *
+ * timeout: 6 دقايق (180 محاولة × 2s). الـ backend بياخد لـ 180s في الـ subprocess
+ * + محاولات retry لو فلتر المحتوى رفض الـ prompt. الـ 120s القديمة كانت بتنتهي
+ * قبل ما الـ backend يخلص، فكان يظهر للمستخدم "الـ AI بطيء" بالرغم إن الشغل
+ * لسه شغال في الـ background.
  */
 export async function generateCharacter(
   options: GenerateCharacterOptions,
-  onProgress?: (progress: number, message: string) => void
+  onProgress?: (progress: number, message: string, elapsedSec?: number) => void
 ): Promise<GeneratedCharacter> {
   const { prompt, style = "realistic", gender = "any", language = "ar" } = options;
 
@@ -559,8 +627,11 @@ export async function generateCharacter(
     throw new Error(language === "ar" ? "اكتب وصف للشخصية" : "Describe the character first");
   }
 
+  const t0 = Date.now();
+  const elapsed = () => Math.floor((Date.now() - t0) / 1000);
+
   // 1. ابدأ الـ job
-  onProgress?.(5, language === "ar" ? "بدء التوليد..." : "Starting...");
+  onProgress?.(5, language === "ar" ? "بدء التوليد..." : "Starting...", 0);
   const startRes = await fetch(`${BACKEND_URL}/generate-character`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -582,21 +653,34 @@ export async function generateCharacter(
     throw new Error(language === "ar" ? "فشل بدء التوليد" : "Failed to start generation");
   }
 
-  // 2. Poll للحالة كل 2 ثانية (حد أقصى 120 ثانية)
-  const maxAttempts = 60;
+  // 2. Poll للحالة كل 2 ثانية (حد أقصى 360 ثانية = 6 دقايق)
+  //    - الـ backend بياخد عادة 15-40 ثانية
+  //    - لو فلتر المحتوى رفض، الـ backend بيعيد المحاولة 4 مرات مع rephrase
+  //    - كل retry بياخد ~30s، فالمجموع ممكن يوصل لـ 150s
+  //    - 360s بتدي buffer كافي + تتحسب لأي network hiccup
+  const maxAttempts = 180;
+  let consecutiveErrors = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000));
 
-    let pollRes: Response;
+    let pollRes: Response | null = null;
     try {
       pollRes = await fetch(`${BACKEND_URL}/generate-character?id=${encodeURIComponent(jobId)}`, {
         cache: "no-store",
       });
+      consecutiveErrors = 0;
     } catch {
       // network hiccup — retry
+      consecutiveErrors++;
+      if (consecutiveErrors >= 5) {
+        throw new Error(
+          language === "ar"
+            ? "فقد الاتصال بالسيرفر — اتأكد من النت وحاول تاني"
+            : "Lost connection to server — check network and retry"
+        );
+      }
       continue;
     }
-
     if (!pollRes.ok) {
       if (pollRes.status === 404) {
         throw new Error(language === "ar" ? "انتهت صلاحية الطلب - حاول تاني" : "Job expired - try again");
@@ -605,7 +689,17 @@ export async function generateCharacter(
     }
 
     const data: GeneratedCharacter & { status: string; progress: number; message: string } = await pollRes.json();
-    onProgress?.(data.progress || 0, data.message || "");
+
+    // حدّث الـ progress على أساس الوقت المنقضي (مزيف بس بيدي إحساس بالتقدم)
+    // الـ backend مابيرجّعش progress حقيقي أثناء الـ image generation،
+    // فبنحسب تقدير بناءً على إن المعدل الطبيعي 15-40s.
+    const secs = elapsed();
+    const fakeProgress = Math.min(95, 5 + Math.floor((secs / 60) * 80));
+    const displayProgress = Math.max(data.progress || 0, fakeProgress);
+    const displayMessage = data.message || (language === "ar"
+      ? `جاري التوليد... ${secs}s`
+      : `Generating... ${secs}s`);
+    onProgress?.(displayProgress, displayMessage, secs);
 
     if (data.status === "completed") {
       if (!data.image_base64 || data.image_base64.length < 1000) {
@@ -615,6 +709,7 @@ export async function generateCharacter(
             : "AI returned empty image - try again with a different description"
         );
       }
+      onProgress?.(100, language === "ar" ? "اكتمل" : "Done", secs);
       return {
         success: true,
         image_base64: data.image_base64,
@@ -637,8 +732,12 @@ export async function generateCharacter(
     // status === "processing" → keep polling
   }
 
+  // Time-out بعد 6 دقايق. الرسالة أوضح من "AI is slow" — نوضّح إن الـ backend
+  // لسه شغال في الـ background، والمستخدم يقدر يحاول تاني بوصف أبسط.
   const e = new Error(
-    language === "ar" ? "انتهى الوقت - الـ AI بطيء. حاول تاني." : "Timed out - AI is slow. Try again."
+    language === "ar"
+      ? `انتهت صلاحية الانتظار بعد 6 دقايق. الـ AI ممكن يكون مشغول أو بيقفل فلتر المحتوى. جرّب وصف أبسط أو حاول تاني بعد شوية.`
+      : `Timed out after 6 minutes. The AI may be busy or hitting content filter. Try a simpler prompt or retry in a moment.`
   ) as Error & { error_type?: string };
   e.error_type = "timeout";
   throw e;

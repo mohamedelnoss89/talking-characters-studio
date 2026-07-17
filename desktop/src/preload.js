@@ -1,7 +1,14 @@
 /**
- * Preload — exposes a small, safe IPC bridge to the renderer (installer.html).
+ * Preload — exposes a small, safe IPC bridge to the renderer (installer.html
+ * and the PWA loaded from Vercel).
+ *
  * The renderer is loaded with contextIsolation:true, so it can't touch Node
  * directly. It can only call these explicitly-allowed methods.
+ *
+ * Two namespaces:
+ *   - window.installer  → installer + diagnostic + launch APIs
+ *   - window.updater    → auto-update APIs (check, download, install, subscribe)
+ *   - window.backend    → backend lifecycle APIs (restart, status)
  */
 
 const { contextBridge, ipcRenderer } = require("electron");
@@ -36,5 +43,93 @@ contextBridge.exposeInMainWorld("installer", {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on("installer:backendLog", handler);
     return () => ipcRenderer.removeListener("installer:backendLog", handler);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Auto-updater bridge — used by the PWA (loaded from Vercel) to show an
+// "update available" banner and trigger download/install.
+// ---------------------------------------------------------------------------
+
+contextBridge.exposeInMainWorld("updater", {
+  /**
+   * Check GitHub Releases for a newer version.
+   * Returns { success, cached?, updateInfo?, error? }.
+   *   updateInfo = { version, releaseDate, releaseName, releaseNotes } | null
+   */
+  check: () => ipcRenderer.invoke("updater:check"),
+
+  /**
+   * Download the latest update (if available). Triggers `progress` events.
+   * Returns { success, error? }.
+   */
+  download: () => ipcRenderer.invoke("updater:download"),
+
+  /**
+   * Quit the app and run the NSIS updater. The app will relaunch after install.
+   * Returns { success, error? }.
+   */
+  install: () => ipcRenderer.invoke("updater:install"),
+
+  /** Returns { available, currentVersion, updateInfo, downloadedVersion, downloadPercent, lastError } */
+  status: () => ipcRenderer.invoke("updater:status"),
+
+  /**
+   * Subscribe to updater events. Returns an unsubscribe function.
+   * Events:
+   *   { event: "checking" }
+   *   { event: "available",  updateInfo }
+   *   { event: "not-available", currentVersion }
+   *   { event: "error",      error }
+   *   { event: "progress",   percent, transferred, total }
+   *   { event: "downloaded", version }
+   */
+  subscribe: (callback) => {
+    const channels = [
+      "updater:checking",
+      "updater:available",
+      "updater:not-available",
+      "updater:error",
+      "updater:progress",
+      "updater:downloaded",
+    ];
+    const handlers = {};
+    for (const ch of channels) {
+      const eventName = ch.replace("updater:", "");
+      const h = (_event, data) => callback({ event: eventName, ...data });
+      handlers[ch] = h;
+      ipcRenderer.on(ch, h);
+    }
+    return () => {
+      for (const ch of channels) {
+        ipcRenderer.removeListener(ch, handlers[ch]);
+      }
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Backend lifecycle bridge — lets the PWA restart the local Python backend
+// when it crashes (OOM during heavy lip-sync) instead of forcing the user
+// to quit and relaunch the whole app.
+// ---------------------------------------------------------------------------
+
+contextBridge.exposeInMainWorld("backend", {
+  /**
+   * Restart the local Python backend (kill + respawn + wait for /health).
+   * Returns { success, error? }.
+   */
+  restart: () => ipcRenderer.invoke("backend:restart"),
+
+  /**
+   * Returns { running, starting, lastExitCode, pid?, port }.
+   */
+  status: () => ipcRenderer.invoke("backend:status"),
+
+  /** Subscribe to backend log lines (so the PWA can show what Python is doing). */
+  onLog: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on("backend:log", handler);
+    return () => ipcRenderer.removeListener("backend:log", handler);
   },
 });

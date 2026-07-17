@@ -57,6 +57,9 @@ import {
   getCharacterOptions,
   base64ImageToFile,
   detectFaces,
+  preflightBackendCheck,
+  isBackendReachable,
+  restartDesktopBackend,
   type LipSyncJobStatus,
   type MultiScriptEntry,
   type TtsVoice,
@@ -66,6 +69,8 @@ import {
   type DetectedFace,
   editCharacter,
 } from "@/lib/wav2lip-client";
+import { UpdateBanner } from "@/components/UpdateBanner";
+import { BackendRestartButton } from "@/components/BackendRestartButton";
 
 // ============================================================
 // FaceSelector — Component لاختيار الوجه اللي هيتكلم
@@ -556,6 +561,14 @@ function HomeInner() {
     setDebugInfo("");
 
     try {
+      // Pre-flight: تأكد إن الـ backend شغال قبل ما نبدأ (يستنى 1-3 دقايق
+      // لو الـ app لسه بتحمّل النماذج). ده بيمنع الـ "AI is slow" message
+      // المضللة لما السيرفر يكون لسه بيبدأ.
+      const preflightErr = await preflightBackendCheck(lang);
+      if (preflightErr) {
+        throw Object.assign(new Error(preflightErr), { error_type: "backend_unavailable" });
+      }
+
       setGenCharStep(t.generatingStep1);
       // job-based: POST يبدأ الشغل، poll كل 2s — كده الـ ALB مش بيتقطع
       const result = await generateCharacter({
@@ -563,8 +576,11 @@ function HomeInner() {
         style: charStyle,
         gender: charGender,
         language: lang,
-      }, (progress, message) => {
+      }, (progress, message, elapsedSec) => {
         if (message) setGenCharStep(message);
+        if (typeof elapsedSec === "number") {
+          setDebugInfo(lang === "ar" ? `الوقت: ${elapsedSec}s` : `Elapsed: ${elapsedSec}s`);
+        }
       });
 
       // Sanity check: الـ response لازم يكون فيه image_base64
@@ -993,6 +1009,19 @@ function HomeInner() {
       return;
     }
 
+    // فحص مسبق سريع للـ backend المحلي (http://localhost:8000) — مش Vercel proxy.
+    // ده بيكشف لو الـ backend وقع أثناء شغل سابق (OOM) أو لسه بيبدأ.
+    const preflightErr = await preflightBackendCheck(lang);
+    if (preflightErr) {
+      setDebugInfo(preflightErr);
+      toast({
+        variant: "destructive",
+        title: lang === "ar" ? "السيرفر مش متاح" : "Server unavailable",
+        description: preflightErr,
+      });
+      return;
+    }
+
     setIsGenerating(true);
     setGenerateProgress(0);
     setGenerateMessage(lang === "ar" ? "بتجهيز الطلب..." : "Preparing request...");
@@ -1159,6 +1188,18 @@ function HomeInner() {
         : "Wav2Lip engine is not available on this server.";
       setDebugInfo(msg);
       toast({ variant: "destructive", title: lang === "ar" ? "ميزة مش متاحة" : "Feature unavailable", description: msg });
+      return;
+    }
+
+    // فحص مسبق سريع للـ backend المحلي (http://localhost:8000)
+    const preflightErr = await preflightBackendCheck(lang);
+    if (preflightErr) {
+      setDebugInfo(preflightErr);
+      toast({
+        variant: "destructive",
+        title: lang === "ar" ? "السيرفر مش متاح" : "Server unavailable",
+        description: preflightErr,
+      });
       return;
     }
 
@@ -2496,6 +2537,8 @@ function HomeInner() {
       </footer>
 
       <Toaster />
+      <UpdateBanner />
+      <BackendRestartButton language={lang} />
     </div>
   );
 }

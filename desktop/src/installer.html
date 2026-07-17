@@ -392,6 +392,33 @@
       }
     }
 
+    // -------------------------------------------------------------
+    // Progress log throttling
+    // -------------------------------------------------------------
+    // downloadFile() in installer-python.js calls onProgress for EVERY chunk
+    // received, which can fire hundreds of times per second. Without throttling,
+    // the log panel fills with duplicate lines like "21% تحميل Python..." repeated
+    // ~25 times per percentage point.
+    //
+    // We track the last logged (stage, percent, message) tuple per stage and only
+    // call appendLog when something material has changed: either the percent
+    // changed by >= 1, OR the message text changed, OR the level changed.
+    const lastProgressByStage = new Map();
+    function shouldLogProgress(stage, percent, message) {
+      const last = lastProgressByStage.get(stage);
+      const pct = Math.floor(percent); // round to int
+      const msgKey = (message || "").trim();
+      if (!last) {
+        lastProgressByStage.set(stage, { pct, msg: msgKey });
+        return true;
+      }
+      // Same percent AND same message → skip (this is the flooding case)
+      if (last.pct === pct && last.msg === msgKey) return false;
+      // Update the cache and log
+      lastProgressByStage.set(stage, { pct, msg: msgKey });
+      return true;
+    }
+
     function setStageStatus(stage, text, percent) {
       const statusEl = document.getElementById(`status-${stage}`);
       const fillEl = document.getElementById(`fill-${stage}`);
@@ -483,15 +510,21 @@
       // Subscribe to progress events
       try {
         installerApi.onProgress(({ stage, percent, message }) => {
-          appendLog(`[${stage}] ${percent}% ${message}`, percent < 0 ? "error" : "info");
+          // Throttle: only append a log line if percent or message changed.
+          // The progress bar (setStageStatus) still updates on every event so the
+          // UI feels responsive — we just don't spam the log panel.
           setStageStatus(stage, message, percent);
           if (percent < 0) {
+            // Error — always log
+            appendLog(`[${stage}] ${percent}% ${message}`, "error");
             showError(
               `فشل في مرحلة: ${stageLabels[stage] || stage}`,
               message
             );
             installBtn.disabled = false;
             installBtn.textContent = "أعد المحاولة";
+          } else if (shouldLogProgress(stage, percent, message)) {
+            appendLog(`[${stage}] ${percent}% ${message}`, "info");
           }
         });
         appendLog("✓ مشترك في تحديثات التقدّم", "success");
