@@ -91,6 +91,10 @@ jobs:
   build-macos:
     name: Build macOS installer (.dmg)
     runs-on: macos-latest
+    # macOS build is best-effort: hdiutil intermittently fails on GitHub runners.
+    # We don't gate the release on macOS — it's marked "coming soon" on the
+    # install page anyway. The release job runs as long as Windows succeeded.
+    continue-on-error: true
     defaults:
       run:
         working-directory: desktop
@@ -122,7 +126,8 @@ jobs:
 
   release:
     name: Publish to GitHub Releases
-    needs: [build-windows, build-macos]
+    # Only require Windows to succeed — macOS is best-effort (continue-on-error above)
+    needs: build-windows
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -145,14 +150,15 @@ jobs:
           name: windows-installer
           path: release-assets/
 
-      - name: Download macOS installer
+      - name: Try download macOS installer (best-effort, may not exist)
         uses: actions/download-artifact@v4
         with:
           name: macos-installer
           path: release-assets/
+        continue-on-error: true
 
       - name: List release assets
-        run: ls -la release-assets/
+        run: ls -la release-assets/ || true
 
       - name: Create or update release
         uses: softprops/action-gh-release@v2
