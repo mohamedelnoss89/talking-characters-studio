@@ -39,7 +39,7 @@ function isElectron() {
 
 // GitHub Releases URLs — installers are hosted as release assets on GitHub
 // (avoids Vercel's 100MB static file limit, and works for any file size).
-// Release: https://github.com/mohamedelnoss89/talking-characters-studio/releases/tag/v1.0.0
+// Release: https://github.com/mohamedelnoss89/talking-characters-studio/releases/tag/v1.0.1
 const GITHUB_RELEASE_BASE =
   "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download";
 
@@ -48,21 +48,21 @@ const DOWNLOADS = {
   // User extracts the ZIP, then runs the .exe inside (which may show SmartScreen
   // but at least they can see it's a real app folder with all DLLs).
   windowsZip: {
-    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.0-windows.zip`,
+    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.1-windows.zip`,
     label: "Windows (ZIP)",
-    size: "~91MB",
+    size: "~100MB",
     icon: Monitor,
   },
   windows: {
     // Windows portable .exe (NSIS self-extracting) — smaller but triggers SmartScreen
-    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-Portable-1.0.0.exe`,
+    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-Portable-1.0.1.exe`,
     label: "Windows (.exe)",
     size: "~67MB",
     icon: Monitor,
   },
   linux: {
     // Linux AppImage — single file, no install required
-    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.0.AppImage`,
+    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.1.AppImage`,
     label: "Linux",
     size: "~100MB",
     icon: Monitor,
@@ -178,6 +178,27 @@ export default function InstallPage() {
               "Open Run (Win + R), type: %LOCALAPPDATA% and press Enter",
               "Delete the folder named 'Talking Characters Studio' entirely (this removes the broken old Python)",
               "Come back to this page and download the new version using the buttons above",
+            ],
+    },
+    extractFirst: {
+      title: lang === "ar" ? "⚠️ مهم جدًا: فك ضغط الـ ZIP الأول!" : "⚠️ IMPORTANT: Extract the ZIP first!",
+      body:
+        lang === "ar"
+          ? "لو حملت نسخة ZIP، لازم تفك ضغط الملف الأول قبل ما تشغل الـ .exe. متشغلش الـ .exe من جوه الـ ZIP مباشرة (زي ما بيفتحه WinRAR) لأن ده بيخلق مجلد مؤقت هيتمسح ويسبب مشاكل في تشغيل التطبيق."
+          : "If you downloaded the ZIP version, you MUST extract the ZIP file first before running the .exe. Do NOT run the .exe directly from inside the ZIP (as WinRAR does) — this creates a temporary folder that gets deleted and causes the app to malfunction.",
+      steps:
+        lang === "ar"
+          ? [
+              "كليك يمين على ملف الـ ZIP اللي حملته → «Extract Here» أو «استخراج هنا»",
+              "هتلاقي مجلد جديد باسم التطبيق — ادخل جوه المجلد ده",
+              "دبل-كليك على ملف «محرك الشخصيات المتكلمة.exe» جوه المجلد",
+              "لو ظهر رسالة SmartScreen → اضغط «More info» → «Run anyway»",
+            ]
+          : [
+              "Right-click the downloaded ZIP file → 'Extract Here'",
+              "A new folder will appear with the app name — open it",
+              "Double-click 'محرك الشخصيات المتكلمة.exe' inside the extracted folder",
+              "If SmartScreen appears → click 'More info' → 'Run anyway'",
             ],
     },
   };
@@ -383,6 +404,22 @@ export default function InstallPage() {
           <div className="mb-6 p-3 rounded-lg bg-black/30 border border-white/5 text-center">
             <p className="text-xs text-gray-400">{t.systemReq}</p>
             <p className="text-xs text-amber-300/80 mt-1">{t.firstRunNote}</p>
+          </div>
+
+          {/* Extract ZIP first warning — CRITICAL: running .exe from inside ZIP breaks the app */}
+          <div className="mb-6 p-4 rounded-xl bg-orange-500/10 border-2 border-orange-500/50">
+            <div className="flex items-start gap-3 mb-3">
+              <span className="text-2xl shrink-0">⚠️</span>
+              <div>
+                <p className="font-bold text-orange-200 text-sm mb-1">{t.extractFirst.title}</p>
+                <p className="text-xs text-orange-100/80 leading-relaxed">{t.extractFirst.body}</p>
+              </div>
+            </div>
+            <ol className="text-xs text-orange-100/90 space-y-2 mt-3 ms-8 list-decimal">
+              {t.extractFirst.steps.map((step, i) => (
+                <li key={i} className="leading-relaxed">{step}</li>
+              ))}
+            </ol>
           </div>
 
           {/* Old version cleanup — IMPORTANT for users who tried the broken v1.0.0 */}

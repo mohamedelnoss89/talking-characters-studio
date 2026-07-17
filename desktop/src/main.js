@@ -51,13 +51,18 @@ const RESOURCES_PATH = IS_PACKAGED
   ? process.resourcesPath
   : path.join(__dirname, "..", "..");
 
-// Backend Python source lives in resources/backend (extraResources in package.json)
-const BACKEND_SRC_DIR = path.join(RESOURCES_PATH, "backend");
+// Backend Python source ships in resources/backend (extraResources in package.json).
+// This is the "read-only" copy bundled with the app.
+const BUNDLED_BACKEND_SRC_DIR = path.join(RESOURCES_PATH, "backend");
 
-// User data dir: where Python + models + venv live (per-user, writable)
-// Windows: %LOCALAPPDATA%/Talking Characters Studio/
-// macOS:   ~/Library/Application Support/Talking Characters Studio/
+// User data dir: where Python + models + venv live (per-user, writable).
+// We ALSO copy the backend source here on first run, so the app keeps working
+// even if the user runs it from a volatile location (e.g. a WinRAR temp folder
+// created when double-clicking an .exe inside a .zip without extracting it first).
+// Windows: %APPDATA%/talking-characters-studio-desktop/backend/
+// macOS:   ~/Library/Application Support/talking-characters-studio-desktop/backend/
 const USER_DATA_DIR = path.join(app.getPath("userData"), "backend");
+const BACKEND_SRC_DIR = USER_DATA_DIR; // spawn cwd = copied backend dir
 const PYTHON_DIR = path.join(app.getPath("userData"), "python");
 const VENV_DIR = path.join(app.getPath("userData"), "venv");
 const WAV2LIP_DIR = path.join(USER_DATA_DIR, "Wav2Lip");
@@ -137,19 +142,100 @@ function getVenvPython() {
   return venvPy;
 }
 
+/**
+ * Copy backend source from the bundled location (process.resourcesPath/backend)
+ * to the user-writable userData/backend directory. This decouples the running
+ * backend from the original .exe location — critical when the user runs the
+ * app directly from inside a .zip/.rar archive (WinRAR extracts to a temp
+ * folder like `Rar$EXa0a0a0a.rartemp` that gets deleted when WinRAR closes).
+ *
+ * Idempotent: skips files that already match the bundled version. Safe to call
+ * on every launch.
+ */
+function syncBackendSource() {
+  try {
+    if (!fs.existsSync(BUNDLED_BACKEND_SRC_DIR)) {
+      log("[syncBackendSource] Bundled backend not found at", BUNDLED_BACKEND_SRC_DIR, "— skipping sync");
+      return false;
+    }
+    fs.mkdirSync(BACKEND_SRC_DIR, { recursive: true });
+
+    // Marker file: stores the bundled backend's mtime so we only re-sync when
+    // the bundled copy changes (e.g. after an app update).
+    const markerPath = path.join(BACKEND_SRC_DIR, ".synced-from");
+    const bundledMarker = BUNDLED_BACKEND_SRC_DIR; // any consistent string works
+    let existingMarker = "";
+    try {
+      existingMarker = fs.readFileSync(markerPath, "utf8").trim();
+    } catch {}
+    if (existingMarker === bundledMarker) {
+      log("[syncBackendSource] Already synced to", BACKEND_SRC_DIR);
+      return true;
+    }
+
+    log("[syncBackendSource] Copying backend source from", BUNDLED_BACKEND_SRC_DIR, "to", BACKEND_SRC_DIR);
+    // Recursive copy. We deliberately do NOT copy Wav2Lip/, checkpoints/,
+    // uploads/, outputs/ etc. — those live in userData and are managed by
+    // the installer (so re-syncing doesn't nuke a 415MB model download).
+    const SKIP_NAMES = new Set(["Wav2Lip", "checkpoints", "uploads", "outputs", "results", "temp", "__pycache__"]);
+    function copyDir(src, dest) {
+      fs.mkdirSync(dest, { recursive: true });
+      for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        if (SKIP_NAMES.has(entry.name)) continue;
+        if (entry.name.endsWith(".pyc")) continue;
+        const s = path.join(src, entry.name);
+        const d = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+          copyDir(s, d);
+        } else {
+          // Only overwrite if size or mtime differs (cheap stat check)
+          let skip = false;
+          try {
+            const srcStat = fs.statSync(s);
+            const destStat = fs.statSync(d);
+            if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) skip = true;
+          } catch {}
+          if (!skip) fs.copyFileSync(s, d);
+        }
+      }
+    }
+    copyDir(BUNDLED_BACKEND_SRC_DIR, BACKEND_SRC_DIR);
+    fs.writeFileSync(markerPath, bundledMarker);
+    log("[syncBackendSource] Sync complete");
+    return true;
+  } catch (e) {
+    log("[syncBackendSource] FAILED:", e);
+    return false;
+  }
+}
+
 function startBackend() {
   if (backendProcess || backendStarting) return Promise.resolve();
   backendStarting = true;
 
   return new Promise((resolve, reject) => {
+    // Make sure backend source is available in userData (not just in the
+    // volatile resourcesPath).
+    syncBackendSource();
+
     const py = getVenvPython();
     if (!fs.existsSync(py)) {
       backendStarting = false;
-      reject(new Error("Python venv not found: " + py));
+      reject(new Error("Python مش موجود. شغّل تثبيت Python الأول. (الاتجول على: " + py + ")"));
+      return;
+    }
+    if (!fs.existsSync(path.join(BACKEND_SRC_DIR, "server.py"))) {
+      backendStarting = false;
+      reject(new Error("server.py مش موجود في: " + BACKEND_SRC_DIR + " — حاول تنصيب التطبيق من جديد."));
       return;
     }
 
-    log("Starting backend:", py, "server.py");
+    log("Starting backend:", py, "server.py", "cwd=" + BACKEND_SRC_DIR);
+    sendBackendLog("[launch] Starting Python backend...");
+    sendBackendLog("[launch] Python: " + py);
+    sendBackendLog("[launch] cwd: " + BACKEND_SRC_DIR);
+    sendBackendLog("[launch] ملاحظة: تحميل نماذج الـ AI ممكن ياخد 1-3 دقايق، استنى...");
+
     backendProcess = spawn(py, ["server.py"], {
       cwd: BACKEND_SRC_DIR,
       env: {
@@ -163,20 +249,43 @@ function startBackend() {
     });
 
     backendProcess.stdout.on("data", (chunk) => {
-      log("[py:stdout]", chunk.toString().trim());
+      const text = chunk.toString().trim();
+      if (text) {
+        log("[py:stdout]", text);
+        sendBackendLog("[py] " + text);
+      }
     });
     backendProcess.stderr.on("data", (chunk) => {
-      log("[py:stderr]", chunk.toString().trim());
+      const text = chunk.toString().trim();
+      if (text) {
+        log("[py:stderr]", text);
+        sendBackendLog("[py:err] " + text);
+      }
     });
     backendProcess.on("exit", (code) => {
       log("Backend exited with code", code);
+      sendBackendLog("[launch] Backend exited with code " + code);
       backendProcess = null;
       backendStarting = false;
+      if (code !== 0 && code !== null) {
+        reject(new Error("Backend crashed with exit code " + code + ". شوف الـ log فوق علشان التفاصيل."));
+      }
+    });
+    backendProcess.on("error", (err) => {
+      log("Backend spawn error:", err);
+      sendBackendLog("[launch] Spawn error: " + err.message);
+      backendStarting = false;
+      reject(err);
     });
 
-    // Wait for /health to respond
+    // Wait for /health to respond.
+    // CRITICAL: timeout is 5 MINUTES, not 60 seconds. The backend pre-loads
+    // the Wav2Lip model (~415MB) on startup, which can take 1-3 minutes on a
+    // regular CPU. The previous 60s timeout was the root cause of the
+    // "Backend health check timed out" error.
     const start = Date.now();
-    const timeoutMs = 60_000;
+    const timeoutMs = 5 * 60 * 1000; // 5 minutes
+    let lastProgressAt = start;
     const check = () => {
       const req = http.get(`${BACKEND_URL}/health`, (res) => {
         let body = "";
@@ -184,6 +293,7 @@ function startBackend() {
         res.on("end", () => {
           if (res.statusCode === 200) {
             log("Backend is healthy:", body);
+            sendBackendLog("[launch] ✓ Backend is healthy!");
             backendStarting = false;
             resolve();
           } else {
@@ -198,14 +308,23 @@ function startBackend() {
       });
     };
     const scheduleNext = () => {
-      if (Date.now() - start > timeoutMs) {
+      const elapsed = Date.now() - start;
+      if (elapsed > timeoutMs) {
         backendStarting = false;
-        reject(new Error("Backend health check timed out after 60s"));
+        const msg = "Backend health check timed out after 5min. السبب الأرجح: تحميل نماذج الـ AI بطيء جدًا، أو Python crashed. شوف الـ log فوق.";
+        sendBackendLog("[launch] ✗ " + msg);
+        reject(new Error(msg));
         return;
       }
-      setTimeout(check, 1000);
+      // Every 15 seconds, send a heartbeat so the user knows we're still alive
+      if (Date.now() - lastProgressAt > 15_000) {
+        const secs = Math.floor(elapsed / 1000);
+        sendBackendLog(`[launch] ...ليها ${secs}s — لسه مستني الـ backend يبدأ (ممكن ياخد لـ 5 دقايق)`);
+        lastProgressAt = Date.now();
+      }
+      setTimeout(check, 1500);
     };
-    setTimeout(check, 1500);
+    setTimeout(check, 2000);
   });
 }
 
@@ -378,6 +497,16 @@ ipcMain.handle("installer:getInstallState", async () => {
 function sendProgress(stage, percent, message) {
   if (installerWindow && !installerWindow.isDestroyed()) {
     installerWindow.webContents.send("installer:progress", { stage, percent, message });
+  }
+}
+
+// Forward backend stdout/stderr lines to the installer window so the user can
+// see what the Python backend is doing during launch (e.g. "Loading model...",
+// "Starting server on port 8000..."). Without this, the launch appears frozen
+// for 1-3 minutes while the Wav2Lip model loads.
+function sendBackendLog(line) {
+  if (installerWindow && !installerWindow.isDestroyed()) {
+    installerWindow.webContents.send("installer:backendLog", { line });
   }
 }
 

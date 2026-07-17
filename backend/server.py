@@ -46,7 +46,51 @@ except Exception as e:
     print(f"[Server] WARNING: wav2lip_runner not available ({e}). Running in degraded mode — /lip-sync disabled.")
     WAV2LIP_AVAILABLE = False
 
-app = FastAPI(title="Wav2Lip Lip Sync API", version="1.0")
+# Background model pre-loading state.
+# CRITICAL: We start uvicorn FIRST and pre-load the Wav2Lip model in a background
+# thread. This way /health responds immediately (within ~2 seconds of launch),
+# and the Electron main process's health check succeeds quickly. The previous
+# approach called load_model() BEFORE uvicorn.run(), which blocked startup for
+# 1-3 minutes on a regular CPU (loading a 415MB checkpoint) and caused the
+# Electron launcher to time out at 60s.
+import threading
+_model_load_status = {"loaded": False, "loading": False, "error": None}
+
+def _preload_model_background():
+    """Pre-load the Wav2Lip model in a background thread. Sets _model_load_status."""
+    if _model_load_status["loaded"] or _model_load_status["loading"]:
+        return
+    if not WAV2LIP_AVAILABLE:
+        return
+    _model_load_status["loading"] = True
+    print("[Server] Background model pre-load started...", flush=True)
+    try:
+        wav2lip_runner.load_model()
+        _model_load_status["loaded"] = True
+        _model_load_status["loading"] = False
+        print("[Server] Background model pre-load complete.", flush=True)
+    except Exception as e:
+        _model_load_status["loading"] = False
+        _model_load_status["error"] = str(e)
+        print(f"[Server] Background model pre-load FAILED: {e}", flush=True)
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    """FastAPI lifespan: kicks off background model pre-load on startup."""
+    # Startup: schedule background pre-load
+    if WAV2LIP_AVAILABLE:
+        t = threading.Thread(target=_preload_model_background, daemon=True)
+        t.start()
+        print("[Server] Scheduled background model pre-load. uvicorn is ready to serve requests.", flush=True)
+    else:
+        print("[Server] Running in degraded mode (Wav2Lip not installed). /health, /voices, /tts still work.", flush=True)
+    yield
+    # Shutdown
+    print("[Server] Shutting down...", flush=True)
+
+app = FastAPI(title="Wav2Lip Lip Sync API", version="1.0", lifespan=lifespan)
 
 # CORS - allow Next.js frontend
 app.add_middleware(
@@ -81,6 +125,8 @@ async def health():
         "status": "ok",
         "device": (wav2lip_runner.DEVICE if WAV2LIP_AVAILABLE else "cpu"),
         "model_loaded": (WAV2LIP_AVAILABLE and wav2lip_runner._model is not None),
+        "model_loading": _model_load_status["loading"],
+        "model_load_error": _model_load_status["error"],
         "tts_available": TTS_AVAILABLE,
         "wav2lip_available": WAV2LIP_AVAILABLE,
     }
@@ -1044,16 +1090,10 @@ async def get_edit_character_status(job_id: str):
 
 
 if __name__ == "__main__":
-    # Pre-load model so first request is fast (only if available)
-    if WAV2LIP_AVAILABLE:
-        print("[Server] Pre-loading Wav2Lip model...")
-        try:
-            wav2lip_runner.load_model()
-            print("[Server] Model loaded.")
-        except Exception as e:
-            print(f"[Server] Model load failed ({e}) — /lip-sync will return 503.")
-    else:
-        print("[Server] Running in degraded mode (Wav2Lip not installed). /health, /voices, /tts still work.")
-
-    print("[Server] Starting server on port 8000...")
+    # NOTE: Model pre-loading is now handled by the FastAPI lifespan handler
+    # (see `lifespan()` above). uvicorn starts immediately, and the model
+    # loads in a background thread. This is critical because the previous
+    # approach (blocking pre-load before uvicorn.run) caused the Electron
+    # launcher's 60s health-check timeout to fire on slow CPUs.
+    print("[Server] Starting server on port 8000...", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

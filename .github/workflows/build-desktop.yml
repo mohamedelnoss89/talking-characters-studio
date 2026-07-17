@@ -5,15 +5,15 @@ name: Build Desktop Installers
 #
 # Triggers:
 #   - Manually from the Actions tab ("Run workflow")
-#   - On pushing a tag like "v1.0.0" (creates a release automatically)
+#   - On pushing a tag like "v1.0.1" (creates a release automatically)
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version number (e.g. 1.0.0)"
+        description: "Version number (e.g. 1.0.1)"
         required: true
-        default: "1.0.0"
+        default: "1.0.1"
   push:
     tags:
       - "v*"
@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows installer (.exe)
+    name: Build Windows installer (.exe + portable + .zip)
     runs-on: windows-latest
     defaults:
       run:
@@ -42,16 +42,50 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Build installer
-        run: npm run build
+      - name: Read version from package.json
+        id: pkg
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+
+      # Build ALL three Windows artifacts in one electron-builder invocation:
+      #   - NSIS installer:  TalkingCharactersStudio-Setup-1.0.x.exe
+      #   - Portable:        TalkingCharactersStudio-Portable-1.0.x.exe
+      #   - Unpacked dir:    dist/win-unpacked/   (we zip this manually below)
+      - name: Build installers (NSIS + portable + unpacked)
+        run: npx electron-builder --win nsis portable --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifact
+      # Create the ZIP from the unpacked directory. The ZIP version is
+      # RECOMMENDED on the install page because browsers don't trigger
+      # SmartScreen on .zip downloads (only on .exe).
+      - name: Create Windows ZIP from win-unpacked
+        shell: pwsh
+        run: |
+          $version = "${{ steps.pkg.outputs.version }}"
+          $zipName = "TalkingCharactersStudio-$version-windows.zip"
+          Write-Host "Creating $zipName from dist/win-unpacked..."
+          if (-not (Test-Path "dist/win-unpacked")) {
+            Write-Error "dist/win-unpacked not found! electron-builder may have failed."
+            exit 1
+          }
+          # Compress-Archive is built into PowerShell on Windows.
+          # -Path *  includes everything inside win-unpacked (so the zip extracts
+          #          to a flat folder, not a nested win-unpacked/ dir).
+          Compress-Archive -Path "dist/win-unpacked/*" -DestinationPath "dist/$zipName" -CompressionLevel Optimal
+          Write-Host "Created: dist/$zipName"
+          Get-ChildItem dist/
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: desktop/dist/*.exe
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.zip
           if-no-files-found: error
 
   build-macos:
@@ -98,7 +132,7 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            # Tag push: extract version from tag (v1.0.0 → 1.0.0)
+            # Tag push: extract version from tag (v1.0.1 → 1.0.1)
             TAG="${GITHUB_REF#refs/tags/v}"
             echo "version=$TAG" >> $GITHUB_OUTPUT
           else
@@ -128,10 +162,15 @@ jobs:
           body: |
             # تحميل التطبيق — Download the App
 
+            ## ⚠️ مهم: فك ضغط الـ ZIP الأول!
+            لو حملت نسخة ZIP، **لازم تفك الضغط الأول** قبل ما تشغل الـ .exe.
+            متشغلش الـ .exe من جوه الـ ZIP مباشرة (زي ما بيفتحه WinRAR) لأن ده بيخلق مجلد مؤقت هيتمسح.
+
             ## Windows
-            - حمّل ملف `.exe` وافتحه
-            - اضغط «التالي» في معالج التثبيت
+            - **موصى به**: حمّل ملف `.zip` → فك الضغط → شغّل الـ .exe جوه المجلد
+            - أو حمّل ملف الـ `.exe` (Portable) وشغّله مباشرة
             - أول تشغيل هيفتح شاشة تثبيت Python والمكتبات أوتوماتيك
+            - استنى 1-3 دقايق بعد التثبيت علشان الـ AI models تحمّل في الذاكرة
 
             ## macOS
             - حمّل ملف `.dmg` وافتحه
@@ -139,11 +178,12 @@ jobs:
             - أول تشغيل: اضغط كليك يمين → Open (مرة واحدة بس)
 
             ## ملاحظات
-            - الحجم: ~200MB (بدون الـ AI models)
+            - الحجم: ~100MB (بدون الـ AI models)
             - أول تشغيل بينزل ~3GB من Python + PyTorch + Wav2Lip
             - الحد الأدنى: Windows 10 / macOS 11، 8GB RAM، 5GB مساحة فاضية
           files: |
             release-assets/*.exe
+            release-assets/*.zip
             release-assets/*.dmg
           draft: false
           prerelease: false

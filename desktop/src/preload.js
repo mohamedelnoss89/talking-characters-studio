@@ -30,4 +30,11 @@ contextBridge.exposeInMainWorld("installer", {
     ipcRenderer.on("installer:progress", handler);
     return () => ipcRenderer.removeListener("installer:progress", handler);
   },
+
+  /** Subscribe to backend stdout/stderr lines (so user sees what Python is doing during launch). */
+  onBackendLog: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on("installer:backendLog", handler);
+    return () => ipcRenderer.removeListener("installer:backendLog", handler);
+  },
 });

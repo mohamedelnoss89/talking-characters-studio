@@ -1,6 +1,6 @@
 {
   "name": "talking-characters-studio-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "تطبيق محرك الشخصيات المتكلمة - نسخة الديسكتوب",
   "main": "src/main.js",
   "author": {

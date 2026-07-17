@@ -498,6 +498,22 @@
       } catch (e) {
         appendLog("تعذّر الاشتراك في تحديثات التقدّم: " + e.message, "error");
       }
+
+      // Subscribe to backend log events — these are stdout/stderr lines from
+      // the Python backend, forwarded by main.js. They tell the user what's
+      // happening during the long launch (model pre-loading takes 1-3 min).
+      try {
+        installerApi.onBackendLog(({ line }) => {
+          // Classify line color by content
+          let level = "info";
+          if (/error|exception|traceback|failed|✗/i.test(line)) level = "error";
+          else if (/✓|loaded|healthy|started|complete/i.test(line)) level = "success";
+          appendLog(line, level);
+        });
+        appendLog("✓ مشترك في سجلات الـ backend", "success");
+      } catch (e) {
+        appendLog("تعذّر الاشتراك في سجلات الـ backend: " + e.message, "error");
+      }
     }
 
     // ============================================================
@@ -659,8 +675,9 @@
 
     async function launchApp() {
       launchBtn.disabled = true;
-      launchBtn.innerHTML = '<span class="spinner"></span> جاري الفتح...';
+      launchBtn.innerHTML = '<span class="spinner"></span> جاري فتح التطبيق (ممكن ياخد 1-3 دقايق)...';
       appendLog(">>> Launching app...", "info");
+      appendLog("ملاحظة: أول تشغيل بيحمّل نماذج الـ AI في الذاكرة. ممكن ياخد 1-3 دقايق.", "info");
       try {
         const r = await installerApi.launchApp();
         if (!r.success) {
