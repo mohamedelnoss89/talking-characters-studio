@@ -55,7 +55,7 @@ jobs:
       #   - Portable:        TalkingCharactersStudio-Portable-1.0.x.exe
       #   - Unpacked dir:    dist/win-unpacked/   (we zip this manually below)
       - name: Build installers (NSIS + portable + unpacked)
-        run: npx electron-builder --win nsis portable --x64
+        run: npx electron-builder --win nsis portable --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -109,7 +109,7 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Build installer
-        run: npm run build:mac
+        run: npx electron-builder --mac dmg --x64 --arm64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
