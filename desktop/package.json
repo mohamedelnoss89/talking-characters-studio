@@ -26,6 +26,11 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "mohamedelnoss89",
+      "repo": "talking-characters-studio"
+    },
     "files": [
       "src/**/*",
       "assets/**/*",
