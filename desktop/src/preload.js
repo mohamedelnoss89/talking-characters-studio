@@ -44,6 +44,30 @@ contextBridge.exposeInMainWorld("installer", {
     ipcRenderer.on("installer:backendLog", handler);
     return () => ipcRenderer.removeListener("installer:backendLog", handler);
   },
+
+  /**
+   * Auto-launch mode signal — fired by main.js when the app is already
+   * installed and the installer window is being shown ONLY as a launch
+   * progress dialog (not for actual installation). The renderer should
+   * hide install UI and show a "launching..." banner instead.
+   */
+  onAutoLaunch: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on("launcher:autoLaunch", handler);
+    return () => ipcRenderer.removeListener("launcher:autoLaunch", handler);
+  },
+
+  /**
+   * Auto-launch failure signal — fired by main.js when the backend fails
+   * to start during auto-launch. The renderer should show the recovery
+   * buttons (resync / kill-port / fix-numpy) so the user can retry.
+   * Callback receives { error: string }.
+   */
+  onAutoLaunchFailed: (callback) => {
+    const handler = (_event, data) => callback(data || {});
+    ipcRenderer.on("launcher:autoLaunchFailed", handler);
+    return () => ipcRenderer.removeListener("launcher:autoLaunchFailed", handler);
+  },
 });
 
 // ---------------------------------------------------------------------------

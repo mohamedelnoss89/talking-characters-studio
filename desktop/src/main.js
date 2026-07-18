@@ -400,6 +400,28 @@ async function checkAndFixNumpy(venvPy) {
     return { fixed: false };
   }
 
+  // CACHE: Skip the check if we already verified numpy<2 in this app
+  // version. The check requires spawning Python and importing numpy,
+  // which takes 2-5 seconds on a cold start. On every subsequent launch
+  // in the same version, we just read a marker file (<1ms).
+  //
+  // The marker is invalidated automatically when the app version changes
+  // (so a new release always re-checks once), OR when the user manually
+  // clicks "🔧 إصلاح NumPy" (which calls checkAndFixNumpy(true) to bypass
+  // the cache).
+  const markerPath = path.join(BACKEND_SRC_DIR, ".numpy-verified");
+  const expectedMarker = `${app.getVersion()}:<2`;
+  try {
+    const existing = fs.readFileSync(markerPath, "utf8").trim();
+    if (existing === expectedMarker) {
+      log(`[checkAndFixNumpy] Cache hit — numpy already verified <2 in v${app.getVersion()}`);
+      return { fixed: false, cached: true, version: "cached<2" };
+    }
+    log(`[checkAndFixNumpy] Marker mismatch (was: '${existing}', expected: '${expectedMarker}') — re-checking`);
+  } catch {
+    log("[checkAndFixNumpy] No cache marker — running full check");
+  }
+
   // Step 1: Check current numpy version.
   let currentVersion = "";
   try {
@@ -427,7 +449,14 @@ async function checkAndFixNumpy(venvPy) {
   log(`[checkAndFixNumpy] numpy version: ${currentVersion} (major=${major})`);
 
   if (major < 2) {
-    // Already fine — no action needed.
+    // Already fine — no action needed. Write the cache marker so the next
+    // launch can skip the import check entirely (saves 2-5s on every launch).
+    try {
+      fs.writeFileSync(markerPath, expectedMarker);
+      log(`[checkAndFixNumpy] Wrote cache marker: ${expectedMarker}`);
+    } catch (e) {
+      log(`[checkAndFixNumpy] Could not write cache marker: ${e.message}`);
+    }
     return { fixed: false, oldVersion: currentVersion };
   }
 
@@ -467,7 +496,30 @@ async function checkAndFixNumpy(venvPy) {
   log(`[checkAndFixNumpy] numpy after fix: ${newVersion}`);
   sendBackendLog(`[launch] ✓ numpy اتثبت بنجاح: ${currentVersion} → ${newVersion}`);
 
+  // Step 4: If the new version is <2, write the cache marker so the next
+  // launch can skip this entire fix (saves ~30s on the next launch).
+  const newMajor = newVersion ? parseInt(newVersion.split(".")[0], 10) : 99;
+  if (newMajor < 2) {
+    try {
+      fs.writeFileSync(markerPath, expectedMarker);
+      log(`[checkAndFixNumpy] Wrote cache marker after fix: ${expectedMarker}`);
+    } catch (e) {
+      log(`[checkAndFixNumpy] Could not write cache marker after fix: ${e.message}`);
+    }
+  }
+
   return { fixed: true, oldVersion: currentVersion, newVersion };
+}
+
+/**
+ * Manual numpy fix — bypasses the cache so the user can force a re-check
+ * even if the marker says we're already OK (e.g. they manually upgraded
+ * numpy to 2.x after the auto-fix ran).
+ */
+async function forceFixNumpy(venvPy) {
+  const markerPath = path.join(BACKEND_SRC_DIR, ".numpy-verified");
+  try { fs.unlinkSync(markerPath); } catch {}
+  return checkAndFixNumpy(venvPy);
 }
 
 /**
@@ -660,14 +712,46 @@ app.whenReady().then(async () => {
   log("App ready. Checking install state...");
 
   if (isFullyInstalled()) {
-    log("Already installed. Starting backend...");
+    // CRITICAL: Show the installer window IMMEDIATELY in "launching" mode
+    // so the user sees progress while the backend starts up (1-3 minutes
+    // for Wav2Lip model pre-loading). Previously, NO window was visible
+    // during this period — the user thought the app was frozen / not
+    // opening, and would complain "بيخد وقت فى الفتح كتير".
+    log("Already installed. Showing launching window + starting backend...");
+    createInstallerWindow();
+
+    // Tell the installer window it's in "auto-launch" mode (hide install
+    // button, show launching message). Wait for the page to finish loading
+    // before sending the mode signal, otherwise the renderer's IPC listener
+    // won't be registered yet.
+    if (installerWindow) {
+      installerWindow.webContents.once("did-finish-load", () => {
+        installerWindow.webContents.send("launcher:autoLaunch");
+      });
+    }
+
     try {
       await startBackend();
+      // Backend is healthy — close the launching window and open the main PWA.
+      if (installerWindow) {
+        try { installerWindow.close(); } catch {}
+        installerWindow = null;
+      }
       createMainWindow();
     } catch (e) {
       log("Failed to start backend:", e);
-      // Show installer window with the error so user can retry
-      createInstallerWindow();
+      // Keep the installer window open — the user can see the error in the
+      // log panel and use the recovery buttons (resync / kill-port / fix-numpy).
+      // The buttons auto-appear after a launch failure (already implemented
+      // in installer.html's launchApp() error handler).
+      // Trigger the same UI by sending an autoLaunchFailed event.
+      if (installerWindow && !installerWindow.isDestroyed()) {
+        try {
+          installerWindow.webContents.send("launcher:autoLaunchFailed", {
+            error: String(e?.message || e),
+          });
+        } catch {}
+      }
     }
   } else {
     log("Not fully installed. Showing installer window.");
@@ -1002,13 +1086,14 @@ ipcMain.handle("backend:resync", async () => {
  * fixed=false means numpy was already <2 (no action needed), or the check failed.
  */
 ipcMain.handle("backend:fixNumpy", async () => {
-  log("[IPC] backend:fixNumpy invoked — manual numpy<2 fix");
+  log("[IPC] backend:fixNumpy invoked — manual numpy<2 fix (bypassing cache)");
   try {
     const py = getVenvPython();
     if (!fs.existsSync(py)) {
       return { success: false, error: "Python مش موجود. شغّل تثبيت Python الأول." };
     }
-    const result = await checkAndFixNumpy(py);
+    // Use forceFixNumpy (bypasses cache) so the manual button always re-checks.
+    const result = await forceFixNumpy(py);
     return { success: true, ...result };
   } catch (e) {
     log("[backend:fixNumpy] FAILED:", e);
