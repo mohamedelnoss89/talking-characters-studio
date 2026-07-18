@@ -248,7 +248,7 @@ async function rephraseForRetry(zai, originalPrompt, attempt, style, gender) {
  * the original concept, just in different artistic framing.
  */
 async function generateImageWithRetry(imagePrompt, style, gender, language) {
-  const maxRetries = 4;
+  const maxRetries = 2;
   let currentPrompt = imagePrompt;
   const zai = await ZAI.create();
 

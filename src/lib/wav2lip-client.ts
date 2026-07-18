@@ -658,7 +658,7 @@ export async function generateCharacter(
   //    - لو فلتر المحتوى رفض، الـ backend بيعيد المحاولة 4 مرات مع rephrase
   //    - كل retry بياخد ~30s، فالمجموع ممكن يوصل لـ 150s
   //    - 360s بتدي buffer كافي + تتحسب لأي network hiccup
-  const maxAttempts = 180;
+  const maxAttempts = 160;
   let consecutiveErrors = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000));
@@ -736,8 +736,8 @@ export async function generateCharacter(
   // لسه شغال في الـ background، والمستخدم يقدر يحاول تاني بوصف أبسط.
   const e = new Error(
     language === "ar"
-      ? `انتهت صلاحية الانتظار بعد 6 دقايق. الـ AI ممكن يكون مشغول أو بيقفل فلتر المحتوى. جرّب وصف أبسط أو حاول تاني بعد شوية.`
-      : `Timed out after 6 minutes. The AI may be busy or hitting content filter. Try a simpler prompt or retry in a moment.`
+      ? `انتهت المهلة (~5 دقايق). الـ AI ممكن يكون مشغول أو رفض الوصف من فلتر المحتوى. جرّب وصف مختلف أو أبسط.`
+      : `Timed out (~5 minutes). The AI may be busy or blocked by the content filter. Try a different or simpler prompt.`
   ) as Error & { error_type?: string };
   e.error_type = "timeout";
   throw e;

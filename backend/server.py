@@ -54,6 +54,7 @@ except Exception as e:
 # 1-3 minutes on a regular CPU (loading a 415MB checkpoint) and caused the
 # Electron launcher to time out at 60s.
 import threading
+import re
 _model_load_status = {"loaded": False, "loading": False, "error": None}
 
 def _preload_model_background():
@@ -765,17 +766,65 @@ def _run_gen_job(job_id: str, prompt: str, style: str, gender: str, language: st
         job["progress"] = 5
         job["message"] = "بدء التوليد..." if language == "ar" else "Starting..."
 
-        # Call the Node worker script
+        # Call the Node worker script via Popen so we can drain stderr
+        # progressively (avoids the ~64KB pipe-buffer deadlock that would
+        # otherwise leave the child hanging until the 6-min client timeout)
+        # AND we can push real-time progress messages to the polling client.
         env = os.environ.copy()
-        result = _subprocess.run(
+        proc = _subprocess.Popen(
             ["node", GEN_SCRIPT_PATH, _json.dumps({
                 "prompt": prompt,
                 "style": style,
                 "gender": gender,
                 "language": language,
             })],
-            capture_output=True, text=True, timeout=180, env=env,
+            stdout=_subprocess.PIPE, stderr=_subprocess.PIPE, text=True, env=env,
         )
+
+        stderr_lines: list[str] = []
+        def _pump_stderr():
+            try:
+                assert proc.stderr is not None
+                for line in proc.stderr:
+                    stderr_lines.append(line)
+                    ln = line.strip()
+                    # Surface worker milestones as user-visible progress
+                    if "Translating" in ln:
+                        job["progress"] = 15
+                        job["message"] = "جاري ترجمة الوصف..." if language == "ar" else "Translating prompt..."
+                    elif "Generation attempt" in ln:
+                        m = re.search(r"attempt (\d+)/(\d+)", ln)
+                        if m:
+                            n, total = int(m.group(1)), int(m.group(2))
+                            job["progress"] = min(90, 30 + int((n - 1) / total * 55))
+                            if n == 1:
+                                job["message"] = "جاري توليد الصورة..." if language == "ar" else "Generating image..."
+                            else:
+                                job["message"] = ("إعادة صياغة ومحاولة تانية..." if language == "ar" else "Rephrasing and retrying...")
+                    elif "Done" in ln:
+                        job["progress"] = 98
+            except Exception:
+                pass
+        _t = threading.Thread(target=_pump_stderr, daemon=True)
+        _t.start()
+
+        try:
+            stdout, _ = proc.communicate(timeout=300)
+        except _subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+            raise
+
+        result_stderr = "".join(stderr_lines)
+        class _R:
+            pass
+        result = _R()
+        result.stdout = stdout or ""
+        result.stderr = result_stderr
+        result.returncode = proc.returncode
 
         # Try to parse stdout JSON FIRST, even if returncode != 0.
         # The worker writes a clean JSON error object to stdout before exiting,
