@@ -62,11 +62,13 @@ jobs:
       # Create the ZIP from the unpacked directory. The ZIP version is
       # RECOMMENDED on the install page because browsers don't trigger
       # SmartScreen on .zip downloads (only on .exe).
+      # NOTE: filename is version-less (TalkingCharactersStudio-windows.zip) so that
+      # /releases/latest/download/TalkingCharactersStudio-windows.zip always works
+      # regardless of the current version number.
       - name: Create Windows ZIP from win-unpacked
         shell: pwsh
         run: |
-          $version = "${{ steps.pkg.outputs.version }}"
-          $zipName = "TalkingCharactersStudio-$version-windows.zip"
+          $zipName = "TalkingCharactersStudio-windows.zip"
           Write-Host "Creating $zipName from dist/win-unpacked..."
           if (-not (Test-Path "dist/win-unpacked")) {
             Write-Error "dist/win-unpacked not found! electron-builder may have failed."

@@ -1,6 +1,6 @@
 {
   "name": "talking-characters-studio-desktop",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "تطبيق محرك الشخصيات المتكلمة - نسخة الديسكتوب",
   "main": "src/main.js",
   "author": {
@@ -69,7 +69,7 @@
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "TalkingCharactersStudio-Setup-${version}.${ext}",
+      "artifactName": "TalkingCharactersStudio-Setup.${ext}",
       "publisherName": "Talking Characters Studio",
       "verifyUpdateCodeSignature": false,
       "signAndEditExecutable": false
@@ -98,7 +98,7 @@
       "differentialPackage": true
     },
     "portable": {
-      "artifactName": "TalkingCharactersStudio-Portable-${version}.${ext}"
+      "artifactName": "TalkingCharactersStudio-Portable.${ext}"
     },
     "mac": {
       "target": [
@@ -111,7 +111,7 @@
         }
       ],
       "icon": "build/icon.png",
-      "artifactName": "TalkingCharactersStudio-${version}.${ext}",
+      "artifactName": "TalkingCharactersStudio.${ext}",
       "category": "public.app-category.video"
     },
     "linux": {
@@ -124,7 +124,7 @@
         }
       ],
       "icon": "build/icon.png",
-      "artifactName": "TalkingCharactersStudio-${version}.${ext}",
+      "artifactName": "TalkingCharactersStudio.${ext}",
       "category": "Video"
     }
   },

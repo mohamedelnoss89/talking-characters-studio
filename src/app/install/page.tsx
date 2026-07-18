@@ -37,32 +37,34 @@ function isElectron() {
   );
 }
 
-// GitHub Releases URLs — installers are hosted as release assets on GitHub
-// (avoids Vercel's 100MB static file limit, and works for any file size).
-// Release: https://github.com/mohamedelnoss89/talking-characters-studio/releases/tag/v1.0.1
-const GITHUB_RELEASE_BASE =
-  "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest/download";
-
+// Download URLs use our own API route (/api/install/[platform]) which
+// transparently redirects to the latest GitHub Release asset. This way:
+//   1. The user never sees github.com in the page source (cleaner UX).
+//   2. URLs are stable — no need to bump version numbers here when a new
+//      release is published, because assets use version-less filenames
+//      (configured in desktop/package.json → artifactName).
+//   3. Direct download (no GitHub page in between) — the API returns a 302
+//      redirect to GitHub's CDN which streams the file bytes.
 const DOWNLOADS = {
-  // RECOMMENDED for Windows: ZIP version. ZIP files don't trigger SmartScreen.
-  // User extracts the ZIP, then runs the .exe inside (which may show SmartScreen
-  // but at least they can see it's a real app folder with all DLLs).
+  // RECOMMENDED for Windows: NSIS installer. Smaller download, supports
+  // auto-update (electron-updater), and the installer walks the user through
+  // the install. SmartScreen may appear (unsigned app) — instructions below.
   windowsZip: {
-    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.1-windows.zip`,
+    url: `/api/install/windows-zip`,
     label: "Windows (ZIP)",
     size: "~100MB",
     icon: Monitor,
   },
   windows: {
     // Windows portable .exe (NSIS self-extracting) — smaller but triggers SmartScreen
-    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-Portable-1.0.1.exe`,
+    url: `/api/install/windows-setup`,
     label: "Windows (.exe)",
     size: "~67MB",
     icon: Monitor,
   },
   linux: {
     // Linux AppImage — single file, no install required
-    url: `${GITHUB_RELEASE_BASE}/TalkingCharactersStudio-1.0.1.AppImage`,
+    url: `/api/install/linux`,
     label: "Linux",
     size: "~100MB",
     icon: Monitor,
