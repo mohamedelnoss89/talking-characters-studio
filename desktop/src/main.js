@@ -245,6 +245,24 @@ function startBackend() {
       return;
     }
 
+    // CRITICAL: Kill any stale python.exe that's still holding port 8000.
+    // This happens when:
+    //   - The app crashed previously and left a python.exe zombie
+    //   - The user quit the app but the OS hasn't reaped the child process yet
+    //   - Another instance of the app is already running
+    // Without this, uvicorn fails with:
+    //   ERROR: [Errno 10048] error while attempting to bind on address
+    //   ('0.0.0.0', 8000): only one usage of each socket address
+    // and the backend crashes with exit code 1.
+    sendBackendLog("[launch] فحص البورت 8000...");
+    const portFreed = killProcessesOnPort(BACKEND_PORT);
+    if (portFreed > 0) {
+      log(`[startBackend] Killed ${portFreed} stale process(es) on port ${BACKEND_PORT}`);
+      sendBackendLog(`[launch] ⚠️ تم قتل ${portFreed} process معلّق على البورت ${BACKEND_PORT}`);
+      // Give the OS a moment to actually free the port
+      try { require("child_process").execSync("timeout /t 2 /nobreak >nul 2>&1 || sleep 2", { stdio: "ignore" }); } catch {}
+    }
+
     log("Starting backend:", py, "server.py", "cwd=" + BACKEND_SRC_DIR);
     sendBackendLog("[launch] Starting Python backend...");
     sendBackendLog("[launch] Python: " + py);
@@ -341,6 +359,93 @@ function startBackend() {
     };
     setTimeout(check, 2000);
   });
+}
+
+/**
+ * Kill any process listening on the given TCP port.
+ *
+ * Cross-platform:
+ *   Windows: netstat -ano | findstr :<port>  → taskkill /PID <pid> /F
+ *   Unix:    lsof -ti :<port> | xargs kill -9
+ *
+ * Returns the number of processes killed. Returns 0 if the port was free
+ * or if we couldn't determine the PID (no error raised — best-effort).
+ *
+ * This is called BEFORE spawning the Python backend to ensure uvicorn can
+ * bind to port 8000 without hitting "[Errno 10048] only one usage of each
+ * socket address" — a common failure when a previous python.exe is still
+ * running as a zombie after a crash.
+ */
+function killProcessesOnPort(port) {
+  try {
+    if (process.platform === "win32") {
+      // Windows: use netstat to find PIDs, then taskkill them.
+      // Output of `netstat -ano | findstr :8000` looks like:
+      //   TCP    0.0.0.0:8000      0.0.0.0:0    LISTENING    12345
+      //   TCP    [::]:8000         [::]:0       LISTENING    12345
+      const result = spawnSync("cmd.exe", ["/c", `netstat -ano | findstr :${port}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 5000,
+      });
+      const out = (result.stdout || "");
+      if (!out.trim()) {
+        log(`[killPort] Port ${port} is free`);
+        return 0;
+      }
+      const pids = new Set();
+      for (const line of out.split(/\r?\n/)) {
+        // Match the PID in the last column
+        const m = line.match(/\s+(\d+)\s*$/);
+        if (m) pids.add(m[1]);
+      }
+      let killed = 0;
+      for (const pid of pids) {
+        if (pid === "0") continue;
+        log(`[killPort] Killing PID ${pid} on port ${port}`);
+        try {
+          spawnSync("taskkill", ["/PID", pid, "/F"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+            timeout: 5000,
+          });
+          killed++;
+        } catch (e) {
+          log(`[killPort] Failed to kill PID ${pid}:`, e.message);
+        }
+      }
+      return killed;
+    } else {
+      // Unix: lsof -ti :<port> prints PIDs
+      const result = spawnSync("sh", ["-c", `lsof -ti :${port} 2>/dev/null`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5000,
+      });
+      const out = (result.stdout || "").trim();
+      if (!out) {
+        log(`[killPort] Port ${port} is free`);
+        return 0;
+      }
+      const pids = out.split(/\s+/).filter(Boolean);
+      let killed = 0;
+      for (const pid of pids) {
+        log(`[killPort] Killing PID ${pid} on port ${port}`);
+        try {
+          process.kill(parseInt(pid, 10), "SIGKILL");
+          killed++;
+        } catch (e) {
+          log(`[killPort] Failed to kill PID ${pid}:`, e.message);
+        }
+      }
+      return killed;
+    }
+  } catch (e) {
+    log(`[killPort] Failed to check port ${port}:`, e.message);
+    return 0;
+  }
 }
 
 function stopBackend() {
@@ -714,6 +819,34 @@ ipcMain.handle("backend:status", async () => {
     logFile: LOG_FILE,
     logDir: LOG_DIR,
   };
+});
+
+/**
+ * Force-kill any process holding the backend port, then restart.
+ * Use this when 'backend:restart' fails because a zombie python.exe is
+ * still attached to port 8000.
+ */
+ipcMain.handle("backend:killPortAndRestart", async () => {
+  log("[IPC] backend:killPortAndRestart invoked");
+  try {
+    if (backendProcess) {
+      log("[backend:killPortAndRestart] Stopping current backend...");
+      stopBackend();
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    const killed = killProcessesOnPort(BACKEND_PORT);
+    log(`[backend:killPortAndRestart] Killed ${killed} process(es) on port ${BACKEND_PORT}`);
+    if (killed > 0) {
+      // Wait for the OS to actually free the port
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    log("[backend:killPortAndRestart] Starting backend...");
+    await startBackend();
+    return { success: true, killedProcesses: killed };
+  } catch (e) {
+    log("[backend:killPortAndRestart] FAILED:", e);
+    return { success: false, error: String(e?.message || e) };
+  }
 });
 
 /**

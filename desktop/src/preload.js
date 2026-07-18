@@ -122,6 +122,14 @@ contextBridge.exposeInMainWorld("backend", {
   restart: () => ipcRenderer.invoke("backend:restart"),
 
   /**
+   * Force-kill any process holding the backend port, then restart.
+   * Use when 'restart' fails because a zombie python.exe is still
+   * attached to port 8000 from a previous crash.
+   * Returns { success, killedProcesses, error? }.
+   */
+  killPortAndRestart: () => ipcRenderer.invoke("backend:killPortAndRestart"),
+
+  /**
    * Force re-sync backend source from bundled copy (fixes crashes caused
    * by stale server.py from a previous app version). Returns { success, error? }.
    */

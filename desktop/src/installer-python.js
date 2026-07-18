@@ -505,12 +505,33 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
     log("[installPipDeps] Using Python: " + venvPy);
     logToFile("[installPipDeps] using python: " + venvPy);
 
+    // CRITICAL: Install numpy<2 ALONE FIRST, before any other package.
+    // Reason: torch 2.2.2 was compiled against NumPy 1.x. If we install
+    // torch + numpy together, pip may resolve to numpy 2.x (because some
+    // other package like mediapipe requests numpy>=2). Then torch crashes
+    // at import time with: "A module that was compiled using NumPy 1.x
+    // cannot be run in NumPy 2.x". Installing numpy<2 FIRST and then
+    // using --upgrade-strategy only-if-needed for the rest prevents this.
+    sendProgress && sendProgress("pip", 2, "تثبيت numpy<2 (أساسي)...");
+    log("[installPipDeps] Pre-installing numpy<2 to prevent torch conflict...");
+    try {
+      await spawnAsync(
+        venvPy,
+        ["-m", "pip", "install", "numpy<2", "--no-build-isolation"],
+        {
+          onStdout: (s) => log("[pip] " + s.trim()),
+          onStderr: (s) => log("[pip:err] " + s.trim()),
+        }
+      );
+    } catch (e) {
+      log("[installPipDeps] numpy pre-install warning: " + e.message + " (continuing)");
+    }
+
     const packages = [
       "torch==2.2.2",
       "torchvision==0.17.2",
       "torchaudio==2.2.2",
       "opencv-python==4.9.0.80",
-      "numpy<2",
       "librosa==0.10.1",
       "tqdm",
       "huggingface_hub",
@@ -533,9 +554,11 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
       sendProgress && sendProgress("pip", pct, `تثبيت: ${chunks[i].join(", ")}`);
       log("[installPipDeps] Chunk " + (i+1) + "/" + chunks.length + ": " + chunks[i].join(", "));
       try {
+        // --upgrade-strategy only-if-needed: don't upgrade existing deps
+        // unless required. This prevents mediapipe from pulling numpy 2.x.
         await spawnAsync(
           venvPy,
-          ["-m", "pip", "install", ...chunks[i]],
+          ["-m", "pip", "install", ...chunks[i], "--upgrade-strategy", "only-if-needed"],
           {
             onStdout: (s) => log("[pip] " + s.trim()),
             onStderr: (s) => log("[pip:err] " + s.trim()),
@@ -546,6 +569,37 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
         throw e;
       }
     }
+
+    // CRITICAL: Force numpy<2 AGAIN at the end. Some package may have
+    // pulled in numpy 2.x as a transitive dependency despite our pin.
+    // Reinstalling at the end guarantees torch sees numpy 1.x.
+    sendProgress && sendProgress("pip", 98, "تثبيت numpy<2 (تأكيد نهائي)...");
+    log("[installPipDeps] Force reinstalling numpy<2 to override any transitive upgrade...");
+    try {
+      await spawnAsync(
+        venvPy,
+        ["-m", "pip", "install", "--force-reinstall", "--no-deps", "numpy<2"],
+        {
+          onStdout: (s) => log("[pip] " + s.trim()),
+          onStderr: (s) => log("[pip:err] " + s.trim()),
+        }
+      );
+    } catch (e) {
+      log("[installPipDeps] numpy final force-reinstall warning: " + e.message);
+    }
+
+    // Verify numpy version
+    try {
+      const verify = spawnSync(venvPy, ["-c", "import numpy; print(numpy.__version__)"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 15000,
+      });
+      const ver = ((verify.stdout || "") + (verify.stderr || "")).trim();
+      log("[installPipDeps] numpy version after install: " + ver);
+      logToFile("[installPipDeps] numpy version: " + ver);
+    } catch {}
 
     sendProgress && sendProgress("pip", 100, "كل المكتبات اتثبتت ✓");
     logToFile("[installPipDeps] success");

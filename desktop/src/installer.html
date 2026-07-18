@@ -343,6 +343,9 @@
       <button class="btn btn-ghost" id="btn-resync" onclick="resyncAndRetry()" style="display:none" title="نسخ ملفات الـ backend من جديد وإعادة التشغيل">
         🔄 إعادة مزامنة + إعادة المحاولة
       </button>
+      <button class="btn btn-ghost" id="btn-killport" onclick="killPortAndRetry()" style="display:none" title="قتل أي process معلّق على البورت 8000 وإعادة التشغيل">
+        🛑 قتل العمليات المعلّقة + إعادة المحاولة
+      </button>
       <button class="btn btn-ghost" id="btn-log" onclick="openLogFolder()" title="افتح مجلد السجلات">
         📁 السجلات
       </button>
@@ -720,17 +723,57 @@
           showError("فشل فتح التطبيق", r.error || "Launch failed");
           launchBtn.disabled = false;
           launchBtn.textContent = "أعد المحاولة";
-          // Show the resync button — most crash-on-launch cases are caused
-          // by a stale backend source from a previous app version.
+          // Show recovery buttons — most launch failures are caused by either
+          // a stale backend source from a previous app version, or a zombie
+          // python.exe still holding port 8000 from a previous crash.
           const resyncBtn = document.getElementById("btn-resync");
+          const killportBtn = document.getElementById("btn-killport");
           if (resyncBtn) resyncBtn.style.display = "inline-block";
+          if (killportBtn) killportBtn.style.display = "inline-block";
         }
       } catch (e) {
         showError("فشل فتح التطبيق", e);
         launchBtn.disabled = false;
         launchBtn.textContent = "أعد المحاولة";
         const resyncBtn = document.getElementById("btn-resync");
+        const killportBtn = document.getElementById("btn-killport");
         if (resyncBtn) resyncBtn.style.display = "inline-block";
+        if (killportBtn) killportBtn.style.display = "inline-block";
+      }
+    }
+
+    /**
+     * Force-kill any process holding port 8000, then retry launch.
+     * Use this when the backend crashes with:
+     *   "ERROR: [Errno 10048] error while attempting to bind on address
+     *    ('0.0.0.0', 8000): only one usage of each socket address"
+     * This means a previous python.exe is still running as a zombie.
+     */
+    async function killPortAndRetry() {
+      const killportBtn = document.getElementById("btn-killport");
+      killportBtn.disabled = true;
+      killportBtn.innerHTML = '<span class="spinner"></span> جاري قتل العمليات المعلّقة...';
+      appendLog(">>> Killing stale processes on port 8000...", "info");
+      try {
+        const r = await window.backend.killPortAndRestart();
+        if (r.success) {
+          appendLog(`✓ Killed ${r.killedProcesses || 0} process(es). Retrying launch...`, "success");
+          killportBtn.innerHTML = '✓ تم قتل العمليات';
+          setTimeout(() => {
+            killportBtn.style.display = "none";
+            killportBtn.disabled = false;
+            killportBtn.textContent = "🛑 قتل العمليات المعلّقة + إعادة المحاولة";
+            launchApp();
+          }, 500);
+        } else {
+          showError("فشل قتل العمليات", r.error || "Unknown error");
+          killportBtn.disabled = false;
+          killportBtn.textContent = "🛑 قتل العمليات المعلّقة + إعادة المحاولة";
+        }
+      } catch (e) {
+        showError("فشل قتل العمليات", e);
+        killportBtn.disabled = false;
+        killportBtn.textContent = "🛑 قتل العمليات المعلّقة + إعادة المحاولة";
       }
     }
 
