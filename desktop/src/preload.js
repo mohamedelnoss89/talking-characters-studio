@@ -136,6 +136,14 @@ contextBridge.exposeInMainWorld("backend", {
   resync: () => ipcRenderer.invoke("backend:resync"),
 
   /**
+   * Manually trigger the numpy<2 fix (downgrades numpy>=2 to <2 so torch
+   * 2.2.2 can import cleanly). Same check that runs automatically on every
+   * backend launch — exposed here for manual recovery.
+   * Returns { success, fixed, oldVersion?, newVersion?, error? }.
+   */
+  fixNumpy: () => ipcRenderer.invoke("backend:fixNumpy"),
+
+  /**
    * Returns { running, starting, lastExitCode, pid?, port, logFile, logDir }.
    */
   status: () => ipcRenderer.invoke("backend:status"),

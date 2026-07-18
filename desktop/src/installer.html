@@ -346,6 +346,9 @@
       <button class="btn btn-ghost" id="btn-killport" onclick="killPortAndRetry()" style="display:none" title="قتل أي process معلّق على البورت 8000 وإعادة التشغيل">
         🛑 قتل العمليات المعلّقة + إعادة المحاولة
       </button>
+      <button class="btn btn-ghost" id="btn-fixnumpy" onclick="fixNumpyAndRetry()" style="display:none" title="تنزيل numpy<2 لإصلاح تعارضها مع torch وإعادة التشغيل">
+        🔧 إصلاح NumPy + إعادة المحاولة
+      </button>
       <button class="btn btn-ghost" id="btn-log" onclick="openLogFolder()" title="افتح مجلد السجلات">
         📁 السجلات
       </button>
@@ -725,11 +728,15 @@
           launchBtn.textContent = "أعد المحاولة";
           // Show recovery buttons — most launch failures are caused by either
           // a stale backend source from a previous app version, or a zombie
-          // python.exe still holding port 8000 from a previous crash.
+          // python.exe still holding port 8000 from a previous crash, or an
+          // incompatible numpy>=2 (auto-fix runs on launch, but if it failed
+          // the user can manually retry).
           const resyncBtn = document.getElementById("btn-resync");
           const killportBtn = document.getElementById("btn-killport");
+          const fixnumpyBtn = document.getElementById("btn-fixnumpy");
           if (resyncBtn) resyncBtn.style.display = "inline-block";
           if (killportBtn) killportBtn.style.display = "inline-block";
+          if (fixnumpyBtn) fixnumpyBtn.style.display = "inline-block";
         }
       } catch (e) {
         showError("فشل فتح التطبيق", e);
@@ -737,8 +744,10 @@
         launchBtn.textContent = "أعد المحاولة";
         const resyncBtn = document.getElementById("btn-resync");
         const killportBtn = document.getElementById("btn-killport");
+        const fixnumpyBtn = document.getElementById("btn-fixnumpy");
         if (resyncBtn) resyncBtn.style.display = "inline-block";
         if (killportBtn) killportBtn.style.display = "inline-block";
+        if (fixnumpyBtn) fixnumpyBtn.style.display = "inline-block";
       }
     }
 
@@ -809,6 +818,45 @@
         showError("فشل إعادة المزامنة", e);
         resyncBtn.disabled = false;
         resyncBtn.textContent = "🔄 إعادة مزامنة + إعادة المحاولة";
+      }
+    }
+
+    /**
+     * Force-reinstall numpy<2 to fix the "NumPy 1.x compiled module cannot
+     * run in NumPy 2.x" warning that makes torch crash on import.
+     * The fix runs automatically on every launch, but if it failed (e.g.
+     * because the backend crashed before the check completed), the user
+     * can manually retry via this button.
+     */
+    async function fixNumpyAndRetry() {
+      const fixBtn = document.getElementById("btn-fixnumpy");
+      fixBtn.disabled = true;
+      fixBtn.innerHTML = '<span class="spinner"></span> جاري إصلاح NumPy...';
+      appendLog(">>> Force-reinstalling numpy<2 to fix torch compatibility...", "info");
+      try {
+        const r = await window.backend.fixNumpy();
+        if (r.success) {
+          if (r.fixed) {
+            appendLog(`✓ numpy fixed: ${r.oldVersion} → ${r.newVersion}. Retrying launch...`, "success");
+          } else {
+            appendLog(`✓ numpy already compatible (version: ${r.oldVersion || r.newVersion || "unknown"}). Retrying launch...`, "success");
+          }
+          fixBtn.innerHTML = '✓ تم إصلاح NumPy';
+          setTimeout(() => {
+            fixBtn.style.display = "none";
+            fixBtn.disabled = false;
+            fixBtn.textContent = "🔧 إصلاح NumPy + إعادة المحاولة";
+            launchApp();
+          }, 500);
+        } else {
+          showError("فشل إصلاح NumPy", r.error || "Unknown error");
+          fixBtn.disabled = false;
+          fixBtn.textContent = "🔧 إصلاح NumPy + إعادة المحاولة";
+        }
+      } catch (e) {
+        showError("فشل إصلاح NumPy", e);
+        fixBtn.disabled = false;
+        fixBtn.textContent = "🔧 إصلاح NumPy + إعادة المحاولة";
       }
     }
 

@@ -228,7 +228,7 @@ function startBackend() {
   if (backendProcess || backendStarting) return Promise.resolve();
   backendStarting = true;
 
-  return new Promise((resolve, reject) => {
+  return (async () => {
     // Make sure backend source is available in userData (not just in the
     // volatile resourcesPath).
     syncBackendSource();
@@ -236,15 +236,28 @@ function startBackend() {
     const py = getVenvPython();
     if (!fs.existsSync(py)) {
       backendStarting = false;
-      reject(new Error("Python مش موجود. شغّل تثبيت Python الأول. (الاتجول على: " + py + ")"));
-      return;
+      throw new Error("Python مش موجود. شغّل تثبيت Python الأول. (الاتجول على: " + py + ")");
     }
     if (!fs.existsSync(path.join(BACKEND_SRC_DIR, "server.py"))) {
       backendStarting = false;
-      reject(new Error("server.py مش موجود في: " + BACKEND_SRC_DIR + " — حاول تنصيب التطبيق من جديد."));
-      return;
+      throw new Error("server.py مش موجود في: " + BACKEND_SRC_DIR + " — حاول تنصيب التطبيق من جديد.");
     }
 
+    // CRITICAL: Auto-fix numpy<2 BEFORE launching the backend.
+    // This is the "one-time fix" that runs automatically on every launch —
+    // if numpy>=2 is detected (e.g. from an old v1.1.2 install that ran the
+    // broken installer without numpy pinning), it force-reinstalls numpy<2.
+    // Idempotent: if numpy is already <2, this is a no-op (just an import check).
+    // This was the root cause of the "NumPy 2.x cannot run torch compiled
+    // against NumPy 1.x" warning that made the user keep reinstalling.
+    try {
+      await checkAndFixNumpy(py);
+    } catch (e) {
+      log("[startBackend] checkAndFixNumpy warning:", e.message, "(continuing anyway)");
+      sendBackendLog("[launch] ⚠️ تعذّر فحص numpy: " + e.message + " (هكمل بعدها)");
+    }
+
+    return new Promise((resolve, reject) => {
     // CRITICAL: Kill any stale python.exe that's still holding port 8000.
     // This happens when:
     //   - The app crashed previously and left a python.exe zombie
@@ -358,7 +371,103 @@ function startBackend() {
       setTimeout(check, 1500);
     };
     setTimeout(check, 2000);
+    });
+  })().catch((e) => {
+    backendStarting = false;
+    throw e;
   });
+}
+
+/**
+ * Detect if the installed numpy is >=2 and, if so, force-reinstall numpy<2.
+ *
+ * This runs on EVERY backend launch (idempotent — if numpy is already <2,
+ * it's a fast `python -c "import numpy; print(...)"` check that takes <1s).
+ *
+ * Why: torch 2.2.2 is compiled against numpy 1.x. If numpy 2.x is installed
+ * (which happens when an old installer ran without the numpy<2 pin), torch
+ * prints a scary warning at import time:
+ *   "A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x"
+ * and may crash. The user reported having to reinstall repeatedly because of
+ * this. Running the fix automatically on launch means the user never has to
+ * manually delete the python/ folder or re-run the installer.
+ *
+ * @param {string} venvPy — path to venv's python.exe
+ * @returns {Promise<{fixed: boolean, oldVersion?: string, newVersion?: string}>}
+ */
+async function checkAndFixNumpy(venvPy) {
+  if (!venvPy || !fs.existsSync(venvPy)) {
+    return { fixed: false };
+  }
+
+  // Step 1: Check current numpy version.
+  let currentVersion = "";
+  try {
+    const result = spawnSync(venvPy, ["-c", "import numpy; print(numpy.__version__)"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      timeout: 15000,
+    });
+    currentVersion = ((result.stdout || "") + (result.stderr || "")).trim().split(/\r?\n/)[0].trim();
+  } catch (e) {
+    log("[checkAndFixNumpy] Could not check numpy version:", e.message);
+    return { fixed: false, error: e.message };
+  }
+
+  // If we couldn't even import numpy, nothing to fix (the installer will
+  // handle it on next installPipDeps run).
+  if (!currentVersion || !/^\d+\.\d+/.test(currentVersion)) {
+    log("[checkAndFixNumpy] numpy not yet installed or import failed — skipping (will be installed by installer).");
+    return { fixed: false };
+  }
+
+  // Parse major version.
+  const major = parseInt(currentVersion.split(".")[0], 10);
+  log(`[checkAndFixNumpy] numpy version: ${currentVersion} (major=${major})`);
+
+  if (major < 2) {
+    // Already fine — no action needed.
+    return { fixed: false, oldVersion: currentVersion };
+  }
+
+  // Step 2: numpy>=2 detected — force reinstall numpy<2.
+  log(`[checkAndFixNumpy] numpy ${currentVersion} >= 2.0 detected. Force-reinstalling numpy<2...`);
+  sendBackendLog(`[launch] ⚠️ numpy ${currentVersion} غير متوافق مع torch. جاري تثبيت numpy<2...`);
+
+  // Use spawnAsync from installer-python so we get live stdout/stderr logging.
+  const { spawnAsync } = require("./installer-python");
+  try {
+    await spawnAsync(
+      venvPy,
+      ["-m", "pip", "install", "--force-reinstall", "--no-deps", "numpy<2"],
+      {
+        onStdout: (s) => log("[numpy-fix] " + s.trim()),
+        onStderr: (s) => log("[numpy-fix:err] " + s.trim()),
+      }
+    );
+  } catch (e) {
+    log("[checkAndFixNumpy] Force-reinstall failed:", e.message);
+    sendBackendLog(`[launch] ✗ تعذّر تثبيت numpy<2: ${e.message}`);
+    return { fixed: false, oldVersion: currentVersion, error: e.message };
+  }
+
+  // Step 3: Verify the new version.
+  let newVersion = "";
+  try {
+    const verify = spawnSync(venvPy, ["-c", "import numpy; print(numpy.__version__)"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      timeout: 15000,
+    });
+    newVersion = ((verify.stdout || "") + (verify.stderr || "")).trim().split(/\r?\n/)[0].trim();
+  } catch {}
+
+  log(`[checkAndFixNumpy] numpy after fix: ${newVersion}`);
+  sendBackendLog(`[launch] ✓ numpy اتثبت بنجاح: ${currentVersion} → ${newVersion}`);
+
+  return { fixed: true, oldVersion: currentVersion, newVersion };
 }
 
 /**
@@ -877,6 +986,32 @@ ipcMain.handle("backend:resync", async () => {
     return { success: ok, backendSrc: BACKEND_SRC_DIR };
   } catch (e) {
     log("[backend:resync] FAILED:", e);
+    return { success: false, error: String(e?.message || e) };
+  }
+});
+
+/**
+ * Manually trigger the numpy<2 fix.
+ * This is the same check that runs automatically on every backend launch —
+ * exposed as an IPC handler so the user can manually fix numpy if they
+ * suspect the auto-fix didn't run (e.g. if the backend crashed before the
+ * check ran, or if they manually upgraded numpy).
+ *
+ * Returns { success, fixed, oldVersion?, newVersion?, error? }.
+ * fixed=true means numpy>=2 was detected and downgraded to <2.
+ * fixed=false means numpy was already <2 (no action needed), or the check failed.
+ */
+ipcMain.handle("backend:fixNumpy", async () => {
+  log("[IPC] backend:fixNumpy invoked — manual numpy<2 fix");
+  try {
+    const py = getVenvPython();
+    if (!fs.existsSync(py)) {
+      return { success: false, error: "Python مش موجود. شغّل تثبيت Python الأول." };
+    }
+    const result = await checkAndFixNumpy(py);
+    return { success: true, ...result };
+  } catch (e) {
+    log("[backend:fixNumpy] FAILED:", e);
     return { success: false, error: String(e?.message || e) };
   }
 });
