@@ -1095,8 +1095,20 @@ ipcMain.handle("backend:restart", async () => {
       // Give the OS a moment to free port 8000
       await new Promise((r) => setTimeout(r, 1500));
     }
-    log("[backend:restart] Starting backend...");
-    await startBackend();
+    log("[backend:restart] Starting backend (fire-and-forget)...");
+    // IMPORTANT: We do NOT await startBackend() here. The old code did
+    // `await startBackend()`, which blocked the IPC call for 1-3 minutes
+    // (until /health responded). That caused the renderer's elapsed-seconds
+    // timer to stay stuck at 0 — because the renderer's `waitForBackend()`
+    // only runs AFTER the IPC returns.
+    //
+    // Now we just kick off startBackend() in the background and return
+    // immediately. The renderer polls /health itself and detects when the
+    // backend is ready.
+    startBackend().catch((e) => {
+      log("[backend:restart] Background startBackend FAILED:", e);
+      sendBackendLog("[launch] ✗ " + (e?.message || String(e)));
+    });
     return { success: true };
   } catch (e) {
     log("[backend:restart] FAILED:", e);

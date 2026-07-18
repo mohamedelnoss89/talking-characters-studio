@@ -14,15 +14,22 @@
  *     (the user opened the PWA in a browser, the desktop app isn't running).
  *
  * After clicking "Restart":
- *   1. Button shows "Restarting..." state
- *   2. Calls restartDesktopBackend() which IPCs to main.js
- *   3. Polls /health every 2s for up to 5 minutes (model pre-load takes 1-3 min)
- *   4. On success → button disappears
- *   5. On timeout → shows error with retry button
+ *   1. Button shows "Restarting..." state WITH a live elapsed-seconds timer
+ *      (timer starts IMMEDIATELY — does NOT wait for the IPC to return).
+ *   2. Calls restartDesktopBackend() which IPCs to main.js. The IPC handler
+ *      returns immediately after spawning the Python process (it does NOT
+ *      wait for /health — see desktop/src/main.js for the rationale).
+ *   3. Renderer polls /health every 2s for up to 5 minutes (model pre-load
+ *      takes 1-3 min on CPU).
+ *   4. While waiting, the latest Python log line is streamed to the UI so
+ *      the user sees real progress (e.g. "Background model pre-load
+ *      started...", "uvicorn is ready to serve requests", ...).
+ *   5. On success → button disappears.
+ *   6. On timeout → shows error with retry button.
  */
 
 import { useEffect, useState, useRef } from "react";
-import { RefreshCw, AlertCircle, Server, CheckCircle2 } from "lucide-react";
+import { RefreshCw, AlertCircle } from "lucide-react";
 import { isBackendReachable, restartDesktopBackend } from "@/lib/wav2lip-client";
 
 type Phase = "checking" | "down" | "restarting" | "error" | "ok";
@@ -31,8 +38,11 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
   const [phase, setPhase] = useState<Phase>("checking");
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [restartSeconds, setRestartSeconds] = useState<number>(0);
+  const [lastLogLine, setLastLogLine] = useState<string>("");
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const restartTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const elapsedIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const unsubLogsRef = useRef<(() => void) | null>(null);
 
   const t = (ar: string, en: string) => (language === "ar" ? ar : en);
 
@@ -60,15 +70,34 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
     };
   }, [phase]);
 
-  // Wait for backend to come back online after restart (poll /health)
-  const waitForBackend = async (maxSeconds = 300) => {
-    setPhase("restarting");
-    setRestartSeconds(0);
-    const startedAt = Date.now();
+  // Subscribe to backend log lines so we can show what Python is doing
+  // during restart (e.g. "Loading model...", "uvicorn ready", ...).
+  const subscribeToBackendLogs = () => {
+    if (unsubLogsRef.current) return; // already subscribed
+    const backendApi = (typeof window !== "undefined" && (window as any).backend) || null;
+    if (!backendApi || typeof backendApi.onLog !== "function") return;
+    try {
+      unsubLogsRef.current = backendApi.onLog((payload: any) => {
+        const line = typeof payload === "string" ? payload : payload?.line;
+        if (line) setLastLogLine(line);
+      });
+    } catch {}
+  };
+  const unsubscribeFromBackendLogs = () => {
+    if (unsubLogsRef.current) {
+      try { unsubLogsRef.current(); } catch {}
+      unsubLogsRef.current = null;
+    }
+  };
+
+  // Wait for backend to come back online after restart (poll /health).
+  // `startedAt` is captured by closure; the elapsed-seconds counter is
+  // also maintained separately by `elapsedIntervalRef` so the UI updates
+  // every second even between /health polls.
+  const waitForBackend = (startedAt: number, maxSeconds = 300) => {
     return new Promise<void>((resolve, reject) => {
       const tick = async () => {
         const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-        setRestartSeconds(elapsed);
         if (elapsed > maxSeconds) {
           setPhase("error");
           setErrorMsg(t(
@@ -93,23 +122,54 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
   const handleRestart = async () => {
     setPhase("restarting");
     setErrorMsg("");
+    setRestartSeconds(0);
+    setLastLogLine("");
+
+    // Start the elapsed-seconds timer IMMEDIATELY. Previously the timer was
+    // started inside waitForBackend(), which only ran AFTER the IPC returned
+    // — and the IPC used to wait for /health, so the timer was stuck at 0
+    // for the entire 1-3 minute wait. Now the IPC returns instantly (after
+    // spawning Python) and the renderer polls /health itself.
+    const startedAt = Date.now();
+    elapsedIntervalRef.current = setInterval(() => {
+      setRestartSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+
+    // Stream Python log lines to the UI so the user sees real progress.
+    subscribeToBackendLogs();
+
     try {
+      // Fire the IPC — it returns immediately after spawning the process.
+      // We still await it so we can catch immediate failures (e.g. Python
+      // missing), but it no longer blocks until /health responds.
       const result = await restartDesktopBackend();
       if (!result.success) {
         setPhase("error");
         setErrorMsg(result.error || t("فشل إعادة التشغيل", "Restart failed"));
         return;
       }
-      await waitForBackend();
+      // Now poll /health in the renderer until backend is up.
+      await waitForBackend(startedAt, 300);
     } catch (e: any) {
       setPhase("error");
       setErrorMsg(e?.message || String(e));
+    } finally {
+      if (elapsedIntervalRef.current) {
+        clearInterval(elapsedIntervalRef.current);
+        elapsedIntervalRef.current = null;
+      }
+      // Keep the log subscription alive for a few more seconds in case the
+      // user wants to see the final "✓ Backend is healthy!" line, then
+      // clean up.
+      setTimeout(() => unsubscribeFromBackendLogs(), 3000);
     }
   };
 
   useEffect(() => {
     return () => {
       if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+      if (elapsedIntervalRef.current) clearInterval(elapsedIntervalRef.current);
+      unsubscribeFromBackendLogs();
     };
   }, []);
 
@@ -144,6 +204,14 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
                     "The Python backend crashed. Click to restart it."
                   )}
             </p>
+
+            {/* Live Python log line — shows the user what's actually happening
+                instead of a stuck 0s timer. */}
+            {phase === "restarting" && lastLogLine && (
+              <p className="text-[11px] mt-1.5 text-red-200/60 font-mono truncate" dir="ltr">
+                {lastLogLine}
+              </p>
+            )}
 
             {phase === "down" && (
               <button
