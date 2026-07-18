@@ -340,6 +340,9 @@
       <button class="btn btn-secondary" id="btn-launch" onclick="launchApp()" style="display:none">
         فتح التطبيق
       </button>
+      <button class="btn btn-ghost" id="btn-resync" onclick="resyncAndRetry()" style="display:none" title="نسخ ملفات الـ backend من جديد وإعادة التشغيل">
+        🔄 إعادة مزامنة + إعادة المحاولة
+      </button>
       <button class="btn btn-ghost" id="btn-log" onclick="openLogFolder()" title="افتح مجلد السجلات">
         📁 السجلات
       </button>
@@ -717,11 +720,52 @@
           showError("فشل فتح التطبيق", r.error || "Launch failed");
           launchBtn.disabled = false;
           launchBtn.textContent = "أعد المحاولة";
+          // Show the resync button — most crash-on-launch cases are caused
+          // by a stale backend source from a previous app version.
+          const resyncBtn = document.getElementById("btn-resync");
+          if (resyncBtn) resyncBtn.style.display = "inline-block";
         }
       } catch (e) {
         showError("فشل فتح التطبيق", e);
         launchBtn.disabled = false;
         launchBtn.textContent = "أعد المحاولة";
+        const resyncBtn = document.getElementById("btn-resync");
+        if (resyncBtn) resyncBtn.style.display = "inline-block";
+      }
+    }
+
+    /**
+     * Force re-sync backend source from the bundled copy, then retry launch.
+     * This fixes crashes caused by a stale server.py from a previous app
+     * version (the .synced-from marker now stores the app version, so a
+     * version mismatch triggers a fresh copy of all backend .py files).
+     */
+    async function resyncAndRetry() {
+      const resyncBtn = document.getElementById("btn-resync");
+      resyncBtn.disabled = true;
+      resyncBtn.innerHTML = '<span class="spinner"></span> جاري إعادة المزامنة...';
+      appendLog(">>> Re-syncing backend source from bundled copy...", "info");
+      try {
+        const r = await window.backend.resync();
+        if (r.success) {
+          appendLog("✓ Backend source re-synced. Retrying launch...", "success");
+          resyncBtn.innerHTML = '✓ تمت المزامنة';
+          // Wait a moment then retry the launch
+          setTimeout(() => {
+            resyncBtn.style.display = "none";
+            resyncBtn.disabled = false;
+            resyncBtn.textContent = "🔄 إعادة مزامنة + إعادة المحاولة";
+            launchApp();
+          }, 500);
+        } else {
+          showError("فشل إعادة المزامنة", r.error || "Unknown error");
+          resyncBtn.disabled = false;
+          resyncBtn.textContent = "🔄 إعادة مزامنة + إعادة المحاولة";
+        }
+      } catch (e) {
+        showError("فشل إعادة المزامنة", e);
+        resyncBtn.disabled = false;
+        resyncBtn.textContent = "🔄 إعادة مزامنة + إعادة المحاولة";
       }
     }
 

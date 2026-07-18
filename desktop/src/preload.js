@@ -122,7 +122,13 @@ contextBridge.exposeInMainWorld("backend", {
   restart: () => ipcRenderer.invoke("backend:restart"),
 
   /**
-   * Returns { running, starting, lastExitCode, pid?, port }.
+   * Force re-sync backend source from bundled copy (fixes crashes caused
+   * by stale server.py from a previous app version). Returns { success, error? }.
+   */
+  resync: () => ipcRenderer.invoke("backend:resync"),
+
+  /**
+   * Returns { running, starting, lastExitCode, pid?, port, logFile, logDir }.
    */
   status: () => ipcRenderer.invoke("backend:status"),
 

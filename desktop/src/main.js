@@ -151,6 +151,13 @@ function getVenvPython() {
  *
  * Idempotent: skips files that already match the bundled version. Safe to call
  * on every launch.
+ *
+ * CRITICAL FIX: The marker file stores the APP VERSION, not just the path.
+ * This ensures that when the user upgrades (e.g. v1.0.1 → v1.1.1), the new
+ * server.py and other backend files are re-synced over the old ones.
+ * Previously, the marker was the resourcesPath (same across versions), so
+ * upgrades would silently keep using the OLD server.py with the NEW Python
+ * dependencies → backend crash on startup with cryptic import errors.
  */
 function syncBackendSource() {
   try {
@@ -160,20 +167,25 @@ function syncBackendSource() {
     }
     fs.mkdirSync(BACKEND_SRC_DIR, { recursive: true });
 
-    // Marker file: stores the bundled backend's mtime so we only re-sync when
-    // the bundled copy changes (e.g. after an app update).
+    // Marker file: stores "<appVersion>:<bundledPath>" so we re-sync when
+    // EITHER the app version changes (update) OR the bundled path changes
+    // (e.g. user moved the .exe to a different install location).
     const markerPath = path.join(BACKEND_SRC_DIR, ".synced-from");
-    const bundledMarker = BUNDLED_BACKEND_SRC_DIR; // any consistent string works
+    const bundledMarker = `${app.getVersion()}:${BUNDLED_BACKEND_SRC_DIR}`;
     let existingMarker = "";
     try {
       existingMarker = fs.readFileSync(markerPath, "utf8").trim();
     } catch {}
     if (existingMarker === bundledMarker) {
-      log("[syncBackendSource] Already synced to", BACKEND_SRC_DIR);
+      log("[syncBackendSource] Already synced (v" + app.getVersion() + ") to", BACKEND_SRC_DIR);
       return true;
     }
 
-    log("[syncBackendSource] Copying backend source from", BUNDLED_BACKEND_SRC_DIR, "to", BACKEND_SRC_DIR);
+    if (existingMarker) {
+      log("[syncBackendSource] App version changed (was: '" + existingMarker.split(":")[0] + "', now: v" + app.getVersion() + "). Re-syncing backend source...");
+    } else {
+      log("[syncBackendSource] First sync. Copying backend source from", BUNDLED_BACKEND_SRC_DIR, "to", BACKEND_SRC_DIR);
+    }
     // Recursive copy. We deliberately do NOT copy Wav2Lip/, checkpoints/,
     // uploads/, outputs/ etc. — those live in userData and are managed by
     // the installer (so re-syncing doesn't nuke a 415MB model download).
@@ -195,13 +207,16 @@ function syncBackendSource() {
             const destStat = fs.statSync(d);
             if (srcStat.size === destStat.size && srcStat.mtimeMs <= destStat.mtimeMs) skip = true;
           } catch {}
-          if (!skip) fs.copyFileSync(s, d);
+          if (!skip) {
+            fs.copyFileSync(s, d);
+            log("[syncBackendSource]   + " + entry.name);
+          }
         }
       }
     }
     copyDir(BUNDLED_BACKEND_SRC_DIR, BACKEND_SRC_DIR);
     fs.writeFileSync(markerPath, bundledMarker);
-    log("[syncBackendSource] Sync complete");
+    log("[syncBackendSource] Sync complete (v" + app.getVersion() + ")");
     return true;
   } catch (e) {
     log("[syncBackendSource] FAILED:", e);
@@ -696,7 +711,41 @@ ipcMain.handle("backend:status", async () => {
     wav2lipInstalled: isWav2LipInstalled(),
     fullyInstalled: isFullyInstalled(),
     backendSrc: BACKEND_SRC_DIR,
+    logFile: LOG_FILE,
+    logDir: LOG_DIR,
   };
+});
+
+/**
+ * Force re-sync of backend source from the bundled copy.
+ * Useful when the backend is crashing due to a stale/older server.py from
+ * a previous app version. Deletes the .synced-from marker so the next
+ * syncBackendSource() call copies everything fresh.
+ */
+ipcMain.handle("backend:resync", async () => {
+  log("[IPC] backend:resync invoked — forcing fresh backend source sync");
+  try {
+    const markerPath = path.join(BACKEND_SRC_DIR, ".synced-from");
+    try { fs.unlinkSync(markerPath); } catch {}
+    // Also remove old .pyc files in case Python cached bytecode for the old server.py
+    function removePyc(dir) {
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name === "__pycache__") {
+            try { fs.rmSync(path.join(dir, entry.name), { recursive: true, force: true }); } catch {}
+            continue;
+          }
+          if (entry.isDirectory()) removePyc(path.join(dir, entry.name));
+        }
+      } catch {}
+    }
+    removePyc(BACKEND_SRC_DIR);
+    const ok = syncBackendSource();
+    return { success: ok, backendSrc: BACKEND_SRC_DIR };
+  } catch (e) {
+    log("[backend:resync] FAILED:", e);
+    return { success: false, error: String(e?.message || e) };
+  }
 });
 
 // After the app is ready, kick off a background update check (non-blocking —
