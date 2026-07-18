@@ -1,6 +1,6 @@
 {
   "name": "talking-characters-studio-desktop",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "تطبيق محرك الشخصيات المتكلمة - نسخة الديسكتوب",
   "main": "src/main.js",
   "author": {
@@ -56,6 +56,19 @@
           "!*.pyc",
           "!test_audio.wav",
           "!test_speech.wav"
+        ]
+      },
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg",
+        "to": "bin/ffmpeg.exe"
+      },
+      {
+        "from": "node_modules/z-ai-web-dev-sdk",
+        "to": "backend/node_modules/z-ai-web-dev-sdk",
+        "filter": [
+          "**/*",
+          "!**/*.md",
+          "!**/*.ts"
         ]
       }
     ],
@@ -131,7 +144,9 @@
   "dependencies": {
     "electron-store": "^8.1.0",
     "electron-updater": "^6.1.7",
-    "extract-zip": "^2.0.1"
+    "extract-zip": "^2.0.1",
+    "ffmpeg-static": "^5.3.0",
+    "z-ai-web-dev-sdk": "^0.0.18"
   },
   "devDependencies": {
     "electron": "^28.0.0",

@@ -24,8 +24,27 @@ Wav2Lip الناتجة.
 import os
 import cv2
 import math
+import shutil
+import subprocess
 import numpy as np
 from typing import List, Tuple, Optional, Dict
+
+
+def _resolve_ffmpeg():
+    """
+    Resolve the ffmpeg binary path. Same logic as wav2lip_runner._resolve_ffmpeg.
+    Priority: WAV2LIP_FFMPEG_PATH → FFMPEG_PATH → shutil.which("ffmpeg") → "ffmpeg".
+    Needed on the desktop app where ffmpeg is bundled in resources/bin/ but
+    not in the user's PATH.
+    """
+    for c in (
+        os.environ.get("WAV2LIP_FFMPEG_PATH"),
+        os.environ.get("FFMPEG_PATH"),
+        shutil.which("ffmpeg"),
+    ):
+        if c and os.path.isfile(c):
+            return c
+    return "ffmpeg"
 
 # Reuse mediapipe (same as eye_blink.py)
 try:
@@ -912,12 +931,13 @@ if __name__ == "__main__":
 
     # Extract audio
     temp_audio = tempfile.mktemp(suffix='.wav')
-    subprocess.run(['ffmpeg', '-y', '-i', inp, '-vn', temp_audio],
+    ffmpeg_bin = _resolve_ffmpeg()
+    subprocess.run([ffmpeg_bin, '-y', '-i', inp, '-vn', temp_audio],
                    capture_output=True)
 
     # Merge
     subprocess.run([
-        'ffmpeg', '-y',
+        ffmpeg_bin, '-y',
         '-i', temp_avi, '-i', temp_audio,
         '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
         '-pix_fmt', 'yuv420p',

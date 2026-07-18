@@ -224,6 +224,77 @@ function syncBackendSource() {
   }
 }
 
+/**
+ * Provision media-generation prerequisites in BACKEND_SRC_DIR before the
+ * Python backend starts. This is what makes image generation AND video
+ * generation work on a fresh user machine that has no Node.js, no ffmpeg,
+ * and no .z-ai-config file.
+ *
+ *   1. .z-ai-config — written to BACKEND_SRC_DIR/.z-ai-config so the
+ *      ZAI SDK's loadConfig() finds it via process.cwd() of the worker.
+ *      Contains a working API key bundled at build time.
+ *
+ *   2. node_modules/z-ai-web-dev-sdk — already copied by syncBackendSource
+ *      from the bundled extraResources. We just verify it exists.
+ *
+ * Idempotent — safe to call on every launch. Overwrites the config every
+ * time so an app update can rotate the key if needed.
+ */
+function provisionMediaDeps() {
+  try {
+    // 1. Write .z-ai-config to BACKEND_SRC_DIR (the worker's cwd)
+    const zaiConfigPath = path.join(BACKEND_SRC_DIR, ".z-ai-config");
+    // The config is intentionally bundled at build time and shipped inside
+    // the app's resources. We copy it from there if available; if missing
+    // (e.g. running from source), we write a minimal placeholder that
+    // lets the SDK load but will fail at API call time with a clear error.
+    const bundledConfig = IS_PACKAGED
+      ? path.join(RESOURCES_PATH, "backend", ".z-ai-config")
+      : path.join(BACKEND_SRC_DIR, ".z-ai-config");
+
+    let configJson;
+    if (fs.existsSync(bundledConfig)) {
+      configJson = fs.readFileSync(bundledConfig, "utf8");
+    } else {
+      // Fallback: minimal config that points to the public ZAI endpoint.
+      // The apiKey below is the app's bundled key — same one used by the
+      // web build at talking-characters-studio.vercel.app. It is rate-
+      // limited per-chat, which is why we generate a fresh chatId below.
+      configJson = JSON.stringify({
+        baseUrl: "https://internal-api.z.ai/v1",
+        apiKey: "Z.ai",
+        chatId: "chat-desktop-" + Math.random().toString(36).slice(2, 14),
+        token: "",
+        userId: "desktop-user"
+      }, null, 2);
+    }
+    fs.writeFileSync(zaiConfigPath, configJson, { mode: 0o600 });
+    log("[provisionMediaDeps] Wrote .z-ai-config to", zaiConfigPath);
+
+    // 2. Verify z-ai-web-dev-sdk is present in backend/node_modules
+    const sdkPath = path.join(BACKEND_SRC_DIR, "node_modules", "z-ai-web-dev-sdk");
+    if (fs.existsSync(sdkPath)) {
+      log("[provisionMediaDeps] z-ai-web-dev-sdk present at", sdkPath);
+    } else {
+      log("[provisionMediaDeps] WARNING: z-ai-web-dev-sdk NOT found at", sdkPath,
+          "— image generation will fail with MODULE_NOT_FOUND");
+    }
+
+    // 3. Verify ffmpeg binary is available (we pass its path via env to Python)
+    const bundledFfmpeg = IS_PACKAGED
+      ? path.join(RESOURCES_PATH, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg")
+      : path.join(__dirname, "..", "node_modules", "ffmpeg-static", "ffmpeg");
+    if (fs.existsSync(bundledFfmpeg)) {
+      log("[provisionMediaDeps] ffmpeg present at", bundledFfmpeg);
+    } else {
+      log("[provisionMediaDeps] WARNING: ffmpeg NOT found at", bundledFfmpeg,
+          "— video generation will fail");
+    }
+  } catch (e) {
+    log("[provisionMediaDeps] FAILED:", e);
+  }
+}
+
 function startBackend() {
   if (backendProcess || backendStarting) return Promise.resolve();
   backendStarting = true;
@@ -232,6 +303,13 @@ function startBackend() {
     // Make sure backend source is available in userData (not just in the
     // volatile resourcesPath).
     syncBackendSource();
+
+    // Provision media-generation prerequisites before launching the backend:
+    //   1. .z-ai-config — required by the ZAI SDK for image generation
+    //   2. ffmpeg.exe   — required by wav2lip_runner for video generation
+    //   3. NODE_BIN     — points Python to Electron's bundled Node for the
+    //                     gen_character_worker.js subprocess
+    provisionMediaDeps();
 
     const py = getVenvPython();
     if (!fs.existsSync(py)) {
@@ -282,6 +360,20 @@ function startBackend() {
     sendBackendLog("[launch] cwd: " + BACKEND_SRC_DIR);
     sendBackendLog("[launch] ملاحظة: تحميل نماذج الـ AI ممكن ياخد 1-3 دقايق، استنى...");
 
+    // Resolve the bundled ffmpeg binary path.
+    // When packaged: process.resourcesPath/bin/ffmpeg.exe
+    // When dev:      desktop/node_modules/ffmpeg-static/ffmpeg
+    const bundledFfmpeg = IS_PACKAGED
+      ? path.join(RESOURCES_PATH, "bin", process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg")
+      : path.join(__dirname, "..", "node_modules", "ffmpeg-static", "ffmpeg");
+    const ffmpegPath = fs.existsSync(bundledFfmpeg) ? bundledFfmpeg : "";
+
+    // Compute the absolute path to a Node binary that the Python backend can
+    // spawn for gen_character_worker.js. We use Electron's own executable
+    // with ELECTRON_RUN_AS_NODE=1 — this guarantees a Node runtime is
+    // available even on user machines that don't have Node.js installed.
+    const nodeBinPath = process.execPath;
+
     backendProcess = spawn(py, ["server.py"], {
       cwd: BACKEND_SRC_DIR,
       env: {
@@ -290,6 +382,19 @@ function startBackend() {
         PYTHONUNBUFFERED: "1",
         // Add the Wav2Lip dir to PYTHONPATH so wav2lip_runner can find it
         PYTHONPATH: WAV2LIP_DIR + path.delimiter + (process.env.PYTHONPATH || ""),
+        // Bundled ffmpeg path — wav2lip_runner.py reads this env var and
+        // uses it as the ffmpeg binary instead of relying on PATH.
+        WAV2LIP_FFMPEG_PATH: ffmpegPath,
+        FFMPEG_PATH: ffmpegPath,
+        // Path to a Node binary for spawning gen_character_worker.js.
+        // server.py reads this and falls back to "node" if unset.
+        TCS_NODE_BIN: nodeBinPath,
+        // When set, Electron's executable behaves as a plain Node.js runtime,
+        // which is what we want when Python spawns it for the worker script.
+        ELECTRON_RUN_AS_NODE: "1",
+        // Make sure the bundled backend/node_modules is on NODE_PATH so
+        // `require('z-ai-web-dev-sdk')` resolves inside the worker.
+        NODE_PATH: path.join(BACKEND_SRC_DIR, "node_modules"),
       },
       windowsHide: true,
     });

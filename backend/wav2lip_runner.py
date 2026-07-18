@@ -12,6 +12,7 @@ import sys
 import os
 import subprocess
 import platform
+import shutil
 
 # Add Wav2Lip to path (directory may not exist; that's fine, we check at use time)
 WAV2LIP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Wav2Lip")
@@ -21,6 +22,40 @@ if os.path.isdir(WAV2LIP_DIR):
 # These lightweight libs are always needed; import up front.
 import numpy as np
 import cv2  # opencv is always installed in this env
+
+
+def _resolve_ffmpeg():
+    """
+    Resolve the ffmpeg binary path.
+
+    Priority:
+      1. WAV2LIP_FFMPEG_PATH env var (set by the desktop app to point at
+         the bundled ffmpeg.exe inside resources/bin/)
+      2. FFMPEG_PATH env var (same idea, alternative name)
+      3. shutil.which("ffmpeg") — system PATH (works on dev machines and
+         Linux servers where ffmpeg is installed globally)
+      4. Fall back to bare "ffmpeg" — keeps the old behavior so any
+         RuntimeError message still mentions ffmpeg by name.
+
+    This is critical for the desktop app: most Windows users do NOT have
+    ffmpeg in their PATH, and the Wav2Lip pipeline calls ffmpeg twice
+    (audio conversion + final A/V merge). Without this resolution, both
+    calls raise FileNotFoundError("[WinError 2]") and /lip-sync fails.
+    """
+    candidates = [
+        os.environ.get("WAV2LIP_FFMPEG_PATH"),
+        os.environ.get("FFMPEG_PATH"),
+        shutil.which("ffmpeg"),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return "ffmpeg"  # last resort — let subprocess raise the error
+
+
+def _ffmpeg_cmd(*extra_args):
+    """Build an ffmpeg command list using the resolved binary path."""
+    return [_resolve_ffmpeg()] + list(extra_args)
 
 # Lazy-loaded heavy modules (torch / Wav2Lip submodules). We expose them
 # via helper accessors so functions can call `_torch()` etc., and the
@@ -558,14 +593,14 @@ def run_lip_sync(
     # 2. Convert audio to wav if needed
     if not audio_path.endswith('.wav'):
         temp_wav = os.path.join(TEMP_DIR, f"input_{os.getpid()}.wav")
-        command = [
-            'ffmpeg', '-y',
+        command = _ffmpeg_cmd(
+            '-y',
             '-i', audio_path,
             '-ac', '1',           # mono
             '-ar', '16000',       # 16 kHz (Wav2Lip requirement)
             '-acodec', 'pcm_s16le',
             temp_wav
-        ]
+        )
         try:
             r = subprocess.run(command, capture_output=True, text=True, timeout=60)
             if r.returncode != 0 or not os.path.isfile(temp_wav):
@@ -843,8 +878,8 @@ def run_lip_sync(
     # Get original audio path (might be temp wav)
     final_audio = audio_path if audio_path.endswith('.wav') else audio_path
     # جودة عالية: CRF 18 (visually lossless) + H.264 + AAC audio + faststart
-    merge_cmd = [
-        'ffmpeg', '-y',
+    merge_cmd = _ffmpeg_cmd(
+        '-y',
         '-i', temp_avi,
         '-i', final_audio,
         '-c:v', 'libx264',
@@ -856,7 +891,7 @@ def run_lip_sync(
         '-movflags', '+faststart',
         '-shortest',
         output_path
-    ]
+    )
     try:
         r = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=120)
         if r.returncode != 0 or not os.path.isfile(output_path):

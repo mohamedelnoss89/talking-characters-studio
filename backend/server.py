@@ -22,6 +22,26 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
+
+def _resolve_ffmpeg():
+    """
+    Resolve the ffmpeg binary path.
+
+    Priority: WAV2LIP_FFMPEG_PATH → FFMPEG_PATH → shutil.which("ffmpeg") → "ffmpeg".
+
+    Critical for the desktop app: most Windows users do NOT have ffmpeg in
+    their PATH, but we bundle it in resources/bin/ffmpeg.exe. The Electron
+    main process sets WAV2LIP_FFMPEG_PATH before spawning this server.
+    """
+    for c in (
+        os.environ.get("WAV2LIP_FFMPEG_PATH"),
+        os.environ.get("FFMPEG_PATH"),
+        shutil.which("ffmpeg"),
+    ):
+        if c and os.path.isfile(c):
+            return c
+    return "ffmpeg"
+
 # Import tts_engine (needed for /voices and /tts) — try gracefully
 try:
     import tts_engine
@@ -122,6 +142,22 @@ class JobStatus(BaseModel):
 
 @app.get("/health")
 async def health():
+    # Preflight probes for media dependencies. The frontend can read these
+    # to show a clear error instead of waiting 6 minutes for a timeout.
+    ffmpeg_path = _resolve_ffmpeg()
+    ffmpeg_available = (
+        ffmpeg_path != "ffmpeg"
+        or shutil.which("ffmpeg") is not None
+    )
+    node_bin = os.environ.get("TCS_NODE_BIN") or shutil.which("node") or "node"
+    node_available = (
+        node_bin != "node"
+        or shutil.which("node") is not None
+    )
+    sdk_path = os.path.join(BACKEND_DIR, "node_modules", "z-ai-web-dev-sdk")
+    sdk_available = os.path.isdir(sdk_path)
+    zai_config_path = os.path.join(BACKEND_DIR, ".z-ai-config")
+    zai_config_available = os.path.isfile(zai_config_path)
     return {
         "status": "ok",
         "device": (wav2lip_runner.DEVICE if WAV2LIP_AVAILABLE else "cpu"),
@@ -130,6 +166,14 @@ async def health():
         "model_load_error": _model_load_status["error"],
         "tts_available": TTS_AVAILABLE,
         "wav2lip_available": WAV2LIP_AVAILABLE,
+        # Media preflight flags (added v1.1.6)
+        "ffmpeg_available": ffmpeg_available,
+        "ffmpeg_path": ffmpeg_path,
+        "node_available": node_available,
+        "node_path": node_bin,
+        "image_gen_available": sdk_available and zai_config_available and node_available,
+        "zai_sdk_available": sdk_available,
+        "zai_config_available": zai_config_available,
     }
 
 
@@ -588,7 +632,7 @@ async def lip_sync_multi(
                             f.write(f"file '{abs_path}'\n")
 
                     merge_cmd = [
-                        'ffmpeg', '-y',
+                        _resolve_ffmpeg(), '-y',
                         '-f', 'concat',
                         '-safe', '0',
                         '-i', concat_list_path,
@@ -601,7 +645,7 @@ async def lip_sync_multi(
                             # fallback: re-encode لو copy فشل (ممكن لو الـ segments ليهم نفس الـ codec)
                             print(f"[Multi {job_id}] concat copy failed, trying re-encode: {r.stderr[-500:]}")
                             merge_cmd2 = [
-                                'ffmpeg', '-y',
+                                _resolve_ffmpeg(), '-y',
                                 '-f', 'concat',
                                 '-safe', '0',
                                 '-i', concat_list_path,
@@ -770,9 +814,23 @@ def _run_gen_job(job_id: str, prompt: str, style: str, gender: str, language: st
         # progressively (avoids the ~64KB pipe-buffer deadlock that would
         # otherwise leave the child hanging until the 6-min client timeout)
         # AND we can push real-time progress messages to the polling client.
+        #
+        # On desktop, TCS_NODE_BIN points to Electron's executable running
+        # in Node mode (ELECTRON_RUN_AS_NODE=1). On a dev machine with
+        # Node.js installed, we fall back to "node".
         env = os.environ.copy()
+        node_bin = env.get("TCS_NODE_BIN") or "node"
+        # Make sure ELECTRON_RUN_AS_NODE is set if we're using Electron's
+        # executable — otherwise it tries to launch a GUI window.
+        if node_bin and node_bin != "node" and "ELECTRON_RUN_AS_NODE" not in env:
+            env["ELECTRON_RUN_AS_NODE"] = "1"
+        # Make sure the worker can `require('z-ai-web-dev-sdk')` by adding
+        # backend/node_modules to NODE_PATH (Electron's Node doesn't read
+        # the local node_modules by default when invoked as a subprocess).
+        if "NODE_PATH" not in env:
+            env["NODE_PATH"] = os.path.join(BACKEND_DIR, "node_modules")
         proc = _subprocess.Popen(
-            ["node", GEN_SCRIPT_PATH, _json.dumps({
+            [node_bin, GEN_SCRIPT_PATH, _json.dumps({
                 "prompt": prompt,
                 "style": style,
                 "gender": gender,
