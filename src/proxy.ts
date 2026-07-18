@@ -41,6 +41,10 @@ function isPublicPath(pathname: string): boolean {
     pathname === "/api/register" ||
     pathname === "/api/logout" ||
     pathname === "/api/health" ||
+    // Installer downloads — must be public so anonymous users can download
+    // the desktop app from /install before signing in. The route handler
+    // itself just 302-redirects to GitHub Releases; no sensitive data.
+    pathname.startsWith("/api/install/") ||
     // Google OAuth routes — must be reachable without a session cookie
     pathname === "/api/auth/google" ||
     pathname.startsWith("/api/auth/google/") ||
