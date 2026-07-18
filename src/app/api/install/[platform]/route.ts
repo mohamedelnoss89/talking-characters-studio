@@ -47,9 +47,12 @@ const ASSETS: Record<string, { url: string; fallback?: string; label: string }> 
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { platform: string } }
+  { params }: { params: Promise<{ platform: string }> }
 ) {
-  const platform = params.platform?.toLowerCase();
+  // In Next.js 15+ / 16, dynamic route params are async (Promise).
+  // We must await them before reading properties.
+  const { platform: rawPlatform } = await params;
+  const platform = rawPlatform?.toLowerCase();
   const asset = ASSETS[platform];
 
   if (!asset) {
