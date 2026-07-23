@@ -70,9 +70,8 @@ and `src/app/api/health/route.ts`). To start it manually:
 ```bash
 cd backend
 python3 -m venv venv
-source venv/bin/activate
-pip install fastapi uvicorn opencv-python numpy mediapipe \
-            gfpgan basicsr torch torchvision torchaudio
+source venv/bin/activate            # On Windows: venv\Scripts\activate
+pip install -r requirements.txt     # All deps pinned — single source of truth
 python3 server.py
 # → http://localhost:8000
 ```

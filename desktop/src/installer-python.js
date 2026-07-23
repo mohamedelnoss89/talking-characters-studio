@@ -505,45 +505,54 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
     log("[installPipDeps] Using Python: " + venvPy);
     logToFile("[installPipDeps] using python: " + venvPy);
 
-    // CRITICAL: Install numpy<2 ALONE FIRST, before any other package.
-    // Reason: torch 2.2.2 was compiled against NumPy 1.x. If we install
-    // torch + numpy together, pip may resolve to numpy 2.x (because some
-    // other package like mediapipe requests numpy>=2). Then torch crashes
-    // at import time with: "A module that was compiled using NumPy 1.x
-    // cannot be run in NumPy 2.x". Installing numpy<2 FIRST and then
-    // using --upgrade-strategy only-if-needed for the rest prevents this.
-    sendProgress && sendProgress("pip", 2, "تثبيت numpy<2 (أساسي)...");
-    log("[installPipDeps] Pre-installing numpy<2 to prevent torch conflict...");
-    try {
-      await spawnAsync(
-        venvPy,
-        ["-m", "pip", "install", "numpy<2", "--no-build-isolation"],
-        {
-          onStdout: (s) => log("[pip] " + s.trim()),
-          onStderr: (s) => log("[pip:err] " + s.trim()),
-        }
-      );
-    } catch (e) {
-      log("[installPipDeps] numpy pre-install warning: " + e.message + " (continuing)");
+    // Read the canonical dependency list from backend/requirements.txt.
+    // This file is the SINGLE source of truth — we no longer hard-code
+    // the package list here, so adding a new Python dep only requires
+    // editing requirements.txt (not this JS file too).
+    //
+    // The backend source is copied into BACKEND_SRC_DIR (userData/backend)
+    // by syncBackendSource() in main.js before installPipDeps runs, so
+    // requirements.txt is guaranteed to be present there.
+    const requirementsPath = path.join(BACKEND_SRC_DIR, "requirements.txt");
+    let packages = [];
+    if (fs.existsSync(requirementsPath)) {
+      log("[installPipDeps] Reading requirements from: " + requirementsPath);
+      const raw = fs.readFileSync(requirementsPath, "utf8");
+      // Strip comments and blank lines, preserve version specifiers.
+      packages = raw
+        .split(/\r?\n/)
+        .map((l) => l.split("#")[0].trim())
+        .filter((l) => l.length > 0);
+      log("[installPipDeps] Parsed " + packages.length + " packages from requirements.txt");
+    } else {
+      // Fallback: if requirements.txt is missing for any reason, use a
+      // minimal hardcoded list so install doesn't completely fail. This
+      // should never happen in practice (it's bundled with the app).
+      log("[installPipDeps] WARNING: requirements.txt not found at " + requirementsPath + " — using fallback list");
+      packages = [
+        "torch==2.2.2",
+        "torchvision==0.17.2",
+        "torchaudio==2.2.2",
+        "opencv-python==4.9.0.80",
+        "numpy<2",
+        "librosa==0.10.1",
+        "tqdm",
+        "huggingface_hub",
+        "edge-tts",
+        "fastapi==0.109.2",
+        "uvicorn==0.27.1",
+        "python-multipart==0.0.9",
+        "mediapipe==0.10.14",
+        "Pillow",
+        "requests",
+      ];
     }
+    logToFile("[installPipDeps] packages: " + packages.join(", "));
 
-    const packages = [
-      "torch==2.2.2",
-      "torchvision==0.17.2",
-      "torchaudio==2.2.2",
-      "opencv-python==4.9.0.80",
-      "librosa==0.10.1",
-      "tqdm",
-      "huggingface_hub",
-      "edge-tts",
-      "fastapi==0.109.2",
-      "uvicorn==0.27.1",
-      "python-multipart==0.0.9",
-      "mediapipe==0.10.14",
-      "Pillow",
-      "requests",
-    ];
-
+    // Install in chunks of 4 to keep pip's resolver from blowing up on
+    // large dependency trees (torch + torchvision + mediapipe together
+    // can take 10+ minutes to resolve if pip tries to find a single
+    // satisfiable set).
     const chunks = [];
     for (let i = 0; i < packages.length; i += 4) {
       chunks.push(packages.slice(i, i + 4));
@@ -554,11 +563,9 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
       sendProgress && sendProgress("pip", pct, `تثبيت: ${chunks[i].join(", ")}`);
       log("[installPipDeps] Chunk " + (i+1) + "/" + chunks.length + ": " + chunks[i].join(", "));
       try {
-        // --upgrade-strategy only-if-needed: don't upgrade existing deps
-        // unless required. This prevents mediapipe from pulling numpy 2.x.
         await spawnAsync(
           venvPy,
-          ["-m", "pip", "install", ...chunks[i], "--upgrade-strategy", "only-if-needed"],
+          ["-m", "pip", "install", ...chunks[i]],
           {
             onStdout: (s) => log("[pip] " + s.trim()),
             onStderr: (s) => log("[pip:err] " + s.trim()),
@@ -569,37 +576,6 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
         throw e;
       }
     }
-
-    // CRITICAL: Force numpy<2 AGAIN at the end. Some package may have
-    // pulled in numpy 2.x as a transitive dependency despite our pin.
-    // Reinstalling at the end guarantees torch sees numpy 1.x.
-    sendProgress && sendProgress("pip", 98, "تثبيت numpy<2 (تأكيد نهائي)...");
-    log("[installPipDeps] Force reinstalling numpy<2 to override any transitive upgrade...");
-    try {
-      await spawnAsync(
-        venvPy,
-        ["-m", "pip", "install", "--force-reinstall", "--no-deps", "numpy<2"],
-        {
-          onStdout: (s) => log("[pip] " + s.trim()),
-          onStderr: (s) => log("[pip:err] " + s.trim()),
-        }
-      );
-    } catch (e) {
-      log("[installPipDeps] numpy final force-reinstall warning: " + e.message);
-    }
-
-    // Verify numpy version
-    try {
-      const verify = spawnSync(venvPy, ["-c", "import numpy; print(numpy.__version__)"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        timeout: 15000,
-      });
-      const ver = ((verify.stdout || "") + (verify.stderr || "")).trim();
-      log("[installPipDeps] numpy version after install: " + ver);
-      logToFile("[installPipDeps] numpy version: " + ver);
-    } catch {}
 
     sendProgress && sendProgress("pip", 100, "كل المكتبات اتثبتت ✓");
     logToFile("[installPipDeps] success");
