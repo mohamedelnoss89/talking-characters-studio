@@ -1,5 +1,6 @@
 # Talking Characters Studio — Backend Python dependencies
 #
+setuptools>=65.0.0
 # This file is the SINGLE source of truth for the Python backend's
 # third-party packages. It is consumed by:
 #   - developers running the backend manually: `pip install -r requirements.txt`
