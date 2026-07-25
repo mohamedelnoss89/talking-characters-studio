@@ -817,47 +817,39 @@ app.whenReady().then(async () => {
   log("App ready. Checking install state...");
 
   if (isFullyInstalled()) {
-    // CRITICAL: Show the installer window IMMEDIATELY in "launching" mode
-    // so the user sees progress while the backend starts up (1-3 minutes
-    // for Wav2Lip model pre-loading). Previously, NO window was visible
-    // during this period — the user thought the app was frozen / not
-    // opening, and would complain "بيخد وقت فى الفتح كتير".
-    log("Already installed. Showing launching window + starting backend...");
-    createInstallerWindow();
+    // CRITICAL (v1.1.14+): Open the PWA IMMEDIATELY instead of showing the
+    // installer window for 15-60s while the backend starts.
+    //
+    // The BackendRestartButton component (in the PWA) has a "starting" phase
+    // that shows a floating panel with:
+    //   - "جاري تشغيل السيرفر..." (Starting server...) with a live timer
+    //   - The latest Python log line (e.g. "Background wav2lip import started...")
+    //   - Auto-restart after 90s if the backend is still unreachable
+    //
+    // This is MUCH better UX than the old approach of showing the installer
+    // window's "launching banner" — the user can now:
+    //   1. See the PWA immediately (login page, etc.)
+    //   2. Log in (auth goes to Vercel, doesn't need the local backend)
+    //   3. See the "starting" floating panel while the backend loads
+    //   4. Start using features as soon as the backend is ready (banner disappears)
+    //
+    // Combined with the server.py deferred-import fix in v1.1.14, the total
+    // startup time is now ~3-5s (was ~15-30s) before the PWA is usable.
+    log("Already installed. Opening PWA immediately, backend will start in background...");
+    createMainWindow();
 
-    // Tell the installer window it's in "auto-launch" mode (hide install
-    // button, show launching message). Wait for the page to finish loading
-    // before sending the mode signal, otherwise the renderer's IPC listener
-    // won't be registered yet.
-    if (installerWindow) {
-      installerWindow.webContents.once("did-finish-load", () => {
-        installerWindow.webContents.send("launcher:autoLaunch");
-      });
-    }
-
-    try {
-      await startBackend();
-      // Backend is healthy — close the launching window and open the main PWA.
-      if (installerWindow) {
-        try { installerWindow.close(); } catch {}
-        installerWindow = null;
-      }
-      createMainWindow();
-    } catch (e) {
-      log("Failed to start backend:", e);
-      // Keep the installer window open — the user can see the error in the
-      // log panel and use the recovery buttons (resync / kill-port / fix-numpy).
-      // The buttons auto-appear after a launch failure (already implemented
-      // in installer.html's launchApp() error handler).
-      // Trigger the same UI by sending an autoLaunchFailed event.
-      if (installerWindow && !installerWindow.isDestroyed()) {
-        try {
-          installerWindow.webContents.send("launcher:autoLaunchFailed", {
-            error: String(e?.message || e),
-          });
-        } catch {}
-      }
-    }
+    // Start backend in background — don't await.
+    // The BackendRestartButton's "starting" phase handles the UI.
+    // If the backend fails to start, the "starting" phase will transition
+    // to "down" after 90s and auto-trigger a restart.
+    startBackend().then(() => {
+      log("Backend is healthy!");
+    }).catch((e) => {
+      log("Backend failed to start:", e);
+      // Broadcast the error via backend:log so it shows up in the
+      // BackendRestartButton's floating panel log line.
+      sendBackendLog("[launch] ✗ " + (e?.message || String(e)));
+    });
   } else {
     log("Not fully installed. Showing installer window.");
     createInstallerWindow();

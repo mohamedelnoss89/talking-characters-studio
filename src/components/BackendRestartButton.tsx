@@ -340,13 +340,27 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
             )}
 
             {phase === "down" && (
-              <button
-                onClick={() => handleRestart(false)}
-                className={buttonClass}
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                {t("إعادة تشغيل السيرفر", "Restart Server")}
-              </button>
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => handleRestart(false)}
+                  className={buttonClass}
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  {t("إعادة تشغيل السيرفر", "Restart Server")}
+                </button>
+                <button
+                  onClick={() => {
+                    const inst = (window as any).installer;
+                    if (inst && typeof inst.openLogFolder === "function") {
+                      inst.openLogFolder();
+                    }
+                  }}
+                  className="mt-0 px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-red-100 text-xs transition"
+                  title={t("افتح مجلد الـ logs", "Open logs folder")}
+                >
+                  {t("الـ logs", "Logs")}
+                </button>
+              </div>
             )}
 
             {phase === "restarting" && (
@@ -357,13 +371,27 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
             )}
 
             {phase === "error" && (
-              <button
-                onClick={() => handleRestart(false)}
-                className={buttonClass}
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                {t("حاول تاني", "Try again")}
-              </button>
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => handleRestart(false)}
+                  className={buttonClass}
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  {t("حاول تاني", "Try again")}
+                </button>
+                <button
+                  onClick={() => {
+                    const inst = (window as any).installer;
+                    if (inst && typeof inst.openLogFolder === "function") {
+                      inst.openLogFolder();
+                    }
+                  }}
+                  className="mt-0 px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-red-100 text-xs transition"
+                  title={t("افتح مجلد الـ logs", "Open logs folder")}
+                >
+                  {t("الـ logs", "Logs")}
+                </button>
+              </div>
             )}
           </div>
         </div>

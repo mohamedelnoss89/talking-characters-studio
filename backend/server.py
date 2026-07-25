@@ -50,21 +50,85 @@ except Exception as e:
     print(f"[Server] WARNING: tts_engine not available ({e})")
     TTS_AVAILABLE = False
 
-# Import wav2lip_runner — if missing (torch/checkpoints), run in degraded mode.
-# /health and /voices and /tts still work; /lip-sync will return a clear error.
+# ---------------------------------------------------------------------------
+# Wav2Lip: deferred import + background model pre-load
+# ---------------------------------------------------------------------------
+# CRITICAL (v1.1.14+): wav2lip_runner imports torch (5-10s), mediapipe (2-3s),
+# opencv (1-2s) at module load time. Doing this at server.py top-level
+# blocked uvicorn from starting for 8-15s, which delayed /health and made
+# the desktop app appear to hang on startup.
+#
+# Now we import wav2lip_runner in a BACKGROUND THREAD that starts when
+# uvicorn starts (via the lifespan handler below). The /health endpoint
+# returns immediately with wav2lip_available=False + wav2lip_importing=True,
+# and /lip-sync waits for the import to finish before proceeding.
+#
+# This cuts server startup time from ~15-30s down to ~3-5s.
 WAV2LIP_AVAILABLE = False
-try:
-    import wav2lip_runner
-    # Verify that the actual model files are present too, not just the import
-    try:
-        wav2lip_runner._check_wav2lip_available()
-        WAV2LIP_AVAILABLE = True
-    except Exception as e:
-        print(f"[Server] WARNING: wav2lip_runner imported but model files missing ({e}). /lip-sync will return 503.")
-        WAV2LIP_AVAILABLE = False
-except Exception as e:
-    print(f"[Server] WARNING: wav2lip_runner not available ({e}). Running in degraded mode — /lip-sync disabled.")
-    WAV2LIP_AVAILABLE = False
+wav2lip_runner = None  # will be set by _import_and_preload_wav2lip_background()
+
+import threading
+import re
+_model_load_status = {
+    "loaded": False,
+    "loading": False,
+    "error": None,
+    "import_done": False,  # True after wav2lip_runner import finishes (success or fail)
+}
+_wav2lip_lock = threading.Lock()
+
+def _import_and_preload_wav2lip_background():
+    """
+    Background thread: import wav2lip_runner (which imports torch etc.)
+    and then pre-load the Wav2Lip model checkpoint.
+
+    Phase 1 (import): ~5-15s on CPU — imports torch, mediapipe, opencv.
+    Phase 2 (model load): ~30s-3min on CPU — loads the 415MB checkpoint.
+
+    Both phases run in this single background thread so the main uvicorn
+    event loop is never blocked.
+    """
+    global WAV2LIP_AVAILABLE, wav2lip_runner
+    if _model_load_status["loading"] or _model_load_status["import_done"]:
+        return
+    with _wav2lip_lock:
+        if _model_load_status["loading"] or _model_load_status["import_done"]:
+            return
+        _model_load_status["loading"] = True
+
+        # ---- Phase 1: import wav2lip_runner ----
+        print("[Server] Background wav2lip_runner import started...", flush=True)
+        try:
+            import wav2lip_runner as _wlr
+            _wlr._check_wav2lip_available()
+            wav2lip_runner = _wlr
+            WAV2LIP_AVAILABLE = True
+            print("[Server] wav2lip_runner imported successfully.", flush=True)
+        except Exception as e:
+            WAV2LIP_AVAILABLE = False
+            _model_load_status["loading"] = False
+            _model_load_status["import_done"] = True
+            _model_load_status["error"] = f"import failed: {e}"
+            print(f"[Server] WARNING: wav2lip_runner not available ({e}). /lip-sync disabled.", flush=True)
+            return
+        finally:
+            # Mark import as done regardless of success/failure so /lip-sync
+            # and /health can stop waiting.
+            _model_load_status["import_done"] = True
+
+        # ---- Phase 2: pre-load the model ----
+        if not WAV2LIP_AVAILABLE or wav2lip_runner is None:
+            return
+        print("[Server] Background model pre-load started...", flush=True)
+        try:
+            wav2lip_runner.load_model()
+            _model_load_status["loaded"] = True
+            _model_load_status["loading"] = False
+            print("[Server] Background model pre-load complete.", flush=True)
+        except Exception as e:
+            _model_load_status["loading"] = False
+            _model_load_status["error"] = str(e)
+            print(f"[Server] Background model pre-load FAILED: {e}", flush=True)
 
 # Background model pre-loading state.
 # CRITICAL: We start uvicorn FIRST and pre-load the Wav2Lip model in a background
@@ -73,40 +137,19 @@ except Exception as e:
 # approach called load_model() BEFORE uvicorn.run(), which blocked startup for
 # 1-3 minutes on a regular CPU (loading a 415MB checkpoint) and caused the
 # Electron launcher to time out at 60s.
-import threading
-import re
-_model_load_status = {"loaded": False, "loading": False, "error": None}
-
-def _preload_model_background():
-    """Pre-load the Wav2Lip model in a background thread. Sets _model_load_status."""
-    if _model_load_status["loaded"] or _model_load_status["loading"]:
-        return
-    if not WAV2LIP_AVAILABLE:
-        return
-    _model_load_status["loading"] = True
-    print("[Server] Background model pre-load started...", flush=True)
-    try:
-        wav2lip_runner.load_model()
-        _model_load_status["loaded"] = True
-        _model_load_status["loading"] = False
-        print("[Server] Background model pre-load complete.", flush=True)
-    except Exception as e:
-        _model_load_status["loading"] = False
-        _model_load_status["error"] = str(e)
-        print(f"[Server] Background model pre-load FAILED: {e}", flush=True)
 
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
-    """FastAPI lifespan: kicks off background model pre-load on startup."""
-    # Startup: schedule background pre-load
-    if WAV2LIP_AVAILABLE:
-        t = threading.Thread(target=_preload_model_background, daemon=True)
-        t.start()
-        print("[Server] Scheduled background model pre-load. uvicorn is ready to serve requests.", flush=True)
-    else:
-        print("[Server] Running in degraded mode (Wav2Lip not installed). /health, /voices, /tts still work.", flush=True)
+    """FastAPI lifespan: kicks off background wav2lip import + model pre-load."""
+    # Startup: schedule background import + pre-load in a SINGLE thread.
+    # The import (torch, mediapipe, opencv) takes 5-15s, and the model
+    # pre-load takes 30s-3min. Running both in one thread avoids race
+    # conditions and ensures /lip-sync can wait for both to finish.
+    t = threading.Thread(target=_import_and_preload_wav2lip_background, daemon=True)
+    t.start()
+    print("[Server] Scheduled background wav2lip import + model pre-load. uvicorn is ready to serve requests.", flush=True)
     yield
     # Shutdown
     print("[Server] Shutting down...", flush=True)
@@ -160,10 +203,11 @@ async def health():
     zai_config_available = os.path.isfile(zai_config_path)
     return {
         "status": "ok",
-        "device": (wav2lip_runner.DEVICE if WAV2LIP_AVAILABLE else "cpu"),
-        "model_loaded": (WAV2LIP_AVAILABLE and wav2lip_runner._model is not None),
+        "device": (wav2lip_runner.DEVICE if WAV2LIP_AVAILABLE and wav2lip_runner else "cpu"),
+        "model_loaded": (WAV2LIP_AVAILABLE and wav2lip_runner is not None and wav2lip_runner._model is not None),
         "model_loading": _model_load_status["loading"],
         "model_load_error": _model_load_status["error"],
+        "wav2lip_importing": not _model_load_status["import_done"],
         "tts_available": TTS_AVAILABLE,
         "wav2lip_available": WAV2LIP_AVAILABLE,
         # Media preflight flags (added v1.1.6)
@@ -175,6 +219,31 @@ async def health():
         "zai_sdk_available": sdk_available,
         "zai_config_available": zai_config_available,
     }
+
+
+async def _wait_for_wav2lip_import(timeout_s: float = 30.0) -> bool:
+    """
+    Wait for the background wav2lip_runner import to finish.
+
+    Called by /lip-sync and /detect-faces before they access wav2lip_runner.
+    If the import is still running (server just started), this blocks until
+    it's done or the timeout expires.
+
+    Returns True if wav2lip_runner is available, False otherwise.
+    """
+    if WAV2LIP_AVAILABLE and wav2lip_runner is not None:
+        return True
+    if _model_load_status.get("import_done") and not WAV2LIP_AVAILABLE:
+        # Import already failed — don't wait
+        return False
+    # Wait for import to finish
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while not _model_load_status["import_done"]:
+        if asyncio.get_event_loop().time() > deadline:
+            return False
+        await asyncio.sleep(0.5)
+    return WAV2LIP_AVAILABLE and wav2lip_runner is not None
+
 
 
 # ============================================================
@@ -260,10 +329,12 @@ async def detect_faces(file: UploadFile = File(...)):
             "image_height": int,
         }
     """
-    if not WAV2LIP_AVAILABLE:
+    # Wait for wav2lip_runner import to finish (server may have just started)
+    ready = await _wait_for_wav2lip_import(timeout_s=30.0)
+    if not ready:
         raise HTTPException(
             status_code=503,
-            detail="عذرًا، نموذج Wav2Lip غير مثبت على السيرفر، لا يمكن كشف الوجوه."
+            detail="جاري تحميل نموذج Wav2Lip... استنى دقيقة وحاول تاني."
         )
 
     # احفظ الصورة مؤقتاً
@@ -335,10 +406,12 @@ async def lip_sync(
 
     لازم one of (audio, text) يكون موجود.
     """
-    if not WAV2LIP_AVAILABLE:
+    # Wait for wav2lip_runner import to finish (server may have just started)
+    ready = await _wait_for_wav2lip_import(timeout_s=30.0)
+    if not ready:
         raise HTTPException(
             status_code=503,
-            detail="عذرًا، نموذج Wav2Lip غير مثبت على السيرفر. ميزة lip-sync معطّلة مؤقتًا — بس ميزة توليد الشخصيات وTTS شغّالة."
+            detail="جاري تحميل نموذج Wav2Lip... استنى دقيقة وحاول تاني."
         )
 
     if not audio and not (text and text.strip()):
@@ -496,10 +569,12 @@ async def lip_sync_multi(
             "rate": str           # سرعة الكلام "+0%"
         }
     """
-    if not WAV2LIP_AVAILABLE:
+    # Wait for wav2lip_runner import to finish (server may have just started)
+    ready = await _wait_for_wav2lip_import(timeout_s=30.0)
+    if not ready:
         raise HTTPException(
             status_code=503,
-            detail="عذرًا، نموذج Wav2Lip غير مثبت على السيرفر. ميزة lip-sync معطّلة مؤقتًا."
+            detail="جاري تحميل نموذج Wav2Lip... استنى دقيقة وحاول تاني."
         )
 
     if not TTS_AVAILABLE:
