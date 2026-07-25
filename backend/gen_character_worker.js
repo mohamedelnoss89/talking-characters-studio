@@ -16,6 +16,64 @@
 
 const ZAI = require('z-ai-web-dev-sdk').default;
 
+// ============================================================
+// Per-call timeouts — prevent a single hung API call from eating
+// the entire generation budget.
+//
+// The z-ai API is hosted in China; users in Egypt have ~200-300ms
+// RTT. When the API is under load, a single image generation call
+// can take 60-120s or even hang indefinitely. Without per-call
+// timeouts, one hung call would consume the whole 300s backend
+// budget, leaving no room for retries.
+//
+// With these timeouts:
+//   - LLM calls (translate/rephrase): 30s cap
+//   - Image generation calls: 90s cap
+// If a call exceeds its cap, we abort it and treat it as a
+// retryable error (same as a network error).
+// ============================================================
+const LLM_TIMEOUT_MS = 30000;       // 30s per LLM call
+const IMAGE_TIMEOUT_MS = 90000;      // 90s per image gen call
+
+/**
+ * Wrap a promise with a timeout. If the promise doesn't resolve/reject
+ * within `ms` milliseconds, rejects with a timeout error.
+ *
+ * We use Promise.race (not AbortController) because the z-ai SDK doesn't
+ * reliably support AbortSignal — the underlying HTTP request may continue
+ * in the background, but we no longer wait for it.
+ */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms / 1000}s — API may be busy`));
+    }, ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+/**
+ * Check if an error is a timeout or transient network error that warrants
+ * a retry with the SAME prompt (as opposed to a content filter reject,
+ * which warrants a rephrase).
+ */
+function isRetryableError(err) {
+  const msg = (err && err.message) ? err.message : String(err);
+  return msg.includes('timed out') ||
+         msg.includes('timeout') ||
+         msg.includes('ETIMEDOUT') ||
+         msg.includes('ESOCKETTIMEDOUT') ||
+         msg.includes('ECONNRESET') ||
+         msg.includes('ECONNREFUSED') ||
+         msg.includes('ENETUNREACH') ||
+         msg.includes('fetch failed') ||
+         msg.includes('network') ||
+         msg.includes('socket hang up');
+}
+
 const STYLE_PRESETS = {
   realistic: "photorealistic, ultra-detailed, 8k, professional photography, natural lighting, sharp focus, high resolution portrait",
   anime: "anime style, cel-shaded, vibrant colors, detailed eyes, studio ghibli inspired, clean line art",
@@ -141,13 +199,17 @@ CRITICAL RULES:
   let parsed;
   try {
     const zai = await ZAI.create();
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.7,
-    });
+    const completion = await withTimeout(
+      zai.chat.completions.create({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.7,
+      }),
+      LLM_TIMEOUT_MS,
+      "LLM translate"
+    );
     const content = completion.choices?.[0]?.message?.content || "";
     const first = content.indexOf("{");
     const last = content.lastIndexOf("}");
@@ -189,10 +251,14 @@ function isContentFilterError(err) {
 
 async function generateImage(imagePrompt) {
   const zai = await ZAI.create();
-  const response = await zai.images.generations.create({
-    prompt: imagePrompt,
-    size: "1024x1024",
-  });
+  const response = await withTimeout(
+    zai.images.generations.create({
+      prompt: imagePrompt,
+      size: "1024x1024",
+    }),
+    IMAGE_TIMEOUT_MS,
+    "Image generation"
+  );
   const b64 = response?.data?.[0]?.base64;
   if (!b64) throw new Error("Image generation returned empty response");
   return sanitizeBase64(b64);
@@ -220,13 +286,17 @@ async function rephraseForRetry(zai, originalPrompt, attempt, style, gender) {
   const systemPrompt = framings[attempt % framings.length];
 
   try {
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: originalPrompt },
-      ],
-      temperature: 0.8,
-    });
+    const completion = await withTimeout(
+      zai.chat.completions.create({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: originalPrompt },
+        ],
+        temperature: 0.8,
+      }),
+      LLM_TIMEOUT_MS,
+      `LLM rephrase ${attempt}`
+    );
     const content = (completion.choices?.[0]?.message?.content || "").trim();
     const cleaned = content.replace(/^["'`]+|["'`]+$/g, "").trim();
     if (cleaned.length < 10 || cleaned.length > 2000) {
@@ -241,11 +311,22 @@ async function rephraseForRetry(zai, originalPrompt, attempt, style, gender) {
 }
 
 /**
- * Try to generate the image. If rejected by the content filter, retry up to 4 times
- * with different LLM-rephrased versions of the SAME user intent.
+ * Try to generate the image. Retries on two kinds of errors:
  *
- * NEVER replaces the user's intent with a generic safe prompt — every retry preserves
- * the original concept, just in different artistic framing.
+ *   1. Content filter reject → rephrase with different artistic framing
+ *      (preserves user intent, just wraps it in different language)
+ *
+ *   2. Timeout / network error → retry with the SAME prompt
+ *      (transient issues — the API might just be busy or the network
+ *      had a hiccup. A retry with the same prompt often succeeds.)
+ *
+ * NEVER replaces the user's intent with a generic safe prompt — every
+ * retry preserves the original concept.
+ *
+ * Retry budget: 3 total attempts (initial + 2 retries).
+ * With per-call timeouts (90s image, 30s LLM), worst case is:
+ *   30s translate + 90s img + 30s rephrase + 90s img + 30s rephrase + 90s img = 360s
+ * The backend subprocess timeout is 360s, so we just fit.
  */
 async function generateImageWithRetry(imagePrompt, style, gender, language) {
   const maxRetries = 2;
@@ -264,11 +345,19 @@ async function generateImageWithRetry(imagePrompt, style, gender, language) {
       if (attempt >= maxRetries) {
         throw err; // give up after all retries
       }
-      if (!isContentFilterError(err)) {
-        throw err; // non-filter errors are not retryable via rephrasing
+
+      if (isContentFilterError(err)) {
+        // Content filter reject → rephrase with different framing
+        process.stderr.write(`[worker] Content filter rejected attempt ${attempt + 1}. Rephrasing with different framing...\n`);
+        currentPrompt = await rephraseForRetry(zai, imagePrompt, attempt, style, gender);
+      } else if (isRetryableError(err)) {
+        // Timeout / network error → retry with SAME prompt (no rephrase needed)
+        process.stderr.write(`[worker] Attempt ${attempt + 1} failed with retryable error: ${err.message}. Retrying with same prompt...\n`);
+        // Keep currentPrompt as-is — don't rephrase, just retry
+      } else {
+        // Non-retryable error (auth, empty response, etc.) → fail fast
+        throw err;
       }
-      process.stderr.write(`[worker] Content filter rejected attempt ${attempt + 1}. Rephrasing with different framing...\n`);
-      currentPrompt = await rephraseForRetry(zai, imagePrompt, attempt, style, gender);
     }
   }
   // unreachable, but keep TS happy

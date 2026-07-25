@@ -942,7 +942,11 @@ def _run_gen_job(job_id: str, prompt: str, style: str, gender: str, language: st
         _t.start()
 
         try:
-            stdout, _ = proc.communicate(timeout=300)
+            # 360s (6 min) — matches the frontend polling budget (180 × 2s).
+            # The worker has per-call timeouts (90s image gen, 30s LLM) so
+            # a single hung API call can't eat the whole budget. Worst case
+            # with 3 image gen attempts: 30+90+30+90+30+90 = 360s.
+            stdout, _ = proc.communicate(timeout=360)
         except _subprocess.TimeoutExpired:
             proc.kill()
             try:
