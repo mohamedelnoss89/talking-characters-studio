@@ -277,6 +277,30 @@ function initUpdater(log) {
     };
   });
 
+  /**
+   * Open the GitHub Releases page in the user's default browser.
+   *
+   * Used by the UpdateBanner's "فتح في المتصفح" button — when the in-app
+   * download is too slow (94MB on a flaky Egyptian connection), the user
+   * can fall back to downloading Setup.exe directly from GitHub in their
+   * browser, which typically uses download managers / multi-connection
+   * downloads that handle flaky networks better.
+   *
+   * After downloading, the user can just double-click the Setup.exe to
+   * install — it will replace the existing installation cleanly.
+   */
+  ipcMain.handle("updater:openInBrowser", async () => {
+    const { shell } = require("electron");
+    const url = "https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest";
+    try {
+      await shell.openExternal(url);
+      return { success: true, url };
+    } catch (e) {
+      lastError = String(e?.message || e);
+      return { success: false, error: lastError };
+    }
+  });
+
   log && log("[updater] electron-updater initialized");
 }
 

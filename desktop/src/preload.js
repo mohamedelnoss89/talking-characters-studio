@@ -103,6 +103,15 @@ contextBridge.exposeInMainWorld("updater", {
    */
   install: () => ipcRenderer.invoke("updater:install"),
 
+  /**
+   * Open GitHub Releases page in the user's default browser.
+   * Useful when the in-app download is too slow — the user can download
+   * Setup.exe directly from GitHub using their browser's download manager
+   * (which handles flaky connections better).
+   * Returns { success, url, error? }.
+   */
+  openInBrowser: () => ipcRenderer.invoke("updater:openInBrowser"),
+
   /** Returns { available, currentVersion, updateInfo, downloadedVersion, downloadPercent, lastError } */
   status: () => ipcRenderer.invoke("updater:status"),
 
