@@ -1,6 +1,5 @@
 # Talking Characters Studio — Backend Python dependencies
 #
-setuptools>=65.0.0
 # This file is the SINGLE source of truth for the Python backend's
 # third-party packages. It is consumed by:
 #   - developers running the backend manually: `pip install -r requirements.txt`
@@ -14,6 +13,12 @@ setuptools>=65.0.0
 # Pinned versions match what the Electron installer previously hard-coded,
 # to avoid changing runtime behaviour. Newer versions can be bumped here
 # and tested in isolation.
+
+# --- Build tooling (must be first) ---
+# setuptools>=65 is required because Python 3.12+ no longer ships with
+# distutils, and several packages (torch, basicsr) still need it at
+# install time for their setup.py legacy paths.
+setuptools>=65.0.0
 
 # --- Deep learning stack ---
 # torch 2.2.x is the last version that ships pre-built CPU wheels for
