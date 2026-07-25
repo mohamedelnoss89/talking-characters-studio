@@ -36,10 +36,25 @@ let isDownloading = false;    // guards against concurrent download attempts
 let lastCheckAt = 0;          // timestamp (ms) of the last actual checkForUpdates call
 let isChecking = false;       // guards against concurrent checks (force-check while auto-check running)
 
-const MAX_DOWNLOAD_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 5000;  // 5s between retries
+const MAX_DOWNLOAD_ATTEMPTS = 5;
+const RETRY_BASE_DELAY_MS = 2000;  // base delay, doubled each retry (2,4,8,16,32s)
+const RETRY_MAX_DELAY_MS = 30000;  // cap at 30s
 const PERIODIC_CHECK_INTERVAL_MS = 30 * 60 * 1000;  // 30 min auto re-check
 const FORCE_CHECK_MIN_GAP_MS = 5 * 1000;            // don't re-check more than once per 5s (manual)
+
+/**
+ * Compute exponential backoff delay for a given attempt number.
+ * Attempt 1 fails → wait RETRY_BASE_DELAY_MS (2s)
+ * Attempt 2 fails → wait 4s
+ * Attempt 3 fails → wait 8s
+ * Attempt 4 fails → wait 16s
+ * Attempt 5 fails → no wait, give up
+ * Capped at RETRY_MAX_DELAY_MS.
+ */
+function getRetryDelayMs(attempt) {
+  const d = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+  return Math.min(d, RETRY_MAX_DELAY_MS);
+}
 
 try {
   // Lazy-load so the app still runs if the package isn't installed yet.
@@ -58,6 +73,28 @@ if (autoUpdater) {
   autoUpdater.allowDowngrade = false;
   // Don't catch unhandled rejections in the updater — emit our own error event.
   autoUpdater.logger = null;
+
+  // CRITICAL (v1.1.19): Extend the HTTP request timeout for the download.
+  // The default electron-updater timeout (5 min for HTTPS requests) is too
+  // short for slow connections (e.g. Egyptian users hitting GitHub with
+  // ~200 KB/s — 94MB would take ~8 min). With the default timeout, the
+  // download fails with `net::ERR_FAILED` well before the connection
+  // actually stalls.
+  //
+  // electron-updater exposes `requestHeaders` and the underlying
+  // `downloadUpdate` uses a 5-min timeout per HTTPS request. We can't
+  // easily change that without monkey-patching, but we CAN set the
+  // `requestTimeout` (used for the latest.yml check) to a longer value
+  // so flaky check requests don't fail.
+  try {
+    autoUpdater.requestHeaders = { "User-Agent": "TalkingCharactersStudio-Updater" };
+    // Some versions of electron-updater expose this; ignore if not.
+    if ("requestTimeout" in autoUpdater) {
+      autoUpdater.requestTimeout = 10 * 60 * 1000;  // 10 min for the metadata fetch
+    }
+  } catch (e) {
+    console.warn("[updater] Could not set request headers/timeout:", e.message);
+  }
 }
 
 /**
@@ -276,9 +313,19 @@ function initUpdater(log) {
    * downloaded partial file is cached, so a subsequent downloadUpdate()
    * call RESUMES from where it left off (HTTP Range request).
    *
-   * We retry up to MAX_DOWNLOAD_ATTEMPTS times with RETRY_DELAY_MS gap.
+   * We retry up to MAX_DOWNLOAD_ATTEMPTS times with EXPONENTIAL BACKOFF
+   * (2s, 4s, 8s, 16s, 32s — capped at 30s). This gives the network
+   * time to recover between retries and dramatically increases the
+   * chance of completing a 94MB download on a flaky connection
+   * (e.g. Egyptian residential lines hitting GitHub).
+   *
    * Each retry emits a `retry` event so the renderer can show
-   * "Retry 2/3..." instead of just spinning.
+   * "Retry 2/5..." instead of just spinning.
+   *
+   * v1.1.19 changes:
+   *   - Increased attempts from 3 → 5
+   *   - Changed fixed 5s delay → exponential backoff (2s, 4s, 8s, 16s, 32s)
+   *   - The `retryingIn` field now reflects the actual delay per attempt
    */
   async function downloadWithRetry() {
     if (isDownloading) {
@@ -306,14 +353,15 @@ function initUpdater(log) {
             return { success: false, error: msg };
           }
           if (downloadAttempts < MAX_DOWNLOAD_ATTEMPTS) {
+            const delayMs = getRetryDelayMs(downloadAttempts);
             broadcast("progress", {
               percent: downloadPercent,
               attempt: downloadAttempts,
               maxAttempts: MAX_DOWNLOAD_ATTEMPTS,
-              retryingIn: RETRY_DELAY_MS / 1000,
+              retryingIn: delayMs / 1000,
               lastError: msg,
             });
-            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+            await new Promise((r) => setTimeout(r, delayMs));
           } else {
             broadcast("error", { error: msg, attemptsExhausted: true });
             return { success: false, error: msg };

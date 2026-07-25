@@ -42,7 +42,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Download, RefreshCw, X, CheckCircle2, Loader2, AlertCircle, RotateCw } from "lucide-react";
+import { Download, RefreshCw, X, CheckCircle2, Loader2, AlertCircle, RotateCw, ExternalLink } from "lucide-react";
 
 type UpdateState =
   | { kind: "idle" }
@@ -432,6 +432,34 @@ export function UpdateBanner() {
     }
   };
 
+  /**
+   * Open the GitHub Releases page in the user's default browser.
+   *
+   * ONLY shown in the `error` state when `attemptsExhausted` is true (i.e.
+   * all 5 retry attempts failed). For users on slow / flaky connections
+   * (typical for Egyptian residential lines hitting GitHub ~94MB), the
+   * in-app electron-updater download may keep failing — but the browser
+   * usually succeeds because:
+   *   1. Browsers use multi-connection downloads (parallel ranges)
+   *   2. Browsers have better resume support
+   *   3. Users can use download managers (IDM, Free Download Manager, etc.)
+   *
+   * After the browser download completes, the user just double-clicks
+   * Setup.exe — it installs cleanly over the existing installation.
+   *
+   * (Previously this button was shown on the `available` state too, which
+   * was unnecessary noise — it's now ONLY shown as a last-resort fallback.)
+   */
+  const handleOpenInBrowser = async () => {
+    const updater = (window as any).updater;
+    if (!updater?.openInBrowser) return;
+    try {
+      await updater.openInBrowser();
+    } catch (e) {
+      // Silent fail — opening the browser is best-effort.
+    }
+  };
+
   if (typeof window !== "undefined" && !(window as any).updater) return null;
 
   const errorInfo =
@@ -539,7 +567,8 @@ export function UpdateBanner() {
               <p className="text-xs text-white/80">{errorInfo.hint}</p>
               {state.attemptsExhausted && (
                 <p className="text-[11px] text-white/60 mt-1">
-                  اتجرّبت 3 مرات. حمّل التحديث يدويًا من GitHub Releases.
+                  اتجرّبت 5 مرات ومفيش فايدة — الأرجح إن النت ضعيف على GitHub.
+                  حمّل التحديث يدويًا من المتصفح (زرار "فتح في المتصفح").
                 </p>
               )}
               {state.message && !state.attemptsExhausted && (
@@ -584,14 +613,26 @@ export function UpdateBanner() {
             </button>
           )}
           {state.kind === "error" && (
-            <button
-              onClick={handleRetry}
-              disabled={working}
-              className="px-3 py-1.5 rounded-lg bg-white text-purple-700 text-sm font-semibold hover:bg-white/90 transition disabled:opacity-50 flex items-center gap-1"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${working ? "animate-spin" : ""}`} />
-              {working ? "..." : "إعادة المحاولة"}
-            </button>
+            <>
+              <button
+                onClick={handleRetry}
+                disabled={working}
+                className="px-3 py-1.5 rounded-lg bg-white text-purple-700 text-sm font-semibold hover:bg-white/90 transition disabled:opacity-50 flex items-center gap-1"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${working ? "animate-spin" : ""}`} />
+                {working ? "..." : "إعادة المحاولة"}
+              </button>
+              {state.attemptsExhausted && (
+                <button
+                  onClick={handleOpenInBrowser}
+                  title="افتح صفحة Releases على GitHub في المتصفح ونزّل Setup.exe يدويًا"
+                  className="px-2.5 py-1.5 rounded-lg bg-white/15 text-white text-sm font-semibold hover:bg-white/25 transition flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  فتح في المتصفح
+                </button>
+              )}
+            </>
           )}
           <button
             onClick={() => setDismissed(true)}
