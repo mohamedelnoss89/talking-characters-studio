@@ -18,7 +18,14 @@
 # setuptools>=65 is required because Python 3.12+ no longer ships with
 # distutils, and several packages (torch, basicsr) still need it at
 # install time for their setup.py legacy paths.
-setuptools>=65.0.0
+#
+# CRITICAL: pin <80 because setuptools 80.0 (April 2025) deprecated
+# pkg_resources, and setuptools 81.0 REMOVED it from the default install.
+# librosa 0.10.1 (used by Wav2Lip/audio.py) imports pkg_resources at
+# startup for version detection — without it, Wav2Lip fails with:
+#   "No module named 'pkg_resources'"
+# and the entire lip-sync feature is broken.
+setuptools>=65.0.0,<80
 
 # --- Deep learning stack ---
 # torch 2.2.x is the last version that ships pre-built CPU wheels for

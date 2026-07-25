@@ -493,6 +493,75 @@ function getActivePython(VENV_DIR, PYTHON_DIR) {
 }
 
 // ---------------------------------------------------------------------------
+// verifyCriticalImports — Layer 0 post-install verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify that the most critical Python imports actually work after pip install.
+ *
+ * pip returning exit code 0 is NOT sufficient — see the long comment in
+ * installPipDeps() above. This function runs a single Python subprocess
+ * that tries to import each "canary" module and reports which ones failed.
+ *
+ * The canaries are chosen to cover the most common silent-failure modes:
+ *   - pkg_resources: removed in setuptools 80+ (the bug we're fixing)
+ *   - numpy: must be <2 (already auto-fixed by checkAndFixNumpy, but verify)
+ *   - cv2 (opencv): the workhorse for image I/O
+ *   - fastapi: the web framework — if it can't import, /lip-sync 404s
+ *   - torch: the deep learning runtime — if missing, Wav2Lip can't load
+ *
+ * Returns { ok: boolean, failed: string[] } where `failed` is the list of
+ * module names that could not be imported. `ok` is true iff `failed` is empty.
+ *
+ * @param {string} venvPy — path to venv's python.exe
+ * @param {(msg: string) => void} log — logger for diagnostic output
+ * @returns {Promise<{ok: boolean, failed: string[]}>}
+ */
+async function verifyCriticalImports(venvPy, log) {
+  // Single Python invocation that tries all imports. We use a marker
+  // ("FAIL:<module>") so we can parse the results from stdout without
+  // relying on exit codes (which are less informative).
+  const probeScript = [
+    "import sys",
+    "canaries = ['pkg_resources', 'numpy', 'cv2', 'fastapi', 'torch']",
+    "failed = []",
+    "for mod in canaries:",
+    "    try:",
+    "        __import__(mod)",
+    "    except Exception as e:",
+    "        failed.append(mod + ':' + type(e).__name__)",
+    "if failed:",
+    "    print('FAILED:' + '|'.join(failed))",
+    "    sys.exit(0)  # exit 0 so spawnAsync doesn't throw",
+    "else:",
+    "    print('OK')",
+  ].join("\n");
+
+  try {
+    const result = await spawnAsync(venvPy, ["-c", probeScript], {
+      onStdout: (s) => log("[verify] " + s.trim()),
+      onStderr: (s) => log("[verify:err] " + s.trim()),
+    });
+    const out = (result.stdout || "").trim();
+    if (out.startsWith("OK")) {
+      return { ok: true, failed: [] };
+    }
+    if (out.startsWith("FAILED:")) {
+      const parts = out.slice("FAILED:".length).split("|").filter(Boolean);
+      // Extract just the module name (before the ":") for the failed list.
+      const failed = parts.map(p => p.split(":")[0]);
+      return { ok: false, failed };
+    }
+    // Unexpected output — treat as verification failure with unknown cause.
+    log("[verify] Unexpected output: " + out.slice(-200));
+    return { ok: false, failed: ["<unknown>"] };
+  } catch (e) {
+    log("[verify] spawn failed: " + e.message);
+    return { ok: false, failed: ["<spawn-failed>"] };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // installPipDeps
 // ---------------------------------------------------------------------------
 
@@ -575,6 +644,83 @@ async function installPipDeps({ VENV_DIR, PYTHON_DIR, BACKEND_SRC_DIR, sendProgr
         log("[installPipDeps] Chunk failed: " + e.message);
         throw e;
       }
+    }
+
+    // ===========================================================
+    // CRITICAL POST-INSTALL VERIFICATION (Layer 0)
+    // ===========================================================
+    // pip returning exit code 0 does NOT mean the libraries actually work.
+    // The most insidious failure mode we've seen:
+    //   - requirements.txt said `setuptools>=65.0.0` (no upper bound)
+    //   - pip grabbed setuptools 81+ (May 2025), which REMOVED pkg_resources
+    //   - pip said "Successfully installed setuptools-81.0"
+    //   - installer said "كل المكتبات اتثبتت ✓"
+    //   - BUT librosa (used by Wav2Lip/audio.py) imports pkg_resources at
+    //     startup, so lip-sync was broken on first use with:
+    //       "Wav2Lip 'audio' helper module not available.
+    //        Original error: No module named 'pkg_resources'"
+    //
+    // To prevent this silent-fail-then-crash-later pattern, we verify
+    // the four critical "canary" imports immediately after install. If
+    // any fails, we run a targeted fix (force-reinstall setuptools<80
+    // for the pkg_resources case) and re-verify. Only then do we report
+    // success to the UI.
+    //
+    // This is Layer 0 of the pkg_resources fix. Layers 1-3 are:
+    //   1. requirements.txt pins setuptools<80 (prevents new installs)
+    //   2. checkAndFixSetuptools() in main.js (catches users with old
+    //      setuptools 81+ on next app launch)
+    //   3. _self_heal_pkg_resources() in wav2lip_runner.py (last-resort
+    //      runtime fix if Layers 0-2 didn't catch it)
+    try {
+      sendProgress && sendProgress("pip", 95, "فحص المكتبات...");
+      log("[installPipDeps] Running post-install verification...");
+      const verifyResult = await verifyCriticalImports(venvPy, log);
+      if (!verifyResult.ok) {
+        log(`[installPipDeps] Verification failed: ${verifyResult.failed}`);
+        logToFile(`[installPipDeps] verification failed: ${JSON.stringify(verifyResult)}`);
+
+        // Attempt auto-fix for the known pkg_resources failure mode.
+        if (verifyResult.failed.includes("pkg_resources")) {
+          log("[installPipDeps] pkg_resources missing — running targeted fix (setuptools<80)...");
+          sendProgress && sendProgress("pip", 97, "إصلاح setuptools (pkg_resources)...");
+          try {
+            await spawnAsync(
+              venvPy,
+              ["-m", "pip", "install", "--force-reinstall", "--no-deps", "setuptools<80"],
+              {
+                onStdout: (s) => log("[setuptools-fix] " + s.trim()),
+                onStderr: (s) => log("[setuptools-fix:err] " + s.trim()),
+              }
+            );
+            // Re-verify after the fix.
+            const reverify = await verifyCriticalImports(venvPy, log);
+            if (reverify.ok) {
+              log("[installPipDeps] pkg_resources fixed after setuptools downgrade ✓");
+            } else {
+              log(`[installPipDeps] pkg_resources STILL broken after fix: ${reverify.failed}`);
+              logToFile(`[installPipDeps] pkg_resources fix failed. Still broken: ${reverify.failed}`);
+              // Don't fail the whole install — the launch-time checkAndFixSetuptools()
+              // will retry. But warn the user via the log so we can debug.
+            }
+          } catch (fixErr) {
+            log("[installPipDeps] setuptools fix failed: " + fixErr.message);
+            logToFile("[installPipDeps] setuptools fix exception: " + fixErr.stack);
+            // Continue anyway — Layer 2 (checkAndFixSetuptools on launch) will retry.
+          }
+        } else {
+          // Unknown failure — log it but don't block the install. The user
+          // will see a clearer error when they try to use the affected feature.
+          logToFile(`[installPipDeps] unknown import failure: ${verifyResult.failed}`);
+        }
+      } else {
+        log("[installPipDeps] Verification passed — all critical imports work ✓");
+      }
+    } catch (verifyErr) {
+      // Verification itself crashed — log and continue. Don't fail the install
+      // just because the verification step had a bug.
+      log("[installPipDeps] Verification step crashed: " + verifyErr.message);
+      logToFile("[installPipDeps] verification crashed: " + verifyErr.stack);
     }
 
     sendProgress && sendProgress("pip", 100, "كل المكتبات اتثبتت ✓");

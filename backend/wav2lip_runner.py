@@ -116,11 +116,102 @@ def _w2l_audio():
         try:
             import audio as a
         except ImportError as e:
+            # Self-heal: setuptools 80+ removed `pkg_resources`, which
+            # librosa (used by Wav2Lip/audio.py) imports at startup. If
+            # the desktop's pre-launch fix didn't catch this (e.g. user
+            # is running the backend manually, or the cache marker was
+            # stale), attempt a one-shot `pip install setuptools<80` and
+            # retry the import. This is the LAST line of defense before
+            # surfacing the error to the user.
+            #
+            # We detect the specific symptom ("No module named 'pkg_resources'")
+            # in the error message rather than catching all ImportErrors,
+            # because we don't want to mask genuine missing-module errors
+            # for other packages.
+            msg = str(e)
+            if "pkg_resources" in msg or "No module named 'pkg_resources'" in msg:
+                print("[Wav2Lip] pkg_resources missing — attempting self-heal "
+                      "(pip install setuptools<80)...", flush=True)
+                if _self_heal_pkg_resources():
+                    # Retry the import once. If it works, we're done.
+                    try:
+                        import audio as a
+                        _w2l_audio_module = a
+                        print("[Wav2Lip] self-heal succeeded — audio module "
+                              "imported after setuptools downgrade.", flush=True)
+                        return _w2l_audio_module
+                    except ImportError as e2:
+                        # Fall through to the original error path below.
+                        msg = str(e2)
+                        print(f"[Wav2Lip] self-heal did not fix audio import: {e2}",
+                              flush=True)
             raise ImportError(
-                f"Wav2Lip 'audio' helper module not available. Original error: {e}"
+                f"Wav2Lip 'audio' helper module not available. Original error: {msg}"
             ) from e
         _w2l_audio_module = a
     return _w2l_audio_module
+
+
+def _self_heal_pkg_resources() -> bool:
+    """
+    Last-resort repair: detect that `pkg_resources` is missing (because
+    setuptools 80+ removed it) and try to install `setuptools<80` using
+    the current Python interpreter. Returns True if the repair succeeded
+    and `pkg_resources` is now importable.
+
+    This is invoked from `_w2l_audio()` when librosa's import fails with
+    "No module named 'pkg_resources'". The desktop app also runs a
+    pre-launch fix (checkAndFixSetuptools in main.js) which usually
+    catches this first — this function is the backstop for cases where
+    the pre-launch fix didn't run (dev mode, manual backend startup,
+    stale cache marker, etc.).
+
+    We deliberately use sys.executable (not a hardcoded "python" or
+    "python3") so the install targets the SAME interpreter that's running
+    the backend. On Windows, this is the venv's python.exe.
+    """
+    import sys as _sys
+    import subprocess as _sp
+
+    # First, verify the symptom: pkg_resources is actually missing.
+    # (We don't blindly pip install on every failure — only when the
+    # error message matches the specific pkg_resources symptom.)
+    try:
+        import pkg_resources  # noqa: F401
+        return True  # already fine, nothing to fix
+    except ImportError:
+        pass
+
+    # Attempt the install. Use --no-input to never block on prompts,
+    # --quiet to keep the log readable, and --no-deps to avoid pulling
+    # in a transitive setuptools upgrade (which would defeat the purpose).
+    cmd = [
+        _sys.executable, "-m", "pip", "install",
+        "--no-input", "--quiet", "--no-deps",
+        "setuptools<80",
+    ]
+    try:
+        print(f"[Wav2Lip] running: {' '.join(cmd)}", flush=True)
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"[Wav2Lip] setuptools install failed (rc={r.returncode}): "
+                  f"{r.stderr[-400:]}", flush=True)
+            return False
+    except _sp.TimeoutExpired:
+        print("[Wav2Lip] setuptools install timed out (>120s)", flush=True)
+        return False
+    except Exception as e:
+        print(f"[Wav2Lip] setuptools install exception: {e}", flush=True)
+        return False
+
+    # Verify the fix worked.
+    try:
+        import pkg_resources  # noqa: F401
+        return True
+    except ImportError as e:
+        print(f"[Wav2Lip] pkg_resources still missing after install: {e}",
+              flush=True)
+        return False
 
 
 def _tqdm():

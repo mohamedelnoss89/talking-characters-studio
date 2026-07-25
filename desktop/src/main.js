@@ -335,6 +335,19 @@ function startBackend() {
       sendBackendLog("[launch] ⚠️ تعذّر فحص numpy: " + e.message + " (هكمل بعدها)");
     }
 
+    // CRITICAL: Auto-fix pkg_resources BEFORE launching the backend.
+    // setuptools 80+ removed pkg_resources, which librosa (used by Wav2Lip/
+    // audio.py) needs. Without this, /lip-sync fails with:
+    //   "Wav2Lip 'audio' helper module not available.
+    //    Original error: No module named 'pkg_resources'"
+    // Idempotent: if pkg_resources already imports cleanly, this is a no-op.
+    try {
+      await checkAndFixSetuptools(py);
+    } catch (e) {
+      log("[startBackend] checkAndFixSetuptools warning:", e.message, "(continuing anyway)");
+      sendBackendLog("[launch] ⚠️ تعذّر فحص pkg_resources: " + e.message + " (هكمل بعدها)");
+    }
+
     return new Promise((resolve, reject) => {
     // CRITICAL: Kill any stale python.exe that's still holding port 8000.
     // This happens when:
@@ -625,6 +638,170 @@ async function forceFixNumpy(venvPy) {
   const markerPath = path.join(BACKEND_SRC_DIR, ".numpy-verified");
   try { fs.unlinkSync(markerPath); } catch {}
   return checkAndFixNumpy(venvPy);
+}
+
+/**
+ * Ensure `pkg_resources` is importable BEFORE the backend launches.
+ *
+ * This is the mirror of `checkAndFixNumpy()` but for the setuptools /
+ * pkg_resources problem. Background:
+ *
+ *   - setuptools 80.0 (April 2025) deprecated `pkg_resources`.
+ *   - setuptools 81.0 (May 2025) REMOVED it from the default install.
+ *   - When the installer ran `pip install setuptools>=65.0.0`, pip grabbed
+ *     the latest version (>=81), so `pkg_resources` is no longer importable.
+ *   - librosa 0.10.1 (used by Wav2Lip/audio.py) imports `pkg_resources`
+ *     at startup for version detection. Without it, /lip-sync fails with:
+ *       "Wav2Lip 'audio' helper module not available.
+ *        Original error: No module named 'pkg_resources'"
+ *     and the entire talking-character feature is broken.
+ *
+ * Fix: detect the missing import, then force-reinstall setuptools<80.
+ * Idempotent: if `pkg_resources` imports cleanly, this is a no-op (~1s).
+ *
+ * The result is cached in `.setuptools-verified` so subsequent launches
+ * skip the import probe. The cache is keyed on app.getVersion() so a new
+ * release always re-checks once.
+ *
+ * @param {string} venvPy — path to venv's python.exe
+ * @returns {Promise<{fixed: boolean, cached?: boolean, error?: string}>}
+ */
+async function checkAndFixSetuptools(venvPy) {
+  if (!venvPy || !fs.existsSync(venvPy)) {
+    return { fixed: false };
+  }
+
+  // CACHE: Skip the check if we already verified pkg_resources works in
+  // this app version. The check requires spawning Python and importing
+  // pkg_resources, which takes 1-3 seconds on a cold start. On every
+  // subsequent launch in the same version, we just read a marker file (<1ms).
+  const markerPath = path.join(BACKEND_SRC_DIR, ".setuptools-verified");
+  const expectedMarker = `${app.getVersion()}:pkg_resources_ok`;
+  try {
+    const existing = fs.readFileSync(markerPath, "utf8").trim();
+    if (existing === expectedMarker) {
+      log(`[checkAndFixSetuptools] Cache hit — pkg_resources verified in v${app.getVersion()}`);
+      return { fixed: false, cached: true };
+    }
+    log(`[checkAndFixSetuptools] Marker mismatch (was: '${existing}', expected: '${expectedMarker}') — re-checking`);
+  } catch {
+    log("[checkAndFixSetuptools] No cache marker — running full check");
+  }
+
+  // Step 1: Check if pkg_resources imports cleanly.
+  // We do NOT check setuptools version directly because:
+  //   - setuptools may be installed but pkg_resources was removed (81+)
+  //   - setuptools may be missing entirely
+  // Either way, the symptom is the same: `import pkg_resources` fails.
+  // So we test the symptom directly, which is what librosa actually cares about.
+  let pkgResourcesOk = false;
+  let setuptoolsVersion = "";
+  try {
+    const result = spawnSync(
+      venvPy,
+      ["-c", "import pkg_resources; import setuptools; print('OK', setuptools.__version__)"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 15000,
+      }
+    );
+    const out = ((result.stdout || "") + (result.stderr || "")).trim();
+    const m = out.match(/OK\s+(\S+)/);
+    if (m) {
+      pkgResourcesOk = true;
+      setuptoolsVersion = m[1];
+    } else {
+      log(`[checkAndFixSetuptools] pkg_resources import failed. stderr: ${out.slice(-300)}`);
+    }
+  } catch (e) {
+    log("[checkAndFixSetuptools] Could not check pkg_resources:", e.message);
+    return { fixed: false, error: e.message };
+  }
+
+  if (pkgResourcesOk) {
+    // Already fine — no action needed. Write the cache marker so the next
+    // launch can skip the import check entirely.
+    try {
+      fs.writeFileSync(markerPath, expectedMarker);
+      log(`[checkAndFixSetuptools] pkg_resources OK (setuptools ${setuptoolsVersion}). Wrote marker.`);
+    } catch (e) {
+      log(`[checkAndFixSetuptools] Could not write cache marker: ${e.message}`);
+    }
+    return { fixed: false, setuptoolsVersion };
+  }
+
+  // Step 2: pkg_resources is missing — force reinstall setuptools<80.
+  log("[checkAndFixSetuptools] pkg_resources missing. Force-reinstalling setuptools<80...");
+  sendBackendLog("[launch] ⚠️ pkg_resources مش موجود (setuptools 80+). جاري تثبيت setuptools<80...");
+
+  const { spawnAsync } = require("./installer-python");
+  try {
+    await spawnAsync(
+      venvPy,
+      ["-m", "pip", "install", "--force-reinstall", "--no-deps", "setuptools<80"],
+      {
+        onStdout: (s) => log("[setuptools-fix] " + s.trim()),
+        onStderr: (s) => log("[setuptools-fix:err] " + s.trim()),
+      }
+    );
+  } catch (e) {
+    log("[checkAndFixSetuptools] Force-reinstall failed:", e.message);
+    sendBackendLog(`[launch] ✗ تعذّر تثبيت setuptools<80: ${e.message}`);
+    return { fixed: false, error: e.message };
+  }
+
+  // Step 3: Verify pkg_resources now imports.
+  let verified = false;
+  let newVersion = "";
+  try {
+    const verify = spawnSync(
+      venvPy,
+      ["-c", "import pkg_resources; import setuptools; print('OK', setuptools.__version__)"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        timeout: 15000,
+      }
+    );
+    const out = ((verify.stdout || "") + (verify.stderr || "")).trim();
+    const m = out.match(/OK\s+(\S+)/);
+    if (m) {
+      verified = true;
+      newVersion = m[1];
+    }
+  } catch {}
+
+  log(`[checkAndFixSetuptools] after fix: pkg_resources_ok=${verified}, setuptools=${newVersion}`);
+  sendBackendLog(
+    verified
+      ? `[launch] ✓ setuptools اتثبت بنجاح: ${newVersion} (pkg_resources شغال)`
+      : `[launch] ✗ setuptools اتثبت بس pkg_resources لسه مش شغال`
+  );
+
+  // Step 4: Write cache marker only if verified.
+  if (verified) {
+    try {
+      fs.writeFileSync(markerPath, expectedMarker);
+      log(`[checkAndFixSetuptools] Wrote cache marker after fix.`);
+    } catch (e) {
+      log(`[checkAndFixSetuptools] Could not write cache marker after fix: ${e.message}`);
+    }
+  }
+
+  return { fixed: true, setuptoolsVersion: newVersion, verified };
+}
+
+/**
+ * Manual setuptools fix — bypasses the cache so the user can force a
+ * re-check (e.g. via a future "🔧 إصلاح pkg_resources" button).
+ */
+async function forceFixSetuptools(venvPy) {
+  const markerPath = path.join(BACKEND_SRC_DIR, ".setuptools-verified");
+  try { fs.unlinkSync(markerPath); } catch {}
+  return checkAndFixSetuptools(venvPy);
 }
 
 /**
