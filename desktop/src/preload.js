@@ -84,6 +84,22 @@ contextBridge.exposeInMainWorld("updater", {
   check: () => ipcRenderer.invoke("updater:check"),
 
   /**
+   * Force a fresh check — bypasses the "checked at least once" cache that
+   * gates `check()`. Used by the "إعادة الفحص" button in the UpdateBanner
+   * so the user can manually refresh the available version without
+   * restarting the app (e.g. if a newer release was published while the
+   * app was open).
+   *
+   * Still guards against abuse: if a check is already running, or if the
+   * last check was <5s ago, returns the cached info instead.
+   *
+   * Returns { success, updateInfo?, error?, skipped?, reason? }.
+   *   skipped=true + reason="already-checking" → another check is in flight
+   *   skipped=true + reason="too-recent" → last check was <5s ago
+   */
+  forceCheck: () => ipcRenderer.invoke("updater:forceCheck"),
+
+  /**
    * Download the latest update (if available). Triggers `progress` events.
    * Returns { success, error? }.
    */

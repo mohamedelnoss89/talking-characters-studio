@@ -33,9 +33,13 @@ let downloadedVersion = null;
 let downloadPercent = 0;
 let downloadAttempts = 0;     // tracks retries within a single download session
 let isDownloading = false;    // guards against concurrent download attempts
+let lastCheckAt = 0;          // timestamp (ms) of the last actual checkForUpdates call
+let isChecking = false;       // guards against concurrent checks (force-check while auto-check running)
 
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 5000;  // 5s between retries
+const PERIODIC_CHECK_INTERVAL_MS = 30 * 60 * 1000;  // 30 min auto re-check
+const FORCE_CHECK_MIN_GAP_MS = 5 * 1000;            // don't re-check more than once per 5s (manual)
 
 try {
   // Lazy-load so the app still runs if the package isn't installed yet.
@@ -84,27 +88,46 @@ function initUpdater(log) {
   // autoUpdater events → broadcast to renderer
   // ---------------------------------------------------------
   autoUpdater.on("checking-for-update", () => {
+    isChecking = true;
     log && log("[updater] Checking for updates...");
     broadcast("checking");
   });
 
   autoUpdater.on("update-available", (info) => {
+    const previousVersion = updateInfo?.version || null;
+    const newVersion = info.version;
     updateInfo = {
-      version: info.version,
+      version: newVersion,
       releaseDate: info.releaseDate,
-      releaseName: info.releaseName || `v${info.version}`,
+      releaseName: info.releaseName || `v${newVersion}`,
       releaseNotes: info.releaseNotes,
     };
-    log && log(`[updater] Update available: v${info.version}`);
-    broadcast("available", updateInfo);
+    isChecking = false;
+    lastCheckAt = Date.now();
+    // Tell the renderer whether this is a "refreshed" check (i.e. a newer
+    // version detected than what was previously shown). This lets the
+    // UpdateBanner update its displayed version if the user clicked the
+    // "re-check" button, or stay quiet if it's just the initial check.
+    const isRefresh = previousVersion !== null && previousVersion !== newVersion;
+    log && log(`[updater] Update available: v${newVersion}${isRefresh ? ` (was v${previousVersion})` : ""}`);
+    broadcast("available", { ...updateInfo, isRefresh, previousVersion });
   });
 
   autoUpdater.on("update-not-available", (info) => {
+    isChecking = false;
+    lastCheckAt = Date.now();
     log && log("[updater] No update available.");
-    broadcast("not-available", { currentVersion: app.getVersion() });
+    broadcast("not-available", {
+      currentVersion: app.getVersion(),
+      // Tell the renderer this was a manual re-check (so it can show a
+      // "you're already on the latest" toast) — emitted when the user
+      // explicitly clicked "re-check" but no newer version exists.
+      wasManualRecheck: checkedAtLeastOnce,
+    });
   });
 
   autoUpdater.on("error", (err) => {
+    isChecking = false;
     lastError = err ? String(err.message || err) : "Unknown error";
     log && log(`[updater] Error: ${lastError}`);
     broadcast("error", { error: lastError });
@@ -146,6 +169,41 @@ function initUpdater(log) {
       return { success: true, updateInfo, lastError };
     } catch (e) {
       lastError = String(e?.message || e);
+      return { success: false, error: lastError };
+    }
+  });
+
+  /**
+   * Force a fresh check — bypasses the "checked at least once" cache that
+   * gates `updater:check`. Used by the "إعادة الفحص" button in the
+   * UpdateBanner so the user can manually refresh the available version
+   * without restarting the app (e.g. if a newer release was published
+   * while the app was open).
+   *
+   * Still guards against abuse: if a check is already running, or if the
+   * last check was <5s ago, returns the cached info instead.
+   *
+   * Returns { success, updateInfo?, error?, skipped?, reason? }.
+   */
+  ipcMain.handle("updater:forceCheck", async () => {
+    if (!autoUpdater) {
+      return { success: false, error: "electron-updater not installed" };
+    }
+    if (isChecking) {
+      return { success: true, skipped: true, reason: "already-checking", updateInfo, lastError };
+    }
+    const now = Date.now();
+    if (now - lastCheckAt < FORCE_CHECK_MIN_GAP_MS) {
+      return { success: true, skipped: true, reason: "too-recent", updateInfo, lastError };
+    }
+    lastError = null;
+    try {
+      await autoUpdater.checkForUpdates();
+      checkedAtLeastOnce = true;
+      return { success: true, updateInfo, lastError };
+    } catch (e) {
+      lastError = String(e?.message || e);
+      broadcast("error", { error: lastError });
       return { success: false, error: lastError };
     }
   });
@@ -308,6 +366,17 @@ function initUpdater(log) {
  * Trigger an update check after a small delay (so it doesn't compete with
  * backend startup). Safe to call multiple times — the IPC handler guards
  * against re-checking within 60 seconds.
+ *
+ * Also schedules a PERIODIC re-check every 30 minutes. This matters when
+ * the user keeps the app open for hours — without periodic re-checks,
+ * if a new release is published while the app is open, the banner would
+ * keep showing the OLD version until the user restarts the app.
+ *
+ * Example bug this fixes: v1.1.11 was released at 09:18 UTC and v1.1.14
+ * at 10:08 UTC (50 min later). A user who launched the app at 09:20 UTC
+ * would see "Update available — v1.1.11" until they manually restarted
+ * the app. With periodic re-checks, the banner refreshes to v1.1.14
+ * within 30 minutes of its release.
  */
 function checkForUpdatesAfterDelay(delayMs = 5000) {
   if (!autoUpdater) return;
@@ -320,6 +389,20 @@ function checkForUpdatesAfterDelay(delayMs = 5000) {
       console.warn("[updater] Background check threw:", e?.message || e);
     }
   }, delayMs);
+
+  // Schedule periodic re-checks every 30 minutes. We use setInterval
+  // (not chained setTimeout) so the schedule stays stable even if a
+  // single check takes a few seconds. The autoUpdater itself guards
+  // against concurrent checks internally.
+  setInterval(() => {
+    try {
+      autoUpdater.checkForUpdates().catch((e) => {
+        console.warn("[updater] Periodic check failed:", e?.message || e);
+      });
+    } catch (e) {
+      console.warn("[updater] Periodic check threw:", e?.message || e);
+    }
+  }, PERIODIC_CHECK_INTERVAL_MS);
 }
 
 module.exports = {
