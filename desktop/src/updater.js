@@ -183,6 +183,19 @@ function initUpdater(log) {
    * Still guards against abuse: if a check is already running, or if the
    * last check was <5s ago, returns the cached info instead.
    *
+   * CRITICAL FIX (v1.1.18): electron-updater has a known behavior where
+   * if it already found an update (e.g. v1.1.16 on startup), calling
+   * `checkForUpdates()` again will NOT re-emit the `update-available`
+   * event even if a NEWER version (v1.1.17) is now available. This makes
+   * the "إعادة الفحص" button appear to do nothing — the check runs, but
+   * the banner never updates.
+   *
+   * Fix: use the RETURN VALUE of `checkForUpdates()` directly instead
+   * of relying on the event. The return value is an `UpdateCheckResult`
+   * with the latest version info, regardless of whether the event fires.
+   * We compare it against the previously known version and manually
+   * broadcast "available" if it changed.
+   *
    * Returns { success, updateInfo?, error?, skipped?, reason? }.
    */
   ipcMain.handle("updater:forceCheck", async () => {
@@ -197,11 +210,58 @@ function initUpdater(log) {
       return { success: true, skipped: true, reason: "too-recent", updateInfo, lastError };
     }
     lastError = null;
+    isChecking = true;
     try {
-      await autoUpdater.checkForUpdates();
+      // checkForUpdates() returns UpdateCheckResult | null.
+      // If it returns an object, an update IS available.
+      // If it returns null, no update is available (we're on the latest).
+      // We use the return value DIRECTLY because electron-updater may
+      // not re-emit the 'update-available' event if it already emitted
+      // it for a previous version (see comment above).
+      const result = await autoUpdater.checkForUpdates();
       checkedAtLeastOnce = true;
-      return { success: true, updateInfo, lastError };
+      isChecking = false;
+      lastCheckAt = Date.now();
+
+      if (result && result.version) {
+        // An update is available. Compare against what we previously knew.
+        const previousVersion = updateInfo?.version || null;
+        const newVersion = result.version;
+
+        // Always update our cached updateInfo with the fresh data.
+        updateInfo = {
+          version: newVersion,
+          releaseDate: result.releaseDate,
+          releaseName: result.releaseName || `v${newVersion}`,
+          releaseNotes: result.releaseNotes,
+        };
+
+        // If the version changed (or we didn't have info before),
+        // manually broadcast "available" so the renderer updates its banner.
+        // electron-updater's own event might NOT fire here (known bug),
+        // so we can't rely on it.
+        if (previousVersion !== newVersion) {
+          const isRefresh = previousVersion !== null;
+          log && log(`[updater] Force-check found newer version: v${newVersion}` +
+                     (previousVersion ? ` (was v${previousVersion})` : ""));
+          broadcast("available", { ...updateInfo, isRefresh, previousVersion });
+        } else {
+          log && log(`[updater] Force-check: same version v${newVersion} (no change)`);
+        }
+
+        return { success: true, updateInfo, lastError };
+      } else {
+        // No update available — we're on the latest version.
+        log && log("[updater] Force-check: no update available (on latest)");
+        updateInfo = null;
+        broadcast("not-available", {
+          currentVersion: app.getVersion(),
+          wasManualRecheck: true,
+        });
+        return { success: true, updateInfo: null, lastError };
+      }
     } catch (e) {
+      isChecking = false;
       lastError = String(e?.message || e);
       broadcast("error", { error: lastError });
       return { success: false, error: lastError };
