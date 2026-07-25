@@ -90,6 +90,14 @@ contextBridge.exposeInMainWorld("updater", {
   download: () => ipcRenderer.invoke("updater:download"),
 
   /**
+   * Force re-check + retry download. Used by the Retry button after a
+   * download error — bypasses the cached check result and re-attempts
+   * the download with auto-retry (up to 3 attempts).
+   * Returns { success, error?, noUpdate? }.
+   */
+  retry: () => ipcRenderer.invoke("updater:retry"),
+
+  /**
    * Quit the app and run the NSIS updater. The app will relaunch after install.
    * Returns { success, error? }.
    */
@@ -105,7 +113,8 @@ contextBridge.exposeInMainWorld("updater", {
    *   { event: "available",  updateInfo }
    *   { event: "not-available", currentVersion }
    *   { event: "error",      error }
-   *   { event: "progress",   percent, transferred, total }
+   *   { event: "progress",   percent, transferred, total, attempt?, retryingIn?, lastError? }
+   *   { event: "retry",      attempt, maxAttempts }
    *   { event: "downloaded", version }
    */
   subscribe: (callback) => {
@@ -115,6 +124,7 @@ contextBridge.exposeInMainWorld("updater", {
       "updater:not-available",
       "updater:error",
       "updater:progress",
+      "updater:retry",
       "updater:downloaded",
     ];
     const handlers = {};

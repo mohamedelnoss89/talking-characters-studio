@@ -31,6 +31,11 @@ let lastError = null;
 let updateInfo = null;       // { version, releaseNotes, releaseName }
 let downloadedVersion = null;
 let downloadPercent = 0;
+let downloadAttempts = 0;     // tracks retries within a single download session
+let isDownloading = false;    // guards against concurrent download attempts
+
+const MAX_DOWNLOAD_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 5000;  // 5s between retries
 
 try {
   // Lazy-load so the app still runs if the package isn't installed yet.
@@ -124,16 +129,19 @@ function initUpdater(log) {
   // ---------------------------------------------------------
   // IPC handlers — called by the renderer via preload.js
   // ---------------------------------------------------------
-  ipcMain.handle("updater:check", async () => {
+  ipcMain.handle("updater:check", async (_evt, force) => {
     if (!autoUpdater) {
       return { success: false, error: "electron-updater not installed" };
     }
     try {
       // Don't check more than once per minute to avoid GitHub rate limits.
-      if (checkedAtLeastOnce) {
+      // `force` bypasses this — used by the Retry button after an error.
+      if (checkedAtLeastOnce && !force) {
         return { success: true, cached: true, updateInfo, lastError };
       }
       checkedAtLeastOnce = true;
+      // Clear stale error when forcing a fresh check
+      if (force) lastError = null;
       await autoUpdater.checkForUpdates();
       return { success: true, updateInfo, lastError };
     } catch (e) {
@@ -142,16 +150,95 @@ function initUpdater(log) {
     }
   });
 
+  /**
+   * Download with auto-retry on transient network failures.
+   *
+   * electron-updater emits an `error` event when the download fails
+   * (e.g. net::ERR_FAILED, ECONNRESET, ETIMEDOUT, GitHub 5xx). The
+   * downloaded partial file is cached, so a subsequent downloadUpdate()
+   * call RESUMES from where it left off (HTTP Range request).
+   *
+   * We retry up to MAX_DOWNLOAD_ATTEMPTS times with RETRY_DELAY_MS gap.
+   * Each retry emits a `retry` event so the renderer can show
+   * "Retry 2/3..." instead of just spinning.
+   */
+  async function downloadWithRetry() {
+    if (isDownloading) {
+      return { success: false, error: "Download already in progress" };
+    }
+    isDownloading = true;
+    downloadAttempts = 0;
+    downloadPercent = 0;
+
+    try {
+      while (downloadAttempts < MAX_DOWNLOAD_ATTEMPTS) {
+        downloadAttempts++;
+        broadcast("progress", { percent: downloadPercent, attempt: downloadAttempts, maxAttempts: MAX_DOWNLOAD_ATTEMPTS });
+        broadcast("retry", { attempt: downloadAttempts, maxAttempts: MAX_DOWNLOAD_ATTEMPTS });
+        try {
+          await autoUpdater.downloadUpdate();
+          // Success — download-downloaded event will fire separately.
+          return { success: true };
+        } catch (e) {
+          const msg = String(e?.message || e);
+          lastError = msg;
+          // Abort retry loop if it's a non-retryable error
+          if (/cancel|aborted|user/i.test(msg) && !/connection|network|timeout|reset|failed/i.test(msg)) {
+            broadcast("error", { error: msg });
+            return { success: false, error: msg };
+          }
+          if (downloadAttempts < MAX_DOWNLOAD_ATTEMPTS) {
+            broadcast("progress", {
+              percent: downloadPercent,
+              attempt: downloadAttempts,
+              maxAttempts: MAX_DOWNLOAD_ATTEMPTS,
+              retryingIn: RETRY_DELAY_MS / 1000,
+              lastError: msg,
+            });
+            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          } else {
+            broadcast("error", { error: msg, attemptsExhausted: true });
+            return { success: false, error: msg };
+          }
+        }
+      }
+      return { success: false, error: lastError || "Max retries exceeded" };
+    } finally {
+      isDownloading = false;
+    }
+  }
+
   ipcMain.handle("updater:download", async () => {
     if (!autoUpdater) {
       return { success: false, error: "electron-updater not installed" };
     }
+    return downloadWithRetry();
+  });
+
+  /**
+   * Force re-check + retry download in one call. Used by the Retry button
+   * in the UpdateBanner error state — previously the Retry button only
+   * called `check()` which returned cached info and never actually
+   * retried the download.
+   */
+  ipcMain.handle("updater:retry", async () => {
+    if (!autoUpdater) {
+      return { success: false, error: "electron-updater not installed" };
+    }
+    // Reset state so a fresh check actually runs
+    checkedAtLeastOnce = false;
+    lastError = null;
     try {
-      // downloadUpdate() returns a Promise<Array<DownloadUpdateResult>>
-      await autoUpdater.downloadUpdate();
-      return { success: true };
+      await autoUpdater.checkForUpdates();
+      checkedAtLeastOnce = true;
+      if (!updateInfo) {
+        return { success: true, noUpdate: true };
+      }
+      // Update is available — kick off download with retry
+      return downloadWithRetry();
     } catch (e) {
       lastError = String(e?.message || e);
+      broadcast("error", { error: lastError });
       return { success: false, error: lastError };
     }
   });
@@ -183,6 +270,8 @@ function initUpdater(log) {
       updateInfo,
       downloadedVersion,
       downloadPercent,
+      downloadAttempts,
+      isDownloading,
       lastError,
       checkedAtLeastOnce,
     };

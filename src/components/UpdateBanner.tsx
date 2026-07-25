@@ -5,25 +5,98 @@
  * when the Electron desktop app detects a new version on GitHub Releases.
  *
  * Subscribes to window.updater events (set up by desktop/src/preload.js).
- * Has 3 states:
- *   - default (no update / not in desktop app) → renders nothing
+ * States:
+ *   - idle (no update / not in desktop app) → renders nothing
  *   - available → "Update available vX.Y.Z [Download & Install]"
- *   - downloading → "Downloading... NN%" with progress bar
+ *   - downloading → "Downloading... NN% (attempt K/3)" with progress bar
  *   - downloaded → "Ready to install [Restart & Install]"
+ *   - error → "خطأ في التحديث" with friendly Arabic explanation + Retry
+ *
+ * Retry behaviour (v1.1.12+):
+ *   The Retry button calls window.updater.retry() which force-rechecks
+ *   GitHub and re-attempts the download with auto-retry (up to 3 attempts
+ *   with 5s backoff). The previous version called only check() which
+ *   returned cached info and never retried the download — so the user
+ *   was stuck on the error screen with no way to recover.
  *
  * In a regular browser (not Electron), window.updater is undefined, so this
  * component renders nothing.
  */
 
 import { useEffect, useState } from "react";
-import { Download, RefreshCw, X, CheckCircle2, Loader2 } from "lucide-react";
+import { Download, RefreshCw, X, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 
 type UpdateState =
   | { kind: "idle" }
   | { kind: "available"; version: string }
-  | { kind: "downloading"; percent: number }
+  | { kind: "downloading"; percent: number; attempt?: number; maxAttempts?: number; retryingIn?: number }
   | { kind: "downloaded"; version: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; attemptsExhausted?: boolean };
+
+/**
+ * Translate common electron-updater / Chromium network errors to friendly
+ * Arabic messages so the user knows what's going on and what to do.
+ *
+ * Common errors we see:
+ *   - "net::ERR_FAILED"           — connection dropped mid-download
+ *   - "net::ERR_INTERNET_DISCONNECTED" — user's internet went out
+ *   - "net::ERR_CONNECTION_RESET"  — server/GFW reset the connection
+ *   - "net::ERR_CONNECTION_REFUSED" — firewall/AV blocking the connection
+ *   - "HTTP 4xx"                   — GitHub returned an error (rare)
+ *   - "HTTP 5xx"                   — GitHub server error (retry helps)
+ *   - "ETIMEDOUT" / "ESOCKETTIMEDOUT" — connection hung
+ *   - "ECONNRESET"                 — TCP reset
+ */
+function translateError(raw: string): { short: string; hint: string } {
+  const m = (raw || "").toLowerCase();
+  if (m.includes("err_internet_disconnected") || m.includes("enetunreach")) {
+    return {
+      short: "الإنترنت مقطوع",
+      hint: "تأكد إن النت شغّال وحاول تاني.",
+    };
+  }
+  if (m.includes("err_connection_refused") || m.includes("econnrefused")) {
+    return {
+      short: "الاتصال اترفض",
+      hint: "غالباً AntiVirus أو Firewall بيحجب الاتصال بـ GitHub. وقّفه مؤقتاً وحاول تاني.",
+    };
+  }
+  if (m.includes("err_connection_reset") || m.includes("econnreset")) {
+    return {
+      short: "الاتصال اتقطع",
+      hint: "النت اتقطع أثناء تحميل التحديث (~94MB). هحاول تاني أوتوماتيك.",
+    };
+  }
+  if (m.includes("err_failed")) {
+    return {
+      short: "فشل تحميل التحديث",
+      hint: "النت اتقطع أثناء التحميل (~94MB من GitHub). اضغط إعادة المحاولة — هيكمّل من حيث ما وقف.",
+    };
+  }
+  if (m.includes("timed out") || m.includes("etimedout") || m.includes("esockettimedout")) {
+    return {
+      short: "انتهت مهلة الاتصال",
+      hint: "التحميل بطيء جدًا. حاول على شِبكة أسرع أو وقّف الـ VPN.",
+    };
+  }
+  if (m.includes("http 5") || m.includes("server error") || m.includes("service unavailable")) {
+    return {
+      short: "خطأ من GitHub",
+      hint: "GitHub سيرفراتها مش متاحة دلوقتي. حاول بعد دقيقة.",
+    };
+  }
+  if (m.includes("http 4") || m.includes("rate limit") || m.includes("403") || m.includes("429")) {
+    return {
+      short: "GitHub رفضت الطلب",
+      hint: "غالباً Rate Limit. استنى دقيقة وحاول تاني.",
+    };
+  }
+  // Generic fallback
+  return {
+    short: "فشل التحديث",
+    hint: raw || "خطأ غير معروف. اضغط إعادة المحاولة.",
+  };
+}
 
 export function UpdateBanner() {
   const [state, setState] = useState<UpdateState>({ kind: "idle" });
@@ -45,14 +118,37 @@ export function UpdateBanner() {
           setDismissed(false);
           break;
         case "progress":
-          setState({ kind: "downloading", percent: evt.percent || 0 });
+          setState({
+            kind: "downloading",
+            percent: evt.percent || 0,
+            attempt: evt.attempt,
+            maxAttempts: evt.maxAttempts,
+            retryingIn: evt.retryingIn,
+          });
+          break;
+        case "retry":
+          // Update the downloading state to show retry attempt
+          setState((prev) =>
+            prev.kind === "downloading"
+              ? { ...prev, attempt: evt.attempt, maxAttempts: evt.maxAttempts }
+              : {
+                  kind: "downloading",
+                  percent: 0,
+                  attempt: evt.attempt,
+                  maxAttempts: evt.maxAttempts,
+                }
+          );
           break;
         case "downloaded":
           setState({ kind: "downloaded", version: evt.version || "?" });
           setDismissed(false);
           break;
         case "error":
-          setState({ kind: "error", message: evt.error || "Unknown error" });
+          setState({
+            kind: "error",
+            message: evt.error || "Unknown error",
+            attemptsExhausted: evt.attemptsExhausted,
+          });
           break;
         case "not-available":
           setState({ kind: "idle" });
@@ -68,8 +164,17 @@ export function UpdateBanner() {
         if (!mounted) return;
         if (s?.downloadedVersion) {
           setState({ kind: "downloaded", version: s.downloadedVersion });
+        } else if (s?.isDownloading) {
+          setState({
+            kind: "downloading",
+            percent: s.downloadPercent || 0,
+            attempt: s.downloadAttempts,
+            maxAttempts: 3,
+          });
         } else if (s?.updateInfo?.version) {
           setState({ kind: "available", version: s.updateInfo.version });
+        } else if (s?.lastError) {
+          setState({ kind: "error", message: s.lastError });
         }
       })
       .catch(() => {});
@@ -111,18 +216,50 @@ export function UpdateBanner() {
     }
   };
 
-  const handleCheckNow = async () => {
+  /**
+   * Retry button click — calls the new window.updater.retry() IPC which
+   * force-rechecks GitHub + re-attempts the download with auto-retry.
+   *
+   * Previously this called updater.check() which returned cached info and
+   * never retried the download — the user was stuck on the error screen.
+   */
+  const handleRetry = async () => {
     const updater = (window as any).updater;
     if (!updater) return;
     setWorking(true);
+    // Optimistically switch to "downloading" so the user sees immediate feedback
+    setState({ kind: "downloading", percent: 0, attempt: 1, maxAttempts: 3 });
     try {
-      await updater.check();
-    } catch {}
-    setWorking(false);
+      const res = await updater.retry();
+      if (!res?.success) {
+        setState({
+          kind: "error",
+          message: res?.error || "Retry failed",
+          attemptsExhausted: true,
+        });
+      } else if (res?.noUpdate) {
+        // No update available anymore (e.g. user already on latest)
+        setState({ kind: "idle" });
+      }
+      // Otherwise the `downloaded` or `error` event from the IPC will
+      // transition us to the correct state.
+    } catch (e: any) {
+      setState({
+        kind: "error",
+        message: e?.message || String(e),
+        attemptsExhausted: true,
+      });
+    } finally {
+      setWorking(false);
+    }
   };
 
   // Don't render the banner in a regular browser (no window.updater)
   if (typeof window !== "undefined" && !(window as any).updater) return null;
+
+  // Compute the friendly Arabic error translation for the error state
+  const errorInfo =
+    state.kind === "error" ? translateError(state.message) : null;
 
   return (
     <div className="fixed top-0 inset-x-0 z-50 px-4 pt-2 pointer-events-none">
@@ -133,7 +270,7 @@ export function UpdateBanner() {
           ) : state.kind === "downloaded" ? (
             <CheckCircle2 className="w-5 h-5" />
           ) : state.kind === "error" ? (
-            <X className="w-5 h-5" />
+            <AlertCircle className="w-5 h-5" />
           ) : (
             <Download className="w-5 h-5" />
           )}
@@ -154,6 +291,16 @@ export function UpdateBanner() {
             <div>
               <p className="text-sm font-semibold">
                 تحميل التحديث... {state.percent}%
+                {state.attempt && state.maxAttempts && state.attempt > 1 && (
+                  <span className="text-xs text-white/70 ml-2">
+                    (محاولة {state.attempt}/{state.maxAttempts})
+                  </span>
+                )}
+                {state.retryingIn && (
+                  <span className="text-xs text-white/70 ml-2">
+                    — إعادة المحاولة بعد {state.retryingIn}s
+                  </span>
+                )}
               </p>
               <div className="mt-1 h-1.5 bg-white/20 rounded-full overflow-hidden">
                 <div
@@ -161,6 +308,9 @@ export function UpdateBanner() {
                   style={{ width: `${state.percent}%` }}
                 />
               </div>
+              <p className="text-[11px] text-white/60 mt-1">
+                ~94MB من GitHub — سيكمّل من حيث ما وقف لو النت قطع
+              </p>
             </div>
           )}
           {state.kind === "downloaded" && (
@@ -173,10 +323,20 @@ export function UpdateBanner() {
               </p>
             </div>
           )}
-          {state.kind === "error" && (
+          {state.kind === "error" && errorInfo && (
             <div>
-              <p className="text-sm font-semibold">خطأ في التحديث</p>
-              <p className="text-xs text-white/80 truncate">{state.message}</p>
+              <p className="text-sm font-semibold">خطأ في التحديث — {errorInfo.short}</p>
+              <p className="text-xs text-white/80">{errorInfo.hint}</p>
+              {state.attemptsExhausted && (
+                <p className="text-[11px] text-white/60 mt-1">
+                  اتجرّبت 3 مرات. لو المشكلة فضلت، حمّل التحديث يدويًا من GitHub Releases.
+                </p>
+              )}
+              {state.message && !state.attemptsExhausted && (
+                <p className="text-[11px] text-white/50 mt-1 truncate font-mono" dir="ltr">
+                  {state.message}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -203,10 +363,11 @@ export function UpdateBanner() {
           )}
           {state.kind === "error" && (
             <button
-              onClick={handleCheckNow}
+              onClick={handleRetry}
               disabled={working}
-              className="px-3 py-1.5 rounded-lg bg-white/20 text-white text-sm font-semibold hover:bg-white/30 transition disabled:opacity-50"
+              className="px-3 py-1.5 rounded-lg bg-white text-purple-700 text-sm font-semibold hover:bg-white/90 transition disabled:opacity-50 flex items-center gap-1"
             >
+              <RefreshCw className={`w-3.5 h-3.5 ${working ? "animate-spin" : ""}`} />
               {working ? "..." : "إعادة المحاولة"}
             </button>
           )}
