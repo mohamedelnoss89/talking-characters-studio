@@ -36,16 +36,13 @@
  *     - Downloaded MB / Total MB
  *     - Download speed (MB/s)
  *     - ETA (minutes:seconds remaining)
- *   Plus a "فتح في المتصفح" button that opens GitHub Releases in the
- *   user's default browser — browsers + download managers handle flaky
- *   networks better than electron-updater's single-stream download.
  *
  * In a regular browser (not Electron), window.updater is undefined, so this
  * component renders nothing.
  */
 
 import { useEffect, useState } from "react";
-import { Download, RefreshCw, X, CheckCircle2, Loader2, AlertCircle, ExternalLink, RotateCw } from "lucide-react";
+import { Download, RefreshCw, X, CheckCircle2, Loader2, AlertCircle, RotateCw } from "lucide-react";
 
 type UpdateState =
   | { kind: "idle" }
@@ -107,7 +104,7 @@ function translateError(raw: string): { short: string; hint: string } {
   if (m.includes("timed out") || m.includes("etimedout") || m.includes("esockettimedout")) {
     return {
       short: "انتهت مهلة الاتصال",
-      hint: "التحميل بطيء جدًا. حاول على شِبكة أسرع أو استخدم زرار 'فتح في المتصفح'.",
+      hint: "التحميل بطيء جدًا. حاول على شِبكة أسرع أو أعد المحاولة.",
     };
   }
   if (m.includes("http 5") || m.includes("server error") || m.includes("service unavailable")) {
@@ -376,21 +373,6 @@ export function UpdateBanner() {
     }
   };
 
-  /** Open GitHub Releases in the user's default browser. */
-  const handleOpenInBrowser = async () => {
-    const updater = (window as any).updater;
-    if (!updater) {
-      // Fallback: open directly if no Electron bridge
-      if (typeof window !== "undefined") {
-        window.open("https://github.com/mohamedelnoss89/talking-characters-studio/releases/latest", "_blank");
-      }
-      return;
-    }
-    try {
-      await updater.openInBrowser();
-    } catch {}
-  };
-
   /**
    * Manual re-check: force a fresh check against GitHub Releases.
    * Useful when a newer release was published while the app was open
@@ -536,7 +518,7 @@ export function UpdateBanner() {
               </p>
               {state.percent > 0 && state.percent < 100 && (
                 <p className="text-[11px] text-white/60 mt-0.5">
-                  لو التحميل بطيء جدًا، استخدم زرار "فتح في المتصفح" على اليمين
+                  لو التحميل بطيء جدًا، اضغط إعادة المحاولة بعد شوية.
                 </p>
               )}
             </div>
@@ -588,26 +570,9 @@ export function UpdateBanner() {
                 <RotateCw className={`w-3.5 h-3.5 ${working ? "animate-spin" : ""}`} />
                 إعادة الفحص
               </button>
-              <button
-                onClick={handleOpenInBrowser}
-                title="فتح GitHub Releases في المتصفح"
-                className="px-2.5 py-1.5 rounded-lg bg-white/15 text-white text-sm font-semibold hover:bg-white/25 transition flex items-center gap-1"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                المتصفح
-              </button>
             </>
           )}
-          {state.kind === "downloading" && (
-            <button
-              onClick={handleOpenInBrowser}
-              title="فتح GitHub Releases في المتصفح علشان تحميل أسرع"
-              className="px-2.5 py-1.5 rounded-lg bg-white/15 text-white text-sm font-semibold hover:bg-white/25 transition flex items-center gap-1"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              فتح في المتصفح
-            </button>
-          )}
+          {state.kind === "downloading" && null}
           {state.kind === "downloaded" && (
             <button
               onClick={handleInstall}
@@ -619,24 +584,14 @@ export function UpdateBanner() {
             </button>
           )}
           {state.kind === "error" && (
-            <>
-              <button
-                onClick={handleRetry}
-                disabled={working}
-                className="px-3 py-1.5 rounded-lg bg-white text-purple-700 text-sm font-semibold hover:bg-white/90 transition disabled:opacity-50 flex items-center gap-1"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${working ? "animate-spin" : ""}`} />
-                {working ? "..." : "إعادة المحاولة"}
-              </button>
-              <button
-                onClick={handleOpenInBrowser}
-                title="فتح GitHub Releases في المتصفح"
-                className="px-2.5 py-1.5 rounded-lg bg-white/15 text-white text-sm font-semibold hover:bg-white/25 transition flex items-center gap-1"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                المتصفح
-              </button>
-            </>
+            <button
+              onClick={handleRetry}
+              disabled={working}
+              className="px-3 py-1.5 rounded-lg bg-white text-purple-700 text-sm font-semibold hover:bg-white/90 transition disabled:opacity-50 flex items-center gap-1"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${working ? "animate-spin" : ""}`} />
+              {working ? "..." : "إعادة المحاولة"}
+            </button>
           )}
           <button
             onClick={() => setDismissed(true)}
