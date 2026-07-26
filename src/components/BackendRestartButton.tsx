@@ -318,10 +318,15 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
 
   const subtitleText =
     phase === "starting"
-      ? t(
-          `الـ Python بيحمّل نماذج الـ AI... ${startingSeconds}s`,
-          `Python is loading AI models... ${startingSeconds}s`
-        )
+      ? AUTO_RESTART_ENABLED
+        ? t(
+            `الـ Python بيحمّل نماذج الـ AI... ${startingSeconds}s`,
+            `Python is loading AI models... ${startingSeconds}s`
+          )
+        : t(
+            `جاري تشغيل الـ backend... ${startingSeconds}s`,
+            `Starting backend... ${startingSeconds}s`
+          )
       : phase === "restarting"
       ? t(
           `بيحمّل نماذج الـ AI... ${restartSeconds}s`,
@@ -363,8 +368,8 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
                         "Auto-restart will trigger if not up in 4min"
                       )
                     : t(
-                        "استنى، الـ backend هيبدأ في ثواني (مفيش تحميل نماذج في الـ startup)",
-                        "Backend should start in seconds (no model loading at startup)"
+                        "استنى، Python بيبدأ (ممكن ياخد 1-2 دقيقة على رام 4 جيجا)",
+                        "Python starting (may take 1-2 min on 4GB RAM)"
                       )}
                 </span>
               </div>

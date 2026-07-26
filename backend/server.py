@@ -3,6 +3,13 @@ FastAPI server for Wav2Lip lip sync.
 - POST /lip-sync: accepts image + audio file, returns generated video.
 - GET /health: health check.
 """
+# v1.1.25: Print a marker at the VERY FIRST line so we can see in the log
+# exactly when Python starts executing server.py. If this line doesn't appear
+# within ~5s of "[launch] Starting Python backend...", then Python itself is
+# slow to start (heavy paging on 4GB RAM), not our imports.
+import sys as _sys
+print(f"[Server] server.py executing (python {_sys.version.split()[0]})", flush=True)
+
 import os
 import sys
 import uuid
@@ -21,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
+print("[Server] FastAPI + uvicorn imported", flush=True)
 
 
 def _resolve_ffmpeg():
@@ -42,13 +50,46 @@ def _resolve_ffmpeg():
             return c
     return "ffmpeg"
 
-# Import tts_engine (needed for /voices and /tts) — try gracefully
-try:
-    import tts_engine
-    TTS_AVAILABLE = True
-except Exception as e:
-    print(f"[Server] WARNING: tts_engine not available ({e})")
-    TTS_AVAILABLE = False
+# Import tts_engine (needed for /voices and /tts) — try gracefully.
+#
+# v1.1.25: tts_engine imports `edge_tts` (which uses aiohttp ~30MB). On 4GB
+# RAM with heavy paging, even this small import takes 5-15s of GIL time and
+# delays /health. We now DEFER tts_engine import to first use (in /voices or
+# /tts), so /health responds in ~3-5s on low-RAM.
+#
+# We expose a lazy-loaded accessor so the rest of the code can keep using
+# `tts_engine` as if it were a top-level module.
+TTS_AVAILABLE = False
+_tts_engine_module = None
+
+def _get_tts_engine():
+    """Lazy-load tts_engine on first call. Returns the module or None."""
+    global TTS_AVAILABLE, _tts_engine_module
+    if _tts_engine_module is not None:
+        return _tts_engine_module
+    try:
+        import tts_engine as _t
+        _tts_engine_module = _t
+        TTS_AVAILABLE = True
+        return _tts_engine_module
+    except Exception as e:
+        print(f"[Server] WARNING: tts_engine not available ({e})", flush=True)
+        TTS_AVAILABLE = False
+        return None
+
+# Backwards-compat shim: existing code may still do `tts_engine.list_voices()` etc.
+# This proxy forwards attribute access through _get_tts_engine().
+class _TtsEngineProxy:
+    """Lazy proxy for tts_engine — loads the real module on first attribute access."""
+    def __getattr__(self, name):
+        mod = _get_tts_engine()
+        if mod is None:
+            raise AttributeError(f"tts_engine not available (import failed)")
+        return getattr(mod, name)
+    def __bool__(self):
+        return TTS_AVAILABLE
+
+tts_engine = _TtsEngineProxy()
 
 # ---------------------------------------------------------------------------
 # Wav2Lip: deferred import + background model pre-load
@@ -101,6 +142,7 @@ _wav2lip_lock = threading.Lock()
 # field, which overrides the auto-detection.
 # ============================================================
 import psutil  # type: ignore
+print("[Server] psutil imported", flush=True)
 
 # Threshold below which Low-Memory Mode is auto-enabled (in GB).
 # 6GB chosen because: Windows (~2GB) + app stack (~1GB) leaves ~3GB for the
@@ -408,7 +450,9 @@ async def _wait_for_wav2lip_import(timeout_s: float = 30.0) -> bool:
 @app.get("/voices")
 async def list_voices():
     """يرجع قائمة الأصوات المقترحة."""
-    if not TTS_AVAILABLE:
+    # v1.1.25: tts_engine is lazy-loaded on first use. Try to load it now.
+    tts = _get_tts_engine() if not TTS_AVAILABLE else _tts_engine_module
+    if tts is None:
         # fallback hardcoded list
         return {"voices": [
             {"id": "ar-EG-SalmaNeural", "name": "سلمى", "gender": "Female", "lang": "ar-EG", "label_ar": "سلمى (مصر - أنثى)", "label_en": "Salma (Egypt - Female)"},
@@ -416,7 +460,7 @@ async def list_voices():
             {"id": "ar-SA-HamedNeural", "name": "حامد", "gender": "Male", "lang": "ar-SA", "label_ar": "حامد (السعودية - ذكر)", "label_en": "Hamed (Saudi - Male)"},
             {"id": "ar-SA-ZariyahNeural", "name": "زارية", "gender": "Female", "lang": "ar-SA", "label_ar": "زارية (السعودية - أنثى)", "label_en": "Zariyah (Saudi - Female)"},
         ], "default": "ar-EG-SalmaNeural"}
-    return {"voices": tts_engine.get_voices(), "default": tts_engine.get_default_voice()}
+    return {"voices": tts.get_voices(), "default": tts.get_default_voice()}
 
 
 @app.post("/tts")
@@ -429,7 +473,9 @@ async def text_to_speech(
     يحوّل نص إلى ملف صوتي MP3.
     Returns: MP3 file directly.
     """
-    if not TTS_AVAILABLE:
+    # v1.1.25: lazy-load tts_engine on first /tts call
+    tts = _get_tts_engine() if not TTS_AVAILABLE else _tts_engine_module
+    if tts is None:
         raise HTTPException(status_code=503, detail="TTS engine غير متوفر على السيرفر")
 
     text = (text or "").strip()
@@ -447,7 +493,7 @@ async def text_to_speech(
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
-            tts_engine.synthesize_speech,
+            tts.synthesize_speech,
             text, voice, out_path, rate, "+0%", "+0Hz"
         )
     except Exception as e:
@@ -611,11 +657,15 @@ async def lip_sync(
     else:
         # TTS path
         audio_path = os.path.join(job_dir, "tts_audio.mp3")
+        # v1.1.25: lazy-load tts_engine on first /lip-sync call that uses TTS
+        tts = _get_tts_engine() if not TTS_AVAILABLE else _tts_engine_module
+        if tts is None:
+            raise HTTPException(status_code=503, detail="TTS engine غير متوفر على السيرفر")
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
-                tts_engine.synthesize_speech,
+                tts.synthesize_speech,
                 text, voice, audio_path, rate, "+0%", "+0Hz"
             )
         except Exception as e:
@@ -865,7 +915,11 @@ async def lip_sync_multi(
 
                     # 1. TTS لهذا الـ segment
                     seg_audio = os.path.join(job_dir, f"tts_{idx}.mp3")
-                    tts_engine.synthesize_speech(text, voice, seg_audio, rate, "+0%", "+0Hz")
+                    # v1.1.25: lazy-load tts_engine if needed
+                    _tts_mod = _get_tts_engine() if not TTS_AVAILABLE else _tts_engine_module
+                    if _tts_mod is None:
+                        raise HTTPException(status_code=503, detail="TTS engine غير متوفر على السيرفر")
+                    _tts_mod.synthesize_speech(text, voice, seg_audio, rate, "+0%", "+0Hz")
 
                     # 2. Wav2Lip بـ face_index
                     def _seg_cb(p, _idx=idx, _total=total):
@@ -1482,4 +1536,5 @@ if __name__ == "__main__":
     # approach (blocking pre-load before uvicorn.run) caused the Electron
     # launcher's 60s health-check timeout to fire on slow CPUs.
     print("[Server] Starting server on port 8000...", flush=True)
+    print("[Server] Calling uvicorn.run()...", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
