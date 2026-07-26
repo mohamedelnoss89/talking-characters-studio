@@ -74,6 +74,8 @@ _model_load_status = {
     "loading": False,
     "error": None,
     "import_done": False,  # True after wav2lip_runner import finishes (success or fail)
+    "thread_started": False,  # v1.1.23: True once the import thread has been kicked off
+    "deferred": False,  # v1.1.23: True on low-RAM — import deferred to first /lip-sync
 }
 _wav2lip_lock = threading.Lock()
 
@@ -238,9 +240,41 @@ async def lifespan(app):
     # The import (torch, mediapipe, opencv) takes 5-15s, and the model
     # pre-load takes 30s-3min. Running both in one thread avoids race
     # conditions and ensures /lip-sync can wait for both to finish.
-    t = threading.Thread(target=_import_and_preload_wav2lip_background, daemon=True)
-    t.start()
-    print("[Server] Scheduled background wav2lip import + model pre-load. uvicorn is ready to serve requests.", flush=True)
+    #
+    # v1.1.23: On low-RAM (<6GB), DON'T start the background thread at all.
+    # The import of wav2lip_runner triggers `import numpy` (~150MB) and
+    # `import cv2` (~250MB) at module load time, plus `import torch` (~700MB)
+    # shortly after. On 4GB RAM with heavy paging, these imports hold the
+    # GIL for 2-4 minutes, blocking /health and making the backend appear
+    # dead to the desktop launcher (which times out at 5 min).
+    #
+    # Instead, on low-RAM we defer the ENTIRE import to the first /lip-sync
+    # call. uvicorn starts in ~3s, /health responds immediately, and the
+    # user can use image generation right away. The first /lip-sync will
+    # be slow (1-3 min for imports + 30-90s for model load) but subsequent
+    # calls will be fast.
+    try:
+        total_ram = _get_total_ram_gb()
+    except Exception:
+        total_ram = 16.0  # safe default — assume plenty of RAM
+
+    if total_ram >= LOW_MEMORY_THRESHOLD_GB:
+        _model_load_status["thread_started"] = True
+        t = threading.Thread(target=_import_and_preload_wav2lip_background, daemon=True)
+        t.start()
+        print("[Server] Scheduled background wav2lip import + model pre-load. uvicorn is ready to serve requests.", flush=True)
+    else:
+        print(
+            f"[Server] Low-RAM mode ({total_ram:.1f}GB < {LOW_MEMORY_THRESHOLD_GB}GB): "
+            "DEFERRING wav2lip import to first /lip-sync call. "
+            "/health responds immediately, image generation works right away. "
+            "First video generation will be slow (loading models).",
+            flush=True,
+        )
+        # Mark deferred mode so _wait_for_wav2lip_import knows to start the
+        # thread itself when /lip-sync is first called.
+        _model_load_status["deferred"] = True
+
     yield
     # Shutdown
     print("[Server] Shutting down...", flush=True)
@@ -335,6 +369,11 @@ async def _wait_for_wav2lip_import(timeout_s: float = 30.0) -> bool:
     If the import is still running (server just started), this blocks until
     it's done or the timeout expires.
 
+    v1.1.23: On low-RAM machines, the import is DEFERRED from startup to
+    here (the first /lip-sync call). If we detect that the import thread
+    hasn't started yet, we start it now. Callers on low-RAM should pass
+    a longer timeout (e.g., 180s) to allow for the slow import.
+
     Returns True if wav2lip_runner is available, False otherwise.
     """
     if WAV2LIP_AVAILABLE and wav2lip_runner is not None:
@@ -342,6 +381,17 @@ async def _wait_for_wav2lip_import(timeout_s: float = 30.0) -> bool:
     if _model_load_status.get("import_done") and not WAV2LIP_AVAILABLE:
         # Import already failed — don't wait
         return False
+
+    # v1.1.23: If the import hasn't been started yet (low-RAM deferred mode),
+    # start it now. This is the first /lip-sync call.
+    if (not _model_load_status["loading"]
+        and not _model_load_status["import_done"]
+        and not _model_load_status.get("thread_started", False)):
+        print("[Server] Starting deferred wav2lip import (triggered by /lip-sync)...", flush=True)
+        _model_load_status["thread_started"] = True
+        t = threading.Thread(target=_import_and_preload_wav2lip_background, daemon=True)
+        t.start()
+
     # Wait for import to finish
     deadline = asyncio.get_event_loop().time() + timeout_s
     while not _model_load_status["import_done"]:
@@ -436,7 +486,11 @@ async def detect_faces(file: UploadFile = File(...)):
         }
     """
     # Wait for wav2lip_runner import to finish (server may have just started)
-    ready = await _wait_for_wav2lip_import(timeout_s=30.0)
+    # v1.1.23: On low-RAM, the import is deferred to here (first /lip-sync or
+    # /detect-faces). Use a longer timeout (180s) to allow for the slow import
+    # on 4GB RAM (torch ~700MB + cv2 ~250MB + mediapipe ~150MB with heavy paging).
+    import_timeout = 180.0 if _get_total_ram_gb() < LOW_MEMORY_THRESHOLD_GB else 30.0
+    ready = await _wait_for_wav2lip_import(timeout_s=import_timeout)
     if not ready:
         raise HTTPException(
             status_code=503,
@@ -514,7 +568,11 @@ async def lip_sync(
     لازم one of (audio, text) يكون موجود.
     """
     # Wait for wav2lip_runner import to finish (server may have just started)
-    ready = await _wait_for_wav2lip_import(timeout_s=30.0)
+    # v1.1.23: On low-RAM, the import is deferred to here (first /lip-sync or
+    # /detect-faces). Use a longer timeout (180s) to allow for the slow import
+    # on 4GB RAM (torch ~700MB + cv2 ~250MB + mediapipe ~150MB with heavy paging).
+    import_timeout = 180.0 if _get_total_ram_gb() < LOW_MEMORY_THRESHOLD_GB else 30.0
+    ready = await _wait_for_wav2lip_import(timeout_s=import_timeout)
     if not ready:
         raise HTTPException(
             status_code=503,
@@ -692,7 +750,11 @@ async def lip_sync_multi(
         }
     """
     # Wait for wav2lip_runner import to finish (server may have just started)
-    ready = await _wait_for_wav2lip_import(timeout_s=30.0)
+    # v1.1.23: On low-RAM, the import is deferred to here (first /lip-sync or
+    # /detect-faces). Use a longer timeout (180s) to allow for the slow import
+    # on 4GB RAM (torch ~700MB + cv2 ~250MB + mediapipe ~150MB with heavy paging).
+    import_timeout = 180.0 if _get_total_ram_gb() < LOW_MEMORY_THRESHOLD_GB else 30.0
+    ready = await _wait_for_wav2lip_import(timeout_s=import_timeout)
     if not ready:
         raise HTTPException(
             status_code=503,
