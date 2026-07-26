@@ -343,6 +343,18 @@ function HomeInner() {
   const [faceDetectError, setFaceDetectError] = useState<string>("");
   const [imageNaturalSize, setImageNaturalSize] = useState<{w: number; h: number} | null>(null);
 
+  // v1.1.21: Low-Memory Mode — "auto" lets the backend decide based on RAM.
+  // The backend auto-enables it when total RAM < 6GB. The user can override
+  // here: true = always on (lower quality, fewer OOM crashes), false = always
+  // off (full quality, may crash on 4GB RAM machines).
+  const [lowMemoryMode, setLowMemoryMode] = useState<"auto" | boolean>("auto");
+  // Tracks what the backend reported about RAM so we can show a hint badge.
+  const [backendRamInfo, setBackendRamInfo] = useState<{
+    total_ram_gb: number;
+    available_ram_gb: number;
+    low_memory_auto_enabled: boolean;
+  } | null>(null);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const jobIdRef = useRef<string | null>(null);
@@ -362,6 +374,15 @@ function HomeInner() {
         if (health.status === "ok") {
           setBackendStatus("ok");
           setBackendInfo({ device: health.device, model_loaded: health.model_loaded, wav2lip_available: health.wav2lip_available });
+          // v1.1.21: capture RAM info so we can show a Low-Memory Mode badge
+          // in the UI explaining why video generation may be slower.
+          if (typeof health.total_ram_gb === "number") {
+            setBackendRamInfo({
+              total_ram_gb: health.total_ram_gb,
+              available_ram_gb: health.available_ram_gb ?? 0,
+              low_memory_auto_enabled: !!health.low_memory_auto_enabled,
+            });
+          }
         } else if (health.status === "starting") {
           setBackendStatus("starting");
           retryCount++;
@@ -1048,6 +1069,9 @@ function HomeInner() {
         pads: "0,10,0,0",
         resizeFactor: 1,
         faceIndex: selectedFaceIndex, // -1 = تلقائي، أو index الوجه المحدد
+        // v1.1.21: "auto" lets the backend decide based on RAM. If the user
+        // toggled the Low-Memory checkbox in the UI, we pass true/false.
+        lowMemory: lowMemoryMode,
       });
       jobIdRef.current = job_id;
       console.log("Job started:", job_id);
@@ -1224,7 +1248,7 @@ function HomeInner() {
         rate: s.rate,
       }));
 
-      const { job_id } = await startMultiLipSync(imageFile, scripts, imageFile.name || "character.png");
+      const { job_id } = await startMultiLipSync(imageFile, scripts, imageFile.name || "character.png", lowMemoryMode);
       jobIdRef.current = job_id;
       console.log("Multi-speaker job started:", job_id);
 
@@ -2403,6 +2427,69 @@ function HomeInner() {
                             ? "الذكاء الاصطناعي بيتعلم بآلاف الأمثلة - استنى شوية"
                             : "AI is trained on thousands of examples - please wait"}
                         </p>
+                      </div>
+                    )}
+
+                    {/* v1.1.21: Low-Memory Mode banner + toggle.
+                        Shows automatically when the backend reports RAM < 6GB.
+                        Lets the user override the auto-detection if they want. */}
+                    {backendRamInfo && backendRamInfo.low_memory_auto_enabled && (
+                      <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/40 text-amber-100 text-xs space-y-2">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                          <div className="flex-1">
+                            <p className="font-semibold">
+                              {lang === "ar" ? "وضع توفير الذاكرة" : "Low-Memory Mode"}
+                            </p>
+                            <p className="mt-1 leading-relaxed">
+                              {lang === "ar"
+                                ? `جهازك عليه ${backendRamInfo.total_ram_gb.toFixed(1)}GB رام بس. علشان كده تم تفعيل وضع توفير الذاكرة تلقائيًا عشان تتجنّب انهيار التطبيق أثناء توليد الفيديو. الفيديو هيظهر بشفايف أقل تفصيلًا، بس هيشتغل بنجاح.`
+                                : `Your machine has only ${backendRamInfo.total_ram_gb.toFixed(1)}GB RAM. Low-Memory Mode was auto-enabled to prevent the app from crashing during video generation. The video will have slightly less lip detail, but it will work.`}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 pl-6">
+                          <select
+                            value={lowMemoryMode === true ? "on" : lowMemoryMode === false ? "off" : "auto"}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              if (v === "on") setLowMemoryMode(true);
+                              else if (v === "off") setLowMemoryMode(false);
+                              else setLowMemoryMode("auto");
+                            }}
+                            className="bg-black/40 border border-amber-500/40 rounded px-2 py-1 text-amber-100 text-xs flex-1"
+                          >
+                            <option value="auto">
+                              {lang === "ar" ? "تلقائي (موصى به)" : "Auto (recommended)"}
+                            </option>
+                            <option value="on">
+                              {lang === "ar" ? "تفعيل دائم" : "Always on"}
+                            </option>
+                            <option value="off">
+                              {lang === "ar" ? "إيقاف (مخاطر انهيار)" : "Off (crash risk)"}
+                            </option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Manual toggle for users on machines with enough RAM who
+                        still want Low-Memory Mode (e.g. they're running other
+                        heavy apps in the background). Hidden when the auto
+                        banner is already showing. */}
+                    {backendRamInfo && !backendRamInfo.low_memory_auto_enabled && (
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <label className="flex items-center gap-2 cursor-pointer text-gray-300">
+                          <input
+                            type="checkbox"
+                            checked={lowMemoryMode === true}
+                            onChange={(e) => setLowMemoryMode(e.target.checked ? true : "auto")}
+                            className="rounded"
+                          />
+                          {lang === "ar"
+                            ? "وضع توفير الذاكرة (لو التطبيق بيقع أثناء الفيديو)"
+                            : "Low-Memory Mode (if app crashes during video)"}
+                        </label>
                       </div>
                     )}
 

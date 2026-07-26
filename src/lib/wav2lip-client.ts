@@ -139,6 +139,10 @@ export async function detectFaces(imageBlob: Blob, imageName = "image.png"): Pro
  * - لو audioFile موجود، الباك هاند هيستخدمه مباشرة
  * لازم واحد منهم على الأقل
  * - لو faceIndex >= 0، السيرفر هيستخدم الوجه المحدد بس (للصور اللي فيها أكتر من وجه)
+ * - v1.1.21: lowMemory ("auto" | true | false) — يتحكم في وضع توفير الذاكرة.
+ *   - "auto" (default): السيرفر يقرر بناءً على الرام المتاحة
+ *   - true: يفرض تفعيل الوضع (حتى لو الرام كافية)
+ *   - false: يفرض تعطيل الوضع (جودة كاملة)
  */
 export async function startLipSync(
   imageBlob: Blob,
@@ -152,6 +156,7 @@ export async function startLipSync(
     pads?: string;
     resizeFactor?: number;
     faceIndex?: number;       // index الوجه اللي هيتكلم (-1 أو undefined = تلقائي)
+    lowMemory?: "auto" | boolean;  // v1.1.21: Low-Memory Mode override
   }
 ): Promise<{ job_id: string }> {
   const {
@@ -164,6 +169,7 @@ export async function startLipSync(
     pads = "0,10,0,0",
     resizeFactor = 1,
     faceIndex = -1,
+    lowMemory = "auto",
   } = options;
 
   if (!audioFile && !scriptText?.trim()) {
@@ -183,6 +189,15 @@ export async function startLipSync(
   formData.append("pads", pads);
   formData.append("resize_factor", String(resizeFactor));
   formData.append("face_index", String(faceIndex));
+
+  // v1.1.21: Low-Memory Mode override — only send when user explicitly
+  // toggled it (true/false). "auto" = let the backend decide based on RAM.
+  if (lowMemory === true) {
+    formData.append("low_memory", "true");
+  } else if (lowMemory === false) {
+    formData.append("low_memory", "false");
+  }
+  // "auto" → don't send the field, backend will auto-detect
 
   // retry logic عشان لو الباك-إند وقع (OOM) واتـrestart، نديله فرصة يرجع
   const MAX_RETRIES = 3;
@@ -268,7 +283,8 @@ export interface MultiScriptEntry {
 export async function startMultiLipSync(
   imageBlob: Blob,
   scripts: MultiScriptEntry[],
-  imageName = "character.png"
+  imageName = "character.png",
+  lowMemory: "auto" | boolean = "auto"
 ): Promise<{ job_id: string; total_segments: number }> {
   if (!scripts || scripts.length === 0) {
     throw new Error("scripts لازم يكون array غير فاضي");
@@ -292,6 +308,13 @@ export async function startMultiLipSync(
   const formData = new FormData();
   formData.append("file", imageBlob, imageName);
   formData.append("scripts", JSON.stringify(scripts));
+
+  // v1.1.21: Low-Memory Mode override — same logic as startLipSync.
+  if (lowMemory === true) {
+    formData.append("low_memory", "true");
+  } else if (lowMemory === false) {
+    formData.append("low_memory", "false");
+  }
 
   // retry logic عشان لو الباك-إند وقع (OOM) واتـrestart
   const MAX_RETRIES = 3;

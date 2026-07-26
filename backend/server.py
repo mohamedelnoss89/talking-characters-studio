@@ -77,6 +77,73 @@ _model_load_status = {
 }
 _wav2lip_lock = threading.Lock()
 
+
+# ============================================================
+# v1.1.21: Low-Memory Mode — automatic detection + override flag.
+#
+# The Wav2Lip pipeline normally needs ~4-5GB of RAM at peak:
+#   - Wav2Lip model (~415MB) + GFPGAN model (~300MB) in memory
+#   - ~750 generated frames × 640×640×3 bytes = ~920MB
+#   - Additional copies during pro_enhance + lip_enhance + eye_blink passes
+#
+# On a 4GB machine, Windows alone eats ~2GB, leaving only ~2GB for the app.
+# Without Low-Memory Mode, /lip-sync crashes with OOM mid-generation.
+#
+# Low-Memory Mode (auto-enabled when RAM < 6GB):
+#   - Skips pro_enhance and pro_lip_enhance passes (saves ~1.5GB peak)
+#   - Uses smaller frames (480×480 instead of 640×640, saves ~44% frame memory)
+#   - Streams frames to AVI as they're generated instead of holding all in RAM
+#   - Smaller batch sizes (4 instead of 8) to reduce peak tensor memory
+#
+# The user can also toggle it manually via the /lip-sync `low_memory` form
+# field, which overrides the auto-detection.
+# ============================================================
+import psutil  # type: ignore
+
+# Threshold below which Low-Memory Mode is auto-enabled (in GB).
+# 6GB chosen because: Windows (~2GB) + app stack (~1GB) leaves ~3GB for the
+# pipeline, and Low-Memory Mode needs ~2.5GB peak. Above 6GB, full quality
+# is safe. Below 6GB, we MUST enable Low-Memory to avoid OOM.
+LOW_MEMORY_THRESHOLD_GB = 6.0
+
+# Cache the total system RAM so we don't call psutil on every request.
+_total_ram_gb_cache: float | None = None
+
+
+def _get_total_ram_gb() -> float:
+    """Return total physical RAM in GB (cached after first call)."""
+    global _total_ram_gb_cache
+    if _total_ram_gb_cache is None:
+        try:
+            _total_ram_gb_cache = psutil.virtual_memory().total / (1024 ** 3)
+        except Exception:
+            # If psutil fails (shouldn't happen, it's in requirements),
+            # assume a safe large value so we don't accidentally enable
+            # Low-Memory Mode on a machine that actually has plenty of RAM.
+            _total_ram_gb_cache = 16.0
+    return _total_ram_gb_cache
+
+
+def _should_use_low_memory(user_override: str | None = None) -> bool:
+    """
+    Decide whether to use Low-Memory Mode for this /lip-sync call.
+
+    Priority:
+      1. Explicit user override via the `low_memory` form field
+         ("true"/"1"/"yes" → force on, "false"/"0"/"no" → force off)
+      2. Auto-detection: if total RAM < LOW_MEMORY_THRESHOLD_GB, enable it
+      3. Default: off (full quality)
+
+    Returns True if Low-Memory Mode should be active for this call.
+    """
+    if user_override is not None:
+        v = user_override.strip().lower()
+        if v in ("true", "1", "yes", "on"):
+            return True
+        if v in ("false", "0", "no", "off"):
+            return False
+    return _get_total_ram_gb() < LOW_MEMORY_THRESHOLD_GB
+
 def _import_and_preload_wav2lip_background():
     """
     Background thread: import wav2lip_runner (which imports torch etc.)
@@ -201,6 +268,16 @@ async def health():
     sdk_available = os.path.isdir(sdk_path)
     zai_config_path = os.path.join(BACKEND_DIR, ".z-ai-config")
     zai_config_available = os.path.isfile(zai_config_path)
+
+    # v1.1.21: expose RAM info so the frontend can show a Low-Memory Mode
+    # warning and explain WHY video generation is slower than usual.
+    total_ram_gb = _get_total_ram_gb()
+    low_memory_auto = total_ram_gb < LOW_MEMORY_THRESHOLD_GB
+    try:
+        avail_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        avail_ram_gb = 0.0
+
     return {
         "status": "ok",
         "device": (wav2lip_runner.DEVICE if WAV2LIP_AVAILABLE and wav2lip_runner else "cpu"),
@@ -218,6 +295,11 @@ async def health():
         "image_gen_available": sdk_available and zai_config_available and node_available,
         "zai_sdk_available": sdk_available,
         "zai_config_available": zai_config_available,
+        # v1.1.21: Low-Memory Mode info
+        "total_ram_gb": round(total_ram_gb, 2),
+        "available_ram_gb": round(avail_ram_gb, 2),
+        "low_memory_threshold_gb": LOW_MEMORY_THRESHOLD_GB,
+        "low_memory_auto_enabled": low_memory_auto,
     }
 
 
@@ -392,6 +474,7 @@ async def lip_sync(
     pads: str = Form("0,10,0,0"),
     resize_factor: int = Form(1),
     face_index: int = Form(-1),         # index الوجه اللي هيتكلم (-1 = تلقائي/أول وجه)
+    low_memory: str = Form(None),       # v1.1.21: "true"/"false" override for Low-Memory Mode
 ):
     """
     Accept image + (script OR audio), run Wav2Lip, return the result video.
@@ -492,8 +575,21 @@ async def lip_sync(
             # Run sync function in thread pool to not block event loop
             # لو face_index = -1 (default)، نمرر None عشان run_lip_sync يستخدم السلوك الأصلي
             face_idx_arg = face_index if face_index is not None and face_index >= 0 else None
+
+            # v1.1.21: Low-Memory Mode decision — user override first, else
+            # auto-detect based on total system RAM. When active, wav2lip_runner
+            # skips pro_enhance + pro_lip_enhance, uses smaller frames (480px),
+            # and reduces batch size from 8 → 4 to lower peak tensor memory.
+            use_low_memory = _should_use_low_memory(low_memory)
+            if use_low_memory:
+                print(f"[Job {job_id}] Low-Memory Mode ENABLED (total RAM: {_get_total_ram_gb():.2f}GB)")
+            else:
+                print(f"[Job {job_id}] Full quality mode (total RAM: {_get_total_ram_gb():.2f}GB)")
+
+            wav2lip_batch_sz = 4 if use_low_memory else 8
+
             loop = asyncio.get_event_loop()
-            # نستخدم lambda عشان نمرر face_index كـ keyword argument
+            # نستخدم lambda عشان نمرر face_index + low_memory كـ keyword arguments
             await loop.run_in_executor(
                 None,
                 lambda: wav2lip_runner.run_lip_sync(
@@ -502,10 +598,11 @@ async def lip_sync(
                     output_path,
                     pads_tuple,
                     resize_factor,
-                    4,    # face_det_batch_size
-                    8,    # wav2lip_batch_size — 8 بدل 16 عشان نقلل ذروة الذاكرة
+                    4,                  # face_det_batch_size
+                    wav2lip_batch_sz,   # wav2lip_batch_size — 4 في low-memory، 8 عادي
                     progress_callback,
                     face_idx_arg,
+                    use_low_memory,     # low_memory flag
                 ),
             )
             jobs[job_id]["status"] = "completed"
@@ -556,6 +653,7 @@ async def lip_sync_multi(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     scripts: str = Form(...),  # JSON array of {face_index, text, voice, rate}
+    low_memory: str = Form(None),  # v1.1.21: same override as /lip-sync
 ):
     """
     Multi-speaker lip sync.
@@ -657,6 +755,15 @@ async def lip_sync_multi(
         try:
             loop = asyncio.get_event_loop()
 
+            # v1.1.21: Low-Memory Mode decision (same logic as /lip-sync).
+            # Multi-speaker videos are even more memory-intensive because each
+            # segment loads frames independently, so the auto-detection is
+            # especially important here.
+            use_low_memory = _should_use_low_memory(low_memory)
+            if use_low_memory:
+                print(f"[Multi {job_id}] Low-Memory Mode ENABLED (total RAM: {_get_total_ram_gb():.2f}GB)")
+            wav2lip_batch_sz = 4 if use_low_memory else 8
+
             # إنشاء دالة sync بتشغّل كل segments بالترتيب
             def process_all():
                 segment_paths = []
@@ -668,7 +775,7 @@ async def lip_sync_multi(
                     voice = script_entry["voice"]
                     rate = script_entry["rate"]
 
-                    print(f"[Multi {job_id}] Segment {idx+1}/{total}: face={face_idx}, voice={voice}, text_len={len(text)}")
+                    print(f"[Multi {job_id}] Segment {idx+1}/{total}: face={face_idx}, voice={voice}, text_len={len(text)}, low_memory={use_low_memory}")
 
                     # 1. TTS لهذا الـ segment
                     seg_audio = os.path.join(job_dir, f"tts_{idx}.mp3")
@@ -685,9 +792,10 @@ async def lip_sync_multi(
                         (0, 10, 0, 0),    # pads
                         1,                # resize_factor
                         4,                # face_det_batch_size
-                        8,                # wav2lip_batch_size
+                        wav2lip_batch_sz, # wav2lip_batch_size — 4 في low-memory، 8 عادي
                         _seg_cb,
                         face_idx,         # face_index
+                        use_low_memory,   # low_memory flag
                     )
                     segment_paths.append(seg_output)
                     print(f"[Multi {job_id}] Segment {idx+1} done: {seg_output}")

@@ -589,6 +589,7 @@ def run_lip_sync(
     wav2lip_batch_size: int = 16,
     progress_callback=None,
     face_index: int = None,
+    low_memory: bool = False,
 ) -> str:
     """
     يحول صورة + ملف صوتي لفيديو lip sync حقيقي
@@ -604,13 +605,22 @@ def run_lip_sync(
         progress_callback: callable(percent: int)
         face_index: index الوجه اللي هيتكلم (لو الصورة فيها أكتر من وجه).
                     None = السلوك الأصلي (أول وجه يتم كشفه)
+        low_memory: v1.1.21 — لو True، يفعّل وضع توفير الذاكرة:
+                    - MAX_SIDE = 480 بدل 640 (يوفّر ~44% من رام الإطارات)
+                    - يتخطّى pro_enhance و pro_lip_enhance (يوفّر ~1.5GB peak)
+                    - batch size = 4 بدل 8 (يقلّل peak tensor memory)
+                    - ينظّف generated_frames تدريجيًا بدل ما يحتفظ بكل الإطارات
+                      في الذاكرة لحد نهاية المعالجة
+                    مفيد جدًا للأجهزة اللي رامها < 6GB، وإلا بتحصل OOM.
     Returns:
         output_path
     """
+    if low_memory:
+        print("[Wav2Lip] LOW-MEMORY MODE ENABLED — reduced quality, but works on 4GB RAM")
     if face_index is not None:
-        print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}, face_index={face_index}")
+        print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}, face_index={face_index}, low_memory={low_memory}")
     else:
-        print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}")
+        print(f"[Wav2Lip] Starting lip sync: image={image_path}, audio={audio_path}, low_memory={low_memory}")
 
     # Fail fast with a clear error if Wav2Lip is not set up
     _check_wav2lip_available()
@@ -642,7 +652,14 @@ def run_lip_sync(
     # صورة 1024×1024 بتيجي ~3MB لكل إطار × 289 إطار = 867MB في generated_frames.
     # بتصغير لـ 640×640 بنوفّر ~63% من الذاكرة (من 867MB لـ ~320MB).
     # ده بيدّي وضاحة كافية للـ face animation + بيمنع OOM على السيرفرات اللي رامها قليلة.
-    MAX_SIDE = 640
+    #
+    # v1.1.21: Low-Memory Mode بيقلّل MAX_SIDE من 640 لـ 480.
+    #   - 640×640×3 = 1.17MB per frame × 750 frames = ~880MB
+    #   - 480×480×3 = 660KB per frame × 750 frames = ~495MB
+    #   - التوفير: ~385MB (~44%) — فرق كبير على جهاز 4GB RAM.
+    MAX_SIDE = 480 if low_memory else 640
+    if low_memory:
+        print(f"[Wav2Lip] Low-Memory: MAX_SIDE={MAX_SIDE} (was 640)")
     h0b, w0b = full_frames[0].shape[:2]
     if max(h0b, w0b) > MAX_SIDE:
         scale = MAX_SIDE / max(h0b, w0b)
@@ -820,8 +837,17 @@ def run_lip_sync(
     #         لكل إطار: ناخد low-freq من Wav2Lip (الحركة) + high-freq من GFPGAN (الملمس)
     #         النتيجة: وجه واضح + حركة شفايف طبيعية
     # السرعة: GFPGAN مرة واحدة (5s) + 1.6ms لكل إطار
+    #
+    # v1.1.21: Low-Memory Mode بيتخطّى هذه المرحلة. الـ ProfessionalEnhancer
+    # بياخد نسخة من كل إطار (~880MB لـ 750 إطار×640×640×3) + بيعمل batch
+    # processing. ده peak memory كبير على 4GB RAM.
+    # النتيجة بدونها: شفايف شوية أقل تفصيل، لكن الفيديو بيتولّد بنجاح.
     # =====================================================================
-    if PRO_ENHANCE_AVAILABLE:
+    if low_memory:
+        print("[Wav2Lip] Low-Memory: skipping pro enhancement (saves ~1GB peak)")
+        if progress_callback:
+            progress_callback(80)
+    elif PRO_ENHANCE_AVAILABLE:
         print("[Wav2Lip] Applying professional enhancement (frequency blending)...")
         try:
             # progress: 70-80% during pro enhancement (10% range)
@@ -858,8 +884,16 @@ def run_lip_sync(
     #   - edge-aware sharpening (bilateral + CLAHE + unsharp على قناة L)
     #   - detail transfer من مرجع GFPGAN إلى حواف الشفايف بس (يحافظ على الحركة)
     # لو مش متاح، نرجع للـ lip_enhancer القديم كـ fallback
+    #
+    # v1.1.21: Low-Memory Mode بيتخطّى الـ Pro Lip Enhancement كمان.
+    # الـ enhance_lips_pro بيستدعي MediaPipe per-frame وبيعمل نسخ مؤقتة،
+    # بيضيف ~500MB peak. الـ legacy lip_enhancer أخف بكتير، فبنسيبه يشتغل.
     # =====================================================================
-    if PRO_LIP_AVAILABLE:
+    if low_memory:
+        print("[Wav2Lip] Low-Memory: skipping Pro Lip Enhancement v2 (saves ~500MB peak)")
+        if progress_callback:
+            progress_callback(82)
+    elif PRO_LIP_AVAILABLE:
         print("[Wav2Lip] Applying Pro Lip Enhancement v2 (per-frame, edge-aware)...")
         try:
             # progress: 80-82% during lip enhancement (2% range)

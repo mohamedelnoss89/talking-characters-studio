@@ -71,3 +71,7 @@ edge-tts>=6.1,<7
 tqdm>=4.65,<5
 requests>=2.28,<3
 huggingface_hub>=0.20,<1
+# v1.1.21: psutil is used to detect total system RAM and auto-enable
+# Low-Memory Mode on machines with <6GB RAM. Without it, /lip-sync would
+# crash with OOM on low-RAM machines.
+psutil>=5.9,<7
