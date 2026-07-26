@@ -371,14 +371,19 @@ function startBackend() {
     sendBackendLog("[launch] Starting Python backend...");
     sendBackendLog("[launch] Python: " + py);
     sendBackendLog("[launch] cwd: " + BACKEND_SRC_DIR);
-    sendBackendLog("[launch] ملاحظة: تحميل نماذج الـ AI ممكن ياخد 1-3 دقايق على رام 8 جيجا، أو 3-5 دقايق على رام 4 جيجا. استنى...");
-    // v1.1.22: detect total RAM and adjust the user-facing message accordingly.
+    // v1.1.24: detect total RAM and adjust the user-facing message accordingly.
+    // On low-RAM (<6GB), v1.1.23+ defers the wav2lip import (torch/cv2/mediapipe)
+    // to the first /lip-sync call, so /health responds in ~5s and the backend
+    // is USABLE immediately. The old "3-5 دقايق" message was misleading.
+    let detectedLowRam = false;
     try {
       const totalMemGB = Math.round(require("os").totalmem() / (1024 * 1024 * 1024));
       if (totalMemGB < 6) {
-        sendBackendLog(`[launch] Detected ${totalMemGB}GB RAM — Low-Memory Mode active. /health will respond fast (no model pre-load).`);
+        detectedLowRam = true;
+        sendBackendLog(`[launch] Detected ${totalMemGB}GB RAM — Low-Memory Mode active.`);
+        sendBackendLog("[launch] الـ backend هيبدأ في ثواني (مفيش تحميل نماذج في الـ startup). أول فيديو هياخد وقت تحميل النماذج (~2-3 دقايق).");
       } else {
-        sendBackendLog(`[launch] Detected ${totalMemGB}GB RAM — pre-loading Wav2Lip model in background.`);
+        sendBackendLog(`[launch] Detected ${totalMemGB}GB RAM — pre-loading Wav2Lip model in background (1-3 min).`);
       }
     } catch {}
 
@@ -452,12 +457,14 @@ function startBackend() {
     });
 
     // Wait for /health to respond.
-    // CRITICAL: timeout is 5 MINUTES, not 60 seconds. The backend pre-loads
-    // the Wav2Lip model (~415MB) on startup, which can take 1-3 minutes on a
-    // regular CPU. The previous 60s timeout was the root cause of the
-    // "Backend health check timed out" error.
+    // v1.1.24: On low-RAM (<6GB), the backend defers ALL heavy imports (torch,
+    // cv2, mediapipe ~1.4GB) to the first /lip-sync call. /health should
+    // respond in ~5-10s. We use a 90s timeout on low-RAM (was 5min) so the
+    // user gets faster feedback if something is wrong.
+    // On high-RAM, the backend pre-loads the Wav2Lip model in background
+    // which can take 1-3 min, so we keep the 5min timeout.
     const start = Date.now();
-    const timeoutMs = 5 * 60 * 1000; // 5 minutes
+    const timeoutMs = detectedLowRam ? 90 * 1000 : 5 * 60 * 1000;
     let lastProgressAt = start;
     const check = () => {
       const req = http.get(`${BACKEND_URL}/health`, (res) => {
@@ -484,7 +491,9 @@ function startBackend() {
       const elapsed = Date.now() - start;
       if (elapsed > timeoutMs) {
         backendStarting = false;
-        const msg = "Backend health check timed out after 5min. السبب الأرجح: تحميل نماذج الـ AI بطيء جدًا، أو Python crashed. شوف الـ log فوق.";
+        const msg = detectedLowRam
+          ? "Backend health check timed out after 90s. على رام 4 جيجا، الـ backend المفروض يبدأ في ثواني. لو حصل ده، غالبًا Python crashed — شوف الـ log فوق."
+          : "Backend health check timed out after 5min. السبب الأرجح: تحميل نماذج الـ AI بطيء جدًا، أو Python crashed. شوف الـ log فوق.";
         sendBackendLog("[launch] ✗ " + msg);
         reject(new Error(msg));
         return;
@@ -492,7 +501,10 @@ function startBackend() {
       // Every 15 seconds, send a heartbeat so the user knows we're still alive
       if (Date.now() - lastProgressAt > 15_000) {
         const secs = Math.floor(elapsed / 1000);
-        sendBackendLog(`[launch] ...ليها ${secs}s — لسه مستني الـ backend يبدأ (ممكن ياخد لـ 5 دقايق)`);
+        const waitMsg = detectedLowRam
+          ? `...ليها ${secs}s — الـ backend المفروض يبدأ في ثواني على رام 4 جيجا`
+          : `...ليها ${secs}s — لسه مستني الـ backend يبدأ (ممكن ياخد لـ 5 دقايق)`;
+        sendBackendLog(`[launch] ${waitMsg}`);
         lastProgressAt = Date.now();
       }
       setTimeout(check, 1500);

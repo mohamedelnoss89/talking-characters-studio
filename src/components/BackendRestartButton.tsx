@@ -363,8 +363,8 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
                         "Auto-restart will trigger if not up in 4min"
                       )
                     : t(
-                        "استنى، تحميل النماذج ممكن ياخد 3-5 دقايق على رام 4 جيجا",
-                        "Model loading may take 3-5 min on 4GB RAM"
+                        "استنى، الـ backend هيبدأ في ثواني (مفيش تحميل نماذج في الـ startup)",
+                        "Backend should start in seconds (no model loading at startup)"
                       )}
                 </span>
               </div>
