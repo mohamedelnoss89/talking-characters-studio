@@ -55,22 +55,48 @@ type Phase = "checking" | "starting" | "down" | "restarting" | "error" | "ok";
  *   - Backend is busy (model pre-load is hammering CPU, /health is slow)
  *   - Backend crashed during background pre-load (OOM, segfault)
  *   - The user is on a fresh install and the first model load is taking 1-3 min
+ *   - v1.1.22+: On a low-RAM machine (<6GB), the OS pages heavily during
+ *     torch + opencv + mediapipe imports, so /health can be unresponsive
+ *     for 2-3 minutes even though the backend is still alive.
  *
  * During this grace period we show a "starting" message instead of "down".
- * 90s is enough to cover slow /health responses, but short enough that real
- * crashes still surface to the user within a reasonable time.
+ *
+ * v1.1.22: Bumped from 90s → 240s. The old 90s threshold was too aggressive
+ * on 4GB-RAM machines — the auto-restart would kill the Python process
+ * mid-import, then start over, then kill again, creating a vicious cycle
+ * where the user never got a working backend. 240s is enough for the slowest
+ * real-world case (4GB RAM + 5400RPM HDD + Windows Defender scanning) while
+ * still surfacing genuine crashes within ~4 minutes.
  */
-const STARTING_GRACE_MS = 90_000;
+const STARTING_GRACE_MS = 240_000;
 
 /**
- * After the grace period expires with the backend still unreachable, we
- * automatically trigger ONE restart attempt. If that also fails, we transition
- * to the "down" phase and let the user manually retry.
+ * Whether to auto-restart the backend when the grace period expires.
  *
- * This handles the common case where the backend crashed during background
- * model pre-load — the user shouldn't have to click anything to recover.
+ * v1.1.22: DISABLED on low-RAM machines (<6GB, detected via navigator.deviceMemory).
+ *
+ * Why: On a 4GB machine, the most common cause of /health timeouts is NOT a
+ * crash — it's the OS paging during heavy imports. Auto-restarting kills the
+ * Python process mid-import, which:
+ *   1. Loses all the import progress (next start has to redo it from scratch)
+ *   2. May corrupt temp files
+ *   3. Triggers another 2-3 minute import cycle
+ *
+ * On high-RAM machines (≥6GB), keep auto-restart enabled — if /health is
+ * unreachable for 4 minutes on a fast machine, it really IS a crash.
  */
-const AUTO_RESTART_ENABLED = true;
+function detectLowRam(): boolean {
+  try {
+    // navigator.deviceMemory is Chrome-only, returns one of: 0.25, 0.5, 1, 2, 4, 8
+    // (it caps at 8GB even on larger machines). Anything <8 is "low".
+    const dm = (navigator as any).deviceMemory;
+    if (typeof dm === "number" && dm > 0 && dm < 8) return true;
+  } catch {}
+  // Conservative default: assume NOT low-RAM (let auto-restart stay enabled).
+  // The user can always click "Restart Server" manually if they want.
+  return false;
+}
+const AUTO_RESTART_ENABLED = !detectLowRam();
 
 export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "en" }) {
   const [phase, setPhase] = useState<Phase>("checking");
@@ -331,10 +357,15 @@ export function BackendRestartButton({ language = "ar" }: { language?: "ar" | "e
             {phase === "starting" && (
               <div className="mt-2 flex items-center gap-2 text-xs text-blue-200">
                 <span>
-                  {t(
-                    "استنى، لو ما اشتغلش في خلال 90 ثانية هحاول أوتوماتيك",
-                    "Auto-restart will trigger if not up in 90s"
-                  )}
+                  {AUTO_RESTART_ENABLED
+                    ? t(
+                        "استنى، لو ما اشتغلش في خلال 4 دقايق هحاول أوتوماتيك",
+                        "Auto-restart will trigger if not up in 4min"
+                      )
+                    : t(
+                        "استنى، تحميل النماذج ممكن ياخد 3-5 دقايق على رام 4 جيجا",
+                        "Model loading may take 3-5 min on 4GB RAM"
+                      )}
                 </span>
               </div>
             )}

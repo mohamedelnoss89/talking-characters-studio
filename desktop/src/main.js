@@ -371,7 +371,16 @@ function startBackend() {
     sendBackendLog("[launch] Starting Python backend...");
     sendBackendLog("[launch] Python: " + py);
     sendBackendLog("[launch] cwd: " + BACKEND_SRC_DIR);
-    sendBackendLog("[launch] ملاحظة: تحميل نماذج الـ AI ممكن ياخد 1-3 دقايق، استنى...");
+    sendBackendLog("[launch] ملاحظة: تحميل نماذج الـ AI ممكن ياخد 1-3 دقايق على رام 8 جيجا، أو 3-5 دقايق على رام 4 جيجا. استنى...");
+    // v1.1.22: detect total RAM and adjust the user-facing message accordingly.
+    try {
+      const totalMemGB = Math.round(require("os").totalmem() / (1024 * 1024 * 1024));
+      if (totalMemGB < 6) {
+        sendBackendLog(`[launch] Detected ${totalMemGB}GB RAM — Low-Memory Mode active. /health will respond fast (no model pre-load).`);
+      } else {
+        sendBackendLog(`[launch] Detected ${totalMemGB}GB RAM — pre-loading Wav2Lip model in background.`);
+      }
+    } catch {}
 
     // Resolve the bundled ffmpeg binary path.
     // When packaged: process.resourcesPath/bin/ffmpeg.exe

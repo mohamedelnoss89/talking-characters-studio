@@ -184,7 +184,31 @@ def _import_and_preload_wav2lip_background():
             _model_load_status["import_done"] = True
 
         # ---- Phase 2: pre-load the model ----
+        # v1.1.22: SKIP the model pre-load on low-RAM machines (<6GB).
+        # Loading the 415MB checkpoint on top of torch (~700MB) + opencv +
+        # mediapipe pushes total memory >2GB, which on a 4GB machine triggers
+        # heavy paging and makes the entire startup take 3-5 minutes.
+        #
+        # Instead, on low-RAM we let /health respond as soon as the import
+        # finishes (~5-15s), and load the model LAZILY on the first /lip-sync
+        # call. The user can use image generation immediately, and the first
+        # video generation will be slow (loads the model then) but subsequent
+        # ones will be fast.
         if not WAV2LIP_AVAILABLE or wav2lip_runner is None:
+            return
+        try:
+            total_ram = _get_total_ram_gb()
+        except Exception:
+            total_ram = 16.0  # safe default — assume plenty of RAM
+        if total_ram < LOW_MEMORY_THRESHOLD_GB:
+            print(
+                f"[Server] Low-RAM mode ({total_ram:.1f}GB < {LOW_MEMORY_THRESHOLD_GB}GB): "
+                "skipping model pre-load. Model will load on first /lip-sync call.",
+                flush=True,
+            )
+            _model_load_status["loading"] = False
+            # NOTE: _model_load_status["loaded"] stays False — /lip-sync will
+            # call load_model() itself on first invocation.
             return
         print("[Server] Background model pre-load started...", flush=True)
         try:
