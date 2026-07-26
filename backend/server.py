@@ -922,7 +922,11 @@ def _run_gen_job(job_id: str, prompt: str, style: str, gender: str, language: st
                     stderr_lines.append(line)
                     ln = line.strip()
                     # Surface worker milestones as user-visible progress
-                    if "Translating" in ln:
+                    if "Fast-path" in ln:
+                        # v1.1.20: simple English prompt — skipped LLM
+                        job["progress"] = 20
+                        job["message"] = "توليد مباشر بدون ترجمة..." if language == "ar" else "Direct generation (no translation)..."
+                    elif "Translating" in ln:
                         job["progress"] = 15
                         job["message"] = "جاري ترجمة الوصف..." if language == "ar" else "Translating prompt..."
                     elif "Generation attempt" in ln:
@@ -942,11 +946,13 @@ def _run_gen_job(job_id: str, prompt: str, style: str, gender: str, language: st
         _t.start()
 
         try:
-            # 360s (6 min) — matches the frontend polling budget (180 × 2s).
-            # The worker has per-call timeouts (90s image gen, 30s LLM) so
-            # a single hung API call can't eat the whole budget. Worst case
-            # with 3 image gen attempts: 30+90+30+90+30+90 = 360s.
-            stdout, _ = proc.communicate(timeout=360)
+            # v1.1.20: Reduced from 360s → 200s (3 min 20s).
+            # The worker now has tighter per-call timeouts (60s image, 20s LLM)
+            # and only 2 total attempts (initial + 1 retry).
+            # New worst case: 20+60+20+60 = 160s + subprocess overhead ~200s.
+            # If it hasn't completed by 200s, something is genuinely stuck
+            # and the user should retry with a different prompt.
+            stdout, _ = proc.communicate(timeout=200)
         except _subprocess.TimeoutExpired:
             proc.kill()
             try:

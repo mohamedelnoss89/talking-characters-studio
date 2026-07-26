@@ -17,23 +17,64 @@
 const ZAI = require('z-ai-web-dev-sdk').default;
 
 // ============================================================
+// v1.1.20: Cached ZAI instance — created ONCE per process
+// lifetime, reused across all calls. Saves ~50-100ms per
+// generation (the SDK's loadConfig() reads from disk every
+// time ZAI.create() is called).
+// ============================================================
+let _zaiInstance = null;
+async function getZAI() {
+  if (!_zaiInstance) {
+    _zaiInstance = await ZAI.create();
+  }
+  return _zaiInstance;
+}
+
+// ============================================================
 // Per-call timeouts — prevent a single hung API call from eating
 // the entire generation budget.
 //
-// The z-ai API is hosted in China; users in Egypt have ~200-300ms
-// RTT. When the API is under load, a single image generation call
-// can take 60-120s or even hang indefinitely. Without per-call
-// timeouts, one hung call would consume the whole 300s backend
-// budget, leaving no room for retries.
-//
-// With these timeouts:
-//   - LLM calls (translate/rephrase): 30s cap
-//   - Image generation calls: 90s cap
-// If a call exceeds its cap, we abort it and treat it as a
-// retryable error (same as a network error).
+// v1.1.20 changes:
+//   - LLM_TIMEOUT_MS: 30s → 20s (LLM calls typically finish in 5-10s;
+//     if it takes >20s, the API is stuck and a retry is faster than
+//     waiting)
+//   - IMAGE_TIMEOUT_MS: 90s → 60s (image gen typically finishes in
+//     15-40s; 60s is plenty for legitimate calls, and we retry faster
+//     on stuck calls)
 // ============================================================
-const LLM_TIMEOUT_MS = 30000;       // 30s per LLM call
-const IMAGE_TIMEOUT_MS = 90000;      // 90s per image gen call
+const LLM_TIMEOUT_MS = 20000;       // 20s per LLM call (was 30s)
+const IMAGE_TIMEOUT_MS = 60000;      // 60s per image gen call (was 90s)
+
+/**
+ * v1.1.20: Detect simple English prompts that DON'T need LLM translation.
+ *
+ * Why: The LLM translation step adds 5-30s of pure overhead. For users
+ * who type short English prompts like "warrior with sword" or "anime girl
+ * with blue hair", the LLM doesn't add much value — we can just append
+ * the style hint and send directly to the image API.
+ *
+ * Criteria for "simple English":
+ *   - Length ≤ 80 chars (short enough to send as-is)
+ *   - >85% ASCII characters (allows some punctuation/emojis)
+ *   - No Arabic Unicode characters (Arabic range: \u0600-\u06FF)
+ *
+ * For Arabic prompts or longer English prompts with complex intent,
+ * we still use the LLM to translate + expand.
+ */
+function isSimpleEnglishPrompt(text) {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.length === 0 || t.length > 80) return false;
+  // Check for Arabic characters
+  if (/[\u0600-\u06FF\u0750-\u077F]/.test(t)) return false;
+  // Count ASCII chars
+  let asciiCount = 0;
+  for (let i = 0; i < t.length; i++) {
+    if (t.charCodeAt(i) < 128) asciiCount++;
+  }
+  const asciiRatio = asciiCount / t.length;
+  return asciiRatio > 0.85;
+}
 
 /**
  * Wrap a promise with a timeout. If the promise doesn't resolve/reject
@@ -176,10 +217,30 @@ function classifyError(err, language) {
  * hints based on the chosen style).
  *
  * If the LLM fails, fall back to using the user's original prompt directly + style hint.
+ *
+ * v1.1.20 changes:
+ *   - Uses getZAI() cached instance instead of ZAI.create() per call
+ *   - FAST PATH: if the prompt is simple English (<80 chars, no Arabic),
+ *     skip the LLM entirely and use the prompt directly + style/gender hints.
+ *     This saves 5-30s for English-speaking users.
  */
 async function translateAndExpand(userPrompt, style, gender, lang) {
   const styleHint = STYLE_PRESETS[style] || STYLE_PRESETS.realistic;
   const genderHint = GENDER_HINT[gender] || "";
+
+  // -------------------------------------------------------
+  // v1.1.20: FAST PATH — skip LLM for simple English prompts.
+  // The LLM step adds 5-30s of overhead. For short English
+  // prompts, we can just append the style/gender hints and
+  // send directly to the image API.
+  // -------------------------------------------------------
+  if (isSimpleEnglishPrompt(userPrompt)) {
+    process.stderr.write(`[worker] Fast-path: simple English prompt, skipping LLM translate\n`);
+    const imagePrompt = `${userPrompt}, ${styleHint}${genderHint ? `, ${genderHint}` : ""}`.trim();
+    const descriptionAr = `شخصية مولّدة بالذكاء الاصطناعي بناءً على: ${userPrompt}`;
+    const descriptionEn = `AI-generated character based on: ${userPrompt}`;
+    return { imagePrompt, descriptionAr, descriptionEn };
+  }
 
   const systemPrompt = `You are a prompt translator and expander for an AI image generator.
 
@@ -198,7 +259,7 @@ CRITICAL RULES:
 
   let parsed;
   try {
-    const zai = await ZAI.create();
+    const zai = await getZAI();
     const completion = await withTimeout(
       zai.chat.completions.create({
         messages: [
@@ -250,7 +311,7 @@ function isContentFilterError(err) {
 }
 
 async function generateImage(imagePrompt) {
-  const zai = await ZAI.create();
+  const zai = await getZAI();
   const response = await withTimeout(
     zai.images.generations.create({
       prompt: imagePrompt,
@@ -272,7 +333,7 @@ async function generateImage(imagePrompt) {
  * The rephrasing NEVER removes anything the user asked for — it just wraps the same
  * concept in artistic language.
  */
-async function rephraseForRetry(zai, originalPrompt, attempt, style, gender) {
+async function rephraseForRetry(originalPrompt, attempt, style, gender) {
   const styleHint = STYLE_PRESETS[style] || STYLE_PRESETS.realistic;
   const genderHint = GENDER_HINT[gender] || "";
 
@@ -286,6 +347,7 @@ async function rephraseForRetry(zai, originalPrompt, attempt, style, gender) {
   const systemPrompt = framings[attempt % framings.length];
 
   try {
+    const zai = await getZAI();
     const completion = await withTimeout(
       zai.chat.completions.create({
         messages: [
@@ -323,15 +385,20 @@ async function rephraseForRetry(zai, originalPrompt, attempt, style, gender) {
  * NEVER replaces the user's intent with a generic safe prompt — every
  * retry preserves the original concept.
  *
- * Retry budget: 3 total attempts (initial + 2 retries).
- * With per-call timeouts (90s image, 30s LLM), worst case is:
- *   30s translate + 90s img + 30s rephrase + 90s img + 30s rephrase + 90s img = 360s
- * The backend subprocess timeout is 360s, so we just fit.
+ * v1.1.20 changes:
+ *   - Retry budget reduced from 3 → 2 total attempts (initial + 1 retry)
+ *   - With per-call timeouts (60s image, 20s LLM), worst case is now:
+ *       20s translate + 60s img + 20s rephrase + 60s img = 160s
+ *     (was 30+90+30+90+30+90 = 360s — over 2x faster worst case)
+ *   - If both attempts fail, the user gets a clear error and can
+ *     click "Generate" again with a different prompt.
+ *   - Uses cached ZAI instance via getZAI()
  */
 async function generateImageWithRetry(imagePrompt, style, gender, language) {
-  const maxRetries = 2;
+  const maxRetries = 1;  // v1.1.20: was 2 (so 3 total attempts). Now 2 total.
   let currentPrompt = imagePrompt;
-  const zai = await ZAI.create();
+  // Pre-warm the cached ZAI instance (will be reused by rephraseForRetry too)
+  const zai = await getZAI();
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -349,7 +416,7 @@ async function generateImageWithRetry(imagePrompt, style, gender, language) {
       if (isContentFilterError(err)) {
         // Content filter reject → rephrase with different framing
         process.stderr.write(`[worker] Content filter rejected attempt ${attempt + 1}. Rephrasing with different framing...\n`);
-        currentPrompt = await rephraseForRetry(zai, imagePrompt, attempt, style, gender);
+        currentPrompt = await rephraseForRetry(imagePrompt, attempt, style, gender);
       } else if (isRetryableError(err)) {
         // Timeout / network error → retry with SAME prompt (no rephrase needed)
         process.stderr.write(`[worker] Attempt ${attempt + 1} failed with retryable error: ${err.message}. Retrying with same prompt...\n`);

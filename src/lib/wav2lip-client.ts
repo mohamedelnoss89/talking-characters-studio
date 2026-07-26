@@ -653,14 +653,19 @@ export async function generateCharacter(
     throw new Error(language === "ar" ? "فشل بدء التوليد" : "Failed to start generation");
   }
 
-  // 2. Poll للحالة كل 2 ثانية (حد أقصى 360 ثانية = 6 دقايق)
+  // 2. Poll للحالة كل 2 ثانية (حد أقصى 220 ثانية = ~3.7 دقيقة)
+  //    v1.1.20: الـ backend worker أسرع بكتير دلوقتي:
+  //      - per-call timeouts أقل (60s image, 20s LLM بدل 90s/30s)
+  //      - maxRetries 2 بدل 3 محاولات
+  //      - ZAI instance cached (يوفّر ~100ms)
+  //      - fast-path للـ prompts الإنجليزي القصيرة (يوفّر 5-30s)
+  //    الـ worst case الجديد: 20+60+20+60 = 160s + subprocess overhead ~200s
+  //    بنزوّد الـ budget لـ 110 محاولة × 2s = 220s عشان يكون فيه buffer
+  //    للـ network hiccups في الـ polling نفسه.
   //    - الـ backend بياخد عادة 15-40 ثانية
-  //    - لو فلتر المحتوى رفض، الـ backend بيعيد المحاولة 4 مرات مع rephrase
-  //    - كل retry بياخد ~30s، فالمجموع ممكن يوصل لـ 150s
-  //    - مع per-call timeouts الجديدة (90s image, 30s LLM)، الـ worst case
-  //      هو 360s (6 دقايق) — فعلاً بنزوّد الـ budget لـ 180 محاولة × 2s = 360s
-  //    - ده بيدي buffer كافي للـ retries + network hiccups
-  const maxAttempts = 180;
+  //    - لو فلتر المحتوى رفض، الـ backend بيعيد المحاولة مرة واحدة مع rephrase
+  //    - لو الـ AI مشغول، ممكن يوصل لـ 90s
+  const maxAttempts = 110;
   let consecutiveErrors = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000));
@@ -734,12 +739,12 @@ export async function generateCharacter(
     // status === "processing" → keep polling
   }
 
-  // Time-out بعد 6 دقايق. الرسالة أوضح من "AI is slow" — نوضّح إن الـ backend
+  // Time-out بعد ~3.7 دقايق. الرسالة أوضح من "AI is slow" — نوضّح إن الـ backend
   // لسه شغال في الـ background، والمستخدم يقدر يحاول تاني بوصف أبسط.
   const e = new Error(
     language === "ar"
-      ? `انتهت المهلة (~6 دقايق). الـ AI ممكن يكون مشغول جدًا أو فيه مشكلة في الاتصال. جرّب تاني — لو فضلت المشكلة، جرّب وصف أبسط.`
-      : `Timed out (~6 minutes). The AI may be very busy or there's a connection issue. Try again — if it keeps failing, try a simpler prompt.`
+      ? `انتهت المهلة (~3.5 دقيقة). الـ AI ممكن يكون مشغول جدًا أو فيه مشكلة في الاتصال. جرّب تاني — لو فضلت المشكلة، جرّب وصف أبسط أو بالإنجليزي.`
+      : `Timed out (~3.5 minutes). The AI may be very busy or there's a connection issue. Try again — if it keeps failing, try a simpler prompt or use English.`
   ) as Error & { error_type?: string };
   e.error_type = "timeout";
   throw e;

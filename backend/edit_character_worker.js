@@ -14,6 +14,53 @@
 
 const ZAI = require('z-ai-web-dev-sdk').default;
 
+// ============================================================
+// v1.1.20: Cached ZAI instance + timeouts + reduced retries
+// (same optimizations as gen_character_worker.js)
+// ============================================================
+let _zaiInstance = null;
+async function getZAI() {
+  if (!_zaiInstance) {
+    _zaiInstance = await ZAI.create();
+  }
+  return _zaiInstance;
+}
+
+const LLM_TIMEOUT_MS = 20000;       // 20s per LLM call
+const IMAGE_TIMEOUT_MS = 60000;      // 60s per image edit call
+
+/**
+ * Wrap a promise with a timeout. If the promise doesn't resolve/reject
+ * within `ms` milliseconds, rejects with a timeout error.
+ */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms / 1000}s — API may be busy`));
+    }, ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+/**
+ * v1.1.20: Detect simple English edit prompts that DON'T need LLM translation.
+ * Same logic as in gen_character_worker.js — saves 5-20s per edit.
+ */
+function isSimpleEnglishPrompt(text) {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.length === 0 || t.length > 80) return false;
+  if (/[\u0600-\u06FF\u0750-\u077F]/.test(t)) return false;
+  let asciiCount = 0;
+  for (let i = 0; i < t.length; i++) {
+    if (t.charCodeAt(i) < 128) asciiCount++;
+  }
+  return (asciiCount / t.length) > 0.85;
+}
+
 function sanitizeBase64(b64) {
   return b64.replace(/^data:[^;]+;base64,/, "").replace(/\s/g, "");
 }
@@ -104,7 +151,13 @@ function classifyError(err, language) {
  *
  * لو الـ LLM فشل، نرجّع الـ prompt الأصلي زي ما هو (fallback).
  */
-async function rewritePrompt(zai, userPrompt, language) {
+async function rewritePrompt(userPrompt, language) {
+  // v1.1.20: FAST PATH — skip LLM for simple English prompts.
+  if (isSimpleEnglishPrompt(userPrompt)) {
+    process.stderr.write(`[edit-worker] Fast-path: simple English prompt, skipping LLM rewrite\n`);
+    return `${userPrompt}, keep the same background, pose, lighting, and overall art style`;
+  }
+
   const systemPrompt = `You are a prompt translator for an AI image editing tool. Take the user's edit request (which may be in Arabic, English, or mixed) and translate it into ONE clean English prompt for an image editing AI.
 
 Rules:
@@ -124,13 +177,18 @@ Examples:
 - Input: "make him look older" → Output: age this character to look 20 years older with wrinkles and mature features, keep the same background, pose, lighting, and overall art style`;
 
   try {
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.3,  // low temp for deterministic rewriting
-    });
+    const zai = await getZAI();
+    const completion = await withTimeout(
+      zai.chat.completions.create({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.3,  // low temp for deterministic rewriting
+      }),
+      LLM_TIMEOUT_MS,
+      "LLM rewrite"
+    );
     const content = (completion.choices?.[0]?.message?.content || "").trim();
     // Strip surrounding quotes if present
     const cleaned = content.replace(/^["'`]+|["'`]+$/g, "").trim();
@@ -160,7 +218,7 @@ function isContentFilterError(err) {
  * Ask the LLM to REPHRASE the user's edit prompt while preserving the EXACT same intent.
  * Uses different framing strategies that are less likely to be flagged by the upstream filter.
  */
-async function rephraseForRetry(zai, originalPrompt, attempt) {
+async function rephraseForRetry(originalPrompt, attempt) {
   const framings = [
     `Rephrase this image edit instruction as a fantasy concept art edit. Frame it as an edit to a published art book illustration. Preserve EVERY element the user requested — do not remove or soften anything. Add suffix: ", keep the same background, pose, lighting, and overall art style". Output ONLY the prompt, no explanation.`,
     `Rephrase this image edit instruction as a cinematic storyboard edit. Frame it as concept art for a film production. Preserve EVERY element the user requested — do not remove or soften anything. Add suffix: ", keep the same background, pose, lighting, and overall art style". Output ONLY the prompt, no explanation.`,
@@ -171,13 +229,18 @@ async function rephraseForRetry(zai, originalPrompt, attempt) {
   const systemPrompt = framings[attempt % framings.length];
 
   try {
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: originalPrompt },
-      ],
-      temperature: 0.8,
-    });
+    const zai = await getZAI();
+    const completion = await withTimeout(
+      zai.chat.completions.create({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: originalPrompt },
+        ],
+        temperature: 0.8,
+      }),
+      LLM_TIMEOUT_MS,
+      `LLM rephrase ${attempt}`
+    );
     const content = (completion.choices?.[0]?.message?.content || "").trim();
     const cleaned = content.replace(/^["'`]+|["'`]+$/g, "").trim();
     if (cleaned.length < 10 || cleaned.length > 2000) {
@@ -190,30 +253,37 @@ async function rephraseForRetry(zai, originalPrompt, attempt) {
   }
 }
 
-async function callImageEdit(zai, dataUrl, prompt) {
-  const response = await zai.images.generations.edit({
-    prompt,
-    images: [{ url: dataUrl }],
-    size: "1024x1024",
-  });
+async function callImageEdit(dataUrl, prompt) {
+  const zai = await getZAI();
+  const response = await withTimeout(
+    zai.images.generations.edit({
+      prompt,
+      images: [{ url: dataUrl }],
+      size: "1024x1024",
+    }),
+    IMAGE_TIMEOUT_MS,
+    "Image edit"
+  );
   const b64 = response?.data?.[0]?.base64;
   if (!b64 || b64.length < 1000) throw new Error("Edit returned empty image");
   return sanitizeBase64(b64);
 }
 
 /**
- * Try the image edit. If rejected by the content filter, retry up to 4 times
- * with LLM-rephrased versions of the SAME user intent (different artistic framings).
+ * v1.1.20: Reduced max retries from 4 → 2 (3 total attempts).
+ * With per-call timeouts (60s image, 20s LLM), worst case is now:
+ *   20s rewrite + 60s edit + 20s rephrase + 60s edit + 20s rephrase + 60s edit = 240s
+ * (was: 5 attempts × ~90s each = 450s+)
  */
-async function editImageWithRetry(zai, dataUrl, rewrittenPrompt, originalPrompt) {
-  const maxRetries = 4;
+async function editImageWithRetry(dataUrl, rewrittenPrompt, originalPrompt) {
+  const maxRetries = 2;  // v1.1.20: was 4 (5 total). Now 3 total.
   let currentPrompt = rewrittenPrompt;
   let lastError = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       process.stderr.write(`[edit-worker] Edit attempt ${attempt + 1}/${maxRetries + 1}, prompt: ${currentPrompt.slice(0, 100)}...\n`);
-      const b64 = await callImageEdit(zai, dataUrl, currentPrompt);
+      const b64 = await callImageEdit(dataUrl, currentPrompt);
       return { base64Image: b64, finalPrompt: currentPrompt };
     } catch (err) {
       lastError = err;
@@ -224,7 +294,7 @@ async function editImageWithRetry(zai, dataUrl, rewrittenPrompt, originalPrompt)
         throw err;
       }
       process.stderr.write(`[edit-worker] Content filter rejected attempt ${attempt + 1}. Rephrasing...\n`);
-      currentPrompt = await rephraseForRetry(zai, originalPrompt, attempt);
+      currentPrompt = await rephraseForRetry(originalPrompt, attempt);
     }
   }
   throw lastError || new Error("Edit failed after all retries");
@@ -272,14 +342,15 @@ async function main() {
     process.stderr.write(`[edit-worker] Original prompt: "${edit_prompt.slice(0, 80)}"\n`);
     process.stderr.write(`[edit-worker] Image size: ${cleanB64.length} chars\n`);
 
-    const zai = await ZAI.create();
+    // Pre-warm the cached ZAI instance (will be reused by all sub-calls)
+    await getZAI();
 
     // 1) Translate the user's prompt to English (preserves intent, no filtering)
-    const rewrittenPrompt = await rewritePrompt(zai, edit_prompt, language);
+    const rewrittenPrompt = await rewritePrompt(edit_prompt, language);
     process.stderr.write(`[edit-worker] Translated prompt: "${rewrittenPrompt.slice(0, 100)}"\n`);
 
     // 2) Call image edit with retry — rephrases the SAME intent if content filter rejects
-    const { base64Image, finalPrompt } = await editImageWithRetry(zai, dataUrl, rewrittenPrompt, edit_prompt);
+    const { base64Image, finalPrompt } = await editImageWithRetry(dataUrl, rewrittenPrompt, edit_prompt);
 
     const result = {
       success: true,
